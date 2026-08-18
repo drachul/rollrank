@@ -1,0 +1,381 @@
+from __future__ import annotations
+
+import math
+from io import BytesIO
+from typing import Any, Sequence
+
+from reportlab.lib.colors import Color, HexColor, white
+from reportlab.lib.pagesizes import landscape, letter
+from reportlab.pdfbase.pdfmetrics import stringWidth
+from reportlab.pdfgen import canvas
+
+
+INK = HexColor("#152B43")
+NAVY = HexColor("#183550")
+BLUE = HexColor("#2F80ED")
+YELLOW = HexColor("#F4C542")
+PAPER = HexColor("#F5F7FB")
+PANEL = HexColor("#FFFFFF")
+LINE = HexColor("#D4DEE8")
+MUTED = HexColor("#698096")
+SOFT = HexColor("#EDF2F7")
+SKY = HexColor("#DCEEFF")
+
+
+def ordinal(value: int) -> str:
+    if 10 <= value % 100 <= 20:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(value % 10, "th")
+    return f"{value}{suffix}"
+
+
+def heat_finish_label(value: int) -> str:
+    return "DNF" if value == 0 else ordinal(value)
+
+
+def final_finish_label(value: int | None, dnf_place: int) -> str:
+    if value is None:
+        return "PENDING"
+    if value == 0:
+        return f"T-{ordinal(dnf_place)} DNF"
+    return ordinal(value)
+
+
+def fit_text(text: str, font: str, size: float, width: float) -> str:
+    if stringWidth(text, font, size) <= width:
+        return text
+    while text and stringWidth(text + "...", font, size) > width:
+        text = text[:-1]
+    return text + "..."
+
+
+def marble(c: canvas.Canvas, x: float, y: float, radius: float, color: str) -> None:
+    c.setFillColor(HexColor(color))
+    c.setStrokeColor(NAVY)
+    c.setLineWidth(0.5)
+    c.circle(x, y, radius, fill=1, stroke=1)
+    c.setFillColor(Color(1, 1, 1, alpha=0.72))
+    c.circle(x - radius * 0.3, y + radius * 0.32, radius * 0.27, fill=1, stroke=0)
+
+
+def header(
+    c: canvas.Canvas, width: float, height: float, race_name: str, subtitle: str, badge: str
+) -> None:
+    c.setFillColor(PAPER)
+    c.rect(0, 0, width, height, fill=1, stroke=0)
+    c.setFillColor(NAVY)
+    c.rect(0, height - 76, width, 76, fill=1, stroke=0)
+    c.setFillColor(YELLOW)
+    c.rect(0, height - 80, width, 4, fill=1, stroke=0)
+    c.setFillColor(YELLOW)
+    c.setFont("Helvetica-Bold", 6.5)
+    c.drawString(32, height - 17, "ROLLRANK")
+    c.setFillColor(white)
+    c.setFont("Helvetica-Bold", 19)
+    c.drawString(32, height - 39, fit_text(race_name, "Helvetica-Bold", 19, width - 230))
+    c.setFillColor(SKY)
+    c.setFont("Helvetica", 8.5)
+    c.drawString(33, height - 58, fit_text(subtitle, "Helvetica", 8.5, width - 230))
+    badge_width = max(94, stringWidth(badge, "Helvetica-Bold", 9) + 25)
+    c.setFillColor(BLUE)
+    c.roundRect(width - badge_width - 32, height - 52, badge_width, 25, 12.5, fill=1, stroke=0)
+    c.setFillColor(white)
+    c.setFont("Helvetica-Bold", 9)
+    c.drawCentredString(width - badge_width / 2 - 32, height - 43, badge)
+
+
+def footer(c: canvas.Canvas, width: float, page: int) -> None:
+    c.setStrokeColor(LINE)
+    c.line(32, 25, width - 32, 25)
+    c.setFillColor(MUTED)
+    c.setFont("Helvetica", 7)
+    c.drawString(32, 13, "ROLLRANK TOURNAMENT REPORT")
+    c.drawRightString(width - 32, 13, f"PAGE {page}")
+
+
+def points_legend(c: canvas.Canvas, x: float, top: float, width: float, values: Sequence[int]) -> float:
+    displayed_values = list(values)
+    while len(displayed_values) > 1 and displayed_values[-1] == 0:
+        displayed_values.pop()
+    tokens = [f"{ordinal(index)}  {value} pts" for index, value in enumerate(displayed_values, start=1)]
+    pad = 9
+    label_width = 92
+    pill_height = 18
+    rows: list[list[tuple[str, float]]] = [[]]
+    used = label_width
+    for token in tokens:
+        token_width = stringWidth(token, "Helvetica-Bold", 6.8) + 15
+        if rows[-1] and used + token_width + 5 > width - 2 * pad:
+            rows.append([])
+            used = 0
+        rows[-1].append((token, token_width))
+        used += token_width + 5
+    height = 2 * pad + len(rows) * pill_height + max(0, len(rows) - 1) * 4
+    bottom = top - height
+    c.setFillColor(NAVY)
+    c.roundRect(x, bottom, width, height, 8, fill=1, stroke=0)
+    c.setFillColor(YELLOW)
+    c.setFont("Helvetica-Bold", 8)
+    c.drawString(x + pad, top - pad - 12, "POINTS LEGEND")
+    for row_index, row in enumerate(rows):
+        cursor = x + pad + (label_width if row_index == 0 else 0)
+        y = top - pad - pill_height - row_index * (pill_height + 4)
+        for token, token_width in row:
+            c.setFillColor(Color(1, 1, 1, alpha=0.12))
+            c.roundRect(cursor, y, token_width, pill_height, 9, fill=1, stroke=0)
+            c.setFillColor(white)
+            c.setFont("Helvetica-Bold", 6.8)
+            c.drawCentredString(cursor + token_width / 2, y + 6, token)
+            cursor += token_width + 5
+    return bottom
+
+
+def overview_pages(c: canvas.Canvas, state: dict[str, Any], width: float, height: float, page: int) -> int:
+    competition = state["competition"]
+    standings = state["standings"]
+    day_chunks = [list(range(start, min(start + 10, competition["days"] + 1))) for start in range(1, competition["days"] + 1, 10)]
+    racer_chunks = [standings[start : start + 16] for start in range(0, len(standings), 16)]
+    page_count = len(day_chunks) * len(racer_chunks)
+    page_index = 0
+    for day_chunk in day_chunks:
+        for racer_chunk in racer_chunks:
+            page_index += 1
+            badge = "STANDINGS" if page_count == 1 else f"STANDINGS {page_index}/{page_count}"
+            header(c, width, height, competition["name"], "Round points and overall tournament ranking", badge)
+            x = 32
+            usable = width - 64
+            metrics = [
+                ("RACE ROUNDS", competition["days"]),
+                ("HEATS / RACER / ROUND", competition["heatsPerRacerPerDay"]),
+                (
+                    "MARBLES / HEAT",
+                    f'{competition["marblesPerHeat"]}/{competition["maxMarblesPerHeat"]} max',
+                ),
+                ("MARBLES / RACER", competition["marblesPerRacer"]),
+                ("FINALISTS", competition["championshipRacers"]),
+            ]
+            metric_width = (usable - 8 * (len(metrics) - 1)) / len(metrics)
+            for index, (label, value) in enumerate(metrics):
+                metric_x = x + index * (metric_width + 8)
+                c.setFillColor(PANEL)
+                c.setStrokeColor(LINE)
+                c.roundRect(metric_x, height - 125, metric_width, 33, 7, fill=1, stroke=1)
+                c.setFillColor(MUTED)
+                c.setFont("Helvetica-Bold", 6)
+                c.drawString(metric_x + 9, height - 104, label)
+                c.setFillColor(INK)
+                c.setFont("Helvetica-Bold", 11)
+                c.drawString(metric_x + 9, height - 119, str(value))
+            legend_bottom = points_legend(c, x, height - 136, usable, state["points"])
+            table_top = legend_bottom - 12
+            header_height = 24
+            row_height = min(20, (table_top - 34 - header_height) / len(racer_chunk))
+            name_width = 178
+            total_width = 57
+            day_width = (usable - name_width - total_width) / len(day_chunk)
+            c.setFillColor(NAVY)
+            c.roundRect(x, table_top - header_height, usable, header_height, 6, fill=1, stroke=0)
+            c.setFillColor(white)
+            c.setFont("Helvetica-Bold", 7)
+            c.drawString(x + 10, table_top - 16, "RACER")
+            cursor = x + name_width
+            for day in day_chunk:
+                c.drawCentredString(cursor + day_width / 2, table_top - 16, f"ROUND {day}")
+                cursor += day_width
+            c.setFillColor(YELLOW)
+            c.drawCentredString(cursor + total_width / 2, table_top - 16, "TOTAL")
+            y = table_top - header_height
+            for index, racer in enumerate(racer_chunk):
+                y -= row_height
+                c.setFillColor(PANEL if index % 2 == 0 else SOFT)
+                c.setStrokeColor(LINE)
+                c.rect(x, y, usable, row_height, fill=1, stroke=1)
+                marble(c, x + 13, y + row_height / 2, 4.5, racer["color"])
+                c.setFillColor(INK)
+                c.setFont("Helvetica-Bold", 7.5)
+                c.drawString(x + 24, y + row_height / 2 - 2.5, fit_text(f'{racer["rank"]:02d}  {racer["name"]}', "Helvetica-Bold", 7.5, name_width - 30))
+                cursor = x + name_width
+                for day in day_chunk:
+                    c.setStrokeColor(LINE)
+                    c.line(cursor, y, cursor, y + row_height)
+                    value = racer["dayPoints"][day - 1]
+                    c.setFillColor(INK)
+                    c.setFont("Helvetica-Bold", 7.5)
+                    c.drawCentredString(cursor + day_width / 2, y + row_height / 2 - 2.5, str(value))
+                    cursor += day_width
+                c.setFillColor(SKY)
+                c.rect(cursor, y, total_width, row_height, fill=1, stroke=1)
+                c.setFillColor(INK)
+                c.drawCentredString(cursor + total_width / 2, y + row_height / 2 - 2.5, str(racer["totalPoints"]))
+            footer(c, width, page)
+            c.showPage()
+            page += 1
+    return page
+
+
+def heat_item(c: canvas.Canvas, heat: dict[str, Any], x: float, top: float, width: float, item_height: float) -> None:
+    bottom = top - item_height
+    rail_width = 65
+    c.setFillColor(PANEL)
+    c.setStrokeColor(LINE)
+    c.roundRect(x, bottom, width, item_height, 7, fill=1, stroke=1)
+    c.setFillColor(BLUE if heat["complete"] else NAVY)
+    c.roundRect(x, bottom, rail_width, item_height, 7, fill=1, stroke=0)
+    c.rect(x + rail_width - 7, bottom, 7, item_height, fill=1, stroke=0)
+    c.setFillColor(white)
+    c.setFont("Helvetica-Bold", 10)
+    c.drawCentredString(x + rail_width / 2, top - 20, f'HEAT {heat["heatNumber"]}')
+    c.setFillColor(SKY)
+    c.setFont("Helvetica-Bold", 6)
+    c.drawCentredString(x + rail_width / 2, top - 32, f'RACE #{heat["globalNumber"]}')
+    c.setFillColor(YELLOW if heat["complete"] else SKY)
+    c.drawCentredString(x + rail_width / 2, bottom + 10, "COMPLETE" if heat["complete"] else "PENDING")
+
+    columns = min(4, len(heat["entries"]))
+    rows = math.ceil(len(heat["entries"]) / columns)
+    content_x = x + rail_width
+    cell_width = (width - rail_width) / columns
+    row_height = item_height / rows
+    for index, entry in enumerate(heat["entries"]):
+        row = index // columns
+        column = index % columns
+        cell_x = content_x + column * cell_width
+        cell_top = top - row * row_height
+        cell_bottom = cell_top - row_height
+        c.setFillColor(PANEL if (row + column) % 2 == 0 else SOFT)
+        c.setStrokeColor(LINE)
+        c.rect(cell_x, cell_bottom, cell_width, row_height, fill=1, stroke=1)
+        marble(c, cell_x + 10, cell_top - 12, 4, entry["color"])
+        c.setFillColor(INK)
+        c.setFont("Helvetica-Bold", 7)
+        c.drawString(cell_x + 18, cell_top - 14, fit_text(f'{entry["lane"]}. {entry["name"]}', "Helvetica-Bold", 7, cell_width - 25))
+        c.setFillColor(MUTED)
+        c.setFont("Helvetica-Bold", 5.5)
+        if not entry["complete"]:
+            result = "PENDING"
+        elif len(entry["marbles"]) == 1:
+            race_marble = entry["marbles"][0]
+            result = f'{heat_finish_label(race_marble["finish"])}  -  {race_marble["points"]} pts'
+        else:
+            marble_results = "  ".join(
+                f'M{race_marble["number"]}:{heat_finish_label(race_marble["finish"])}/{race_marble["points"]}'
+                for race_marble in entry["marbles"]
+            )
+            result = f'{marble_results}  |  {entry["points"]} pts'
+        c.drawString(
+            cell_x + 9,
+            cell_bottom + 8,
+            fit_text(result, "Helvetica-Bold", 5.5, cell_width - 18),
+        )
+
+
+def day_pages(c: canvas.Canvas, state: dict[str, Any], width: float, height: float, page: int) -> int:
+    competition = state["competition"]
+    for day in state["days"]:
+        columns = min(4, competition["racersPerHeat"])
+        rows = math.ceil(competition["racersPerHeat"] / columns)
+        item_height = max(58, 18 + rows * 25)
+        available = height - 80 - 52 - 48
+        per_page = max(1, int((available + 7) // (item_height + 7)))
+        chunks = [day["heats"][start : start + per_page] for start in range(0, len(day["heats"]), per_page)]
+        for sheet_index, chunk in enumerate(chunks, start=1):
+            badge = f'ROUND {day["day"]}/{competition["days"]}'
+            if len(chunks) > 1:
+                badge += f' - SHEET {sheet_index}/{len(chunks)}'
+            header(c, width, height, competition["name"], "Recorded marble finishes and awarded heat points", badge)
+            legend_bottom = points_legend(c, 32, height - 92, width - 64, state["points"])
+            top = legend_bottom - 8
+            for index, heat in enumerate(chunk):
+                heat_item(c, heat, 32, top - index * (item_height + 7), width - 64, item_height)
+            footer(c, width, page)
+            c.showPage()
+            page += 1
+    return page
+
+
+def championship_page(c: canvas.Canvas, state: dict[str, Any], width: float, height: float, page: int) -> int:
+    competition = state["competition"]
+    championship = state["championship"]
+    header(c, width, height, competition["name"], "Final qualification and race result", "FINAL")
+    x = 32
+    usable = width - 64
+    banner_top = height - 96
+    c.setFillColor(NAVY)
+    c.roundRect(x, banner_top - 47, usable, 47, 8, fill=1, stroke=0)
+    c.setFillColor(YELLOW)
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(x + 15, banner_top - 21, f'TOP {competition["championshipRacers"]} ADVANCE')
+    c.setFillColor(white)
+    c.setFont("Helvetica", 8)
+    status = "Final complete" if championship["complete"] else "Qualifiers locked" if championship["ready"] else "Qualifiers remain provisional until every round heat is complete"
+    c.drawString(x + 15, banner_top - 37, status)
+    table_top = banner_top - 60
+    racers = championship["racers"] if championship["racers"] else state["standings"][: competition["championshipRacers"]]
+    dnf_place = sum(1 for racer in racers if (racer.get("finish") or 0) > 0) + 1
+    header_height = 24
+    result_height = 68
+    row_height = min(36, (table_top - 35 - result_height - 12 - header_height) / len(racers))
+    c.setFillColor(NAVY)
+    c.roundRect(x, table_top - header_height, usable, header_height, 6, fill=1, stroke=0)
+    c.setFillColor(white)
+    c.setFont("Helvetica-Bold", 7)
+    c.drawString(x + 12, table_top - 16, "SEED")
+    c.drawString(x + 80, table_top - 16, "FINAL RACER")
+    c.drawRightString(x + usable - 15, table_top - 16, "FINAL PLACE")
+    y = table_top - header_height
+    for index, racer in enumerate(racers):
+        y -= row_height
+        seed = racer.get("seed", index + 1)
+        c.setFillColor(PANEL if index % 2 == 0 else SOFT)
+        c.setStrokeColor(LINE)
+        c.rect(x, y, usable, row_height, fill=1, stroke=1)
+        c.setFillColor(BLUE)
+        c.circle(x + 25, y + row_height / 2, 8, fill=1, stroke=0)
+        c.setFillColor(white)
+        c.setFont("Helvetica-Bold", 7)
+        c.drawCentredString(x + 25, y + row_height / 2 - 2.5, str(seed))
+        marble(c, x + 65, y + row_height / 2, 5, racer["color"])
+        c.setFillColor(INK)
+        c.setFont("Helvetica-Bold", 8.5)
+        c.drawString(x + 78, y + row_height / 2 - 3, racer["name"])
+        c.setFillColor(MUTED)
+        c.setFont("Helvetica", 7)
+        c.drawString(x + usable * 0.58, y + row_height / 2 - 2.5, f'{racer["totalPoints"]} qualifying pts')
+        finish = racer.get("finish")
+        c.setFillColor(INK)
+        c.setFont("Helvetica-Bold", 8)
+        c.drawRightString(
+            x + usable - 15,
+            y + row_height / 2 - 3,
+            final_finish_label(finish, dnf_place),
+        )
+    result_y = max(34, y - result_height - 12)
+    c.setFillColor(NAVY)
+    c.roundRect(x, result_y, usable, result_height, 8, fill=1, stroke=0)
+    champion = championship["champion"]
+    c.setFillColor(YELLOW)
+    c.setFont("Helvetica-Bold", 8)
+    c.drawString(x + 15, result_y + 44, "CHAMPION")
+    c.setFillColor(white)
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(x + 85, result_y + 40, champion["name"] if champion else "Pending final result")
+    c.setFillColor(SKY)
+    c.setFont("Helvetica", 7.5)
+    c.drawString(x + 15, result_y + 16, "Generated from this tournament's saved database records.")
+    footer(c, width, page)
+    c.showPage()
+    return page + 1
+
+
+def build_report(state: dict[str, Any]) -> bytes:
+    output = BytesIO()
+    width, height = landscape(letter)
+    pdf = canvas.Canvas(output, pagesize=(width, height), pageCompression=1)
+    pdf.setTitle(f'{state["competition"]["name"]} - Tournament Report')
+    pdf.setAuthor("RollRank")
+    page = overview_pages(pdf, state, width, height, 1)
+    page = day_pages(pdf, state, width, height, page)
+    championship_page(pdf, state, width, height, page)
+    pdf.save()
+    return output.getvalue()

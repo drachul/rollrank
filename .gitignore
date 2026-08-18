@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+
+/data/*
+!/data/.gitkeep
+/output/
+/tmp/
+AGENTS.md
+SKILLS.md
+.cursor
+.codex
+.claude

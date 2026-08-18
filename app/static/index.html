@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#183550" />
+    <meta name="description" content="RollRank makes marble race tournaments easy to schedule, score, rank, and report." />
+    <title>RollRank · Marble tournament control</title>
+    <link rel="icon" type="image/png" href="/static/marble-logo.png" />
+    <link rel="apple-touch-icon" href="/static/marble-logo.png" />
+    <link rel="stylesheet" href="/static/styles.css" />
+    <script src="/static/app.js" defer></script>
+  </head>
+  <body class="landing-mode">
+    <section class="tournament-index-page" id="landing-page">
+      <header class="index-topbar">
+        <a class="landing-brand" href="/" aria-label="RollRank home">
+          <img src="/static/marble-logo.png" alt="" width="42" height="42" />
+          <span><strong>RollRank</strong><small>Marble tournament control</small></span>
+        </a>
+        <button type="button" class="primary-button index-create-button" data-new-tournament>+ New tournament</button>
+      </header>
+      <main class="tournament-index-main">
+        <header class="index-heading">
+          <div><p class="eyebrow">Tournament hub</p><h1>Tournaments</h1><p>Open a tournament dashboard or start a new competition.</p></div>
+        </header>
+        <section id="tournament-index-list" aria-live="polite">
+          <div class="index-loading"><span class="spinner"></span><p>Loading tournaments...</p></div>
+        </section>
+      </main>
+      <footer class="index-footer"><span><b>RollRank</b> · Marble tournament control</span></footer>
+    </section>
+    <div class="site-shell" id="workspace-shell" hidden>
+      <header class="topbar">
+        <a class="brand-button" href="/" aria-label="RollRank home">
+          <img class="brand-mark" src="/static/marble-logo.png" alt="" width="40" height="40" />
+          <span class="brand-wordmark"><strong>RollRank</strong><small>Tournament control</small></span>
+        </a>
+        <div class="tournament-control">
+          <label for="tournament-switcher">Tournament</label>
+          <div><select id="tournament-switcher" aria-label="Select tournament"></select><button type="button" class="new-tournament-button" data-new-tournament aria-label="Create tournament"><span aria-hidden="true">+</span><span class="new-tournament-label">New</span></button></div>
+        </div>
+        <nav class="main-nav" aria-label="Primary navigation">
+          <button data-view="dashboard" class="active">Dashboard</button>
+          <button data-view="heats">Heats</button>
+          <button data-view="standings">Standings</button>
+          <button data-view="championship">Final</button>
+          <button data-view="setup">Setup</button>
+        </nav>
+        <a class="print-button" id="print-report" href="/api/report.pdf" target="_blank" rel="noopener">
+          <span class="pdf-icon" aria-hidden="true"></span> Printable report
+        </a>
+      </header>
+      <main id="app" tabindex="-1">
+        <div class="loading-state"><span class="spinner"></span><p>Loading RollRank...</p></div>
+      </main>
+    </div>
+    <dialog id="new-tournament-dialog" class="tournament-dialog">
+      <form id="new-tournament-form">
+        <p class="eyebrow">New tournament</p>
+        <h2>Create a fresh tournament</h2>
+        <p>It will have its own racers, heats, scoring, standings, final, and report.</p>
+        <label class="field"><span>Tournament name</span><input name="name" maxlength="80" autocomplete="off" placeholder="Summer Marble Cup" required></label>
+        <div class="dialog-actions"><button type="button" class="secondary-button" data-close-tournament-dialog>Cancel</button><button type="submit" class="primary-button">Create tournament</button></div>
+      </form>
+    </dialog>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  </body>
+</html>
