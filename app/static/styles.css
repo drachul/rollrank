@@ -273,6 +273,34 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible { 
 .standings-table tr.qualifying td:first-child { border-left:3px solid var(--blue); }
 .rank-badge,.seed-number { display:inline-grid; width:25px; height:25px; place-items:center; border-radius:50%; background:rgba(47,128,237,.16); color:var(--blue-light); font-size:10px; font-weight:850; }
 .racer-cell { display:flex; align-items:center; gap:9px; color:var(--ink); }
+.ladder-panel { margin-bottom:22px; }
+.ladder { display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr) auto minmax(0,1fr); align-items:start; gap:0 10px; }
+.ladder-column { display:flex; min-width:0; flex-direction:column; gap:10px; }
+.ladder-column-heading span { display:block; color:var(--yellow); font-size:8px; font-weight:850; letter-spacing:.13em; text-transform:uppercase; }
+.ladder-column-heading h3 { margin:3px 0 0; font-size:14px; letter-spacing:-.02em; }
+.ladder-connector { display:flex; align-self:stretch; align-items:center; justify-content:center; padding-top:34px; color:var(--muted); font-size:18px; }
+.ladder-heats { display:grid; gap:10px; }
+.ladder-heat { overflow:hidden; border:1px solid var(--line); border-radius:12px; background:var(--panel); box-shadow:var(--shadow); }
+.ladder-heat.complete { border-color:rgba(40,167,101,.4); }
+.ladder-heat.final { border-color:rgba(244,197,66,.4); }
+.ladder-heat.final.complete { border-color:var(--yellow); box-shadow:0 0 0 1px var(--yellow),var(--shadow); }
+.ladder-heat-head { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:9px 11px; border-bottom:1px solid var(--line); background:rgba(255,255,255,.04); font-size:10px; font-weight:850; }
+.ladder-entries { display:grid; margin:0; padding:0; list-style:none; }
+.ladder-entry { display:grid; grid-template-columns:19px minmax(0,1fr) auto; align-items:center; gap:7px; padding:7px 11px; border-top:1px solid var(--line); }
+.ladder-entry:first-child { border-top:0; }
+.ladder-entry span { overflow:hidden; color:var(--ink); font-size:10px; text-overflow:ellipsis; white-space:nowrap; }
+.ladder-entry b { color:var(--muted); font-size:9px; font-weight:800; text-align:right; white-space:nowrap; }
+.ladder-entry b small { margin-left:2px; font-weight:750; text-transform:uppercase; }
+.ladder-entry.dnf { opacity:.5; }
+.ladder-entry.advancing { background:rgba(47,128,237,.08); }
+.ladder-entry.advancing span { color:var(--blue-light); font-weight:750; }
+.ladder-entry.champion { background:rgba(244,197,66,.14); }
+.ladder-entry.champion span { color:var(--yellow); font-weight:850; }
+.ladder-entry.champion b { color:var(--yellow); font-size:13px; }
+.ladder-placeholder { display:flex; min-height:120px; align-items:center; flex-direction:column; justify-content:center; gap:8px; padding:18px; border:1px dashed rgba(255,255,255,.22); border-radius:12px; background:rgba(255,255,255,.03); color:var(--muted); text-align:center; }
+.ladder-placeholder span { font-size:20px; }
+.ladder-placeholder p { margin:0; font-size:10px; line-height:1.4; }
+.ladder-placeholder.skip { border-style:solid; border-color:var(--blue); background:rgba(47,128,237,.08); color:var(--blue-light); }
 .championship-stage { margin-bottom:28px; }
 .championship-stage:last-child { margin-bottom:0; }
 .championship-lock { display:flex; align-items:center; gap:22px; padding:27px; }
@@ -559,6 +587,8 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible { 
   .heat-entry { border-right:0; }
   .heat-entry select,.championship-row select { min-height:40px; font-size:12px; }
   .save-heat-button { min-height:40px; }
+  .ladder { grid-template-columns:1fr; gap:14px; }
+  .ladder-connector { padding-top:0; transform:rotate(90deg); }
   .table-scroll { display:none; }
   .mobile-standings { display:grid; gap:10px; padding:12px; background:rgba(255,255,255,.03); }
   .mobile-standing-card { overflow:hidden; border:1px solid var(--line); border-radius:11px; background:var(--panel); box-shadow:var(--shadow); }

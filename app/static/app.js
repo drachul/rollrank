@@ -493,9 +493,86 @@ function renderHeats() {
     ${onChampionship ? renderChampionshipStages() : `<section class="heat-list">${selectedDay.heats.map(heatEditor).join("")}</section>`}`;
 }
 
+function ladderLockedPlaceholder(label) {
+  return `<div class="ladder-placeholder"><span aria-hidden="true">🔒</span><p>${label}</p></div>`;
+}
+
+function ladderSkippedPlaceholder(stage) {
+  const note = stage.fieldSize
+    ? `${stage.fieldSize} racer${stage.fieldSize === 1 ? "" : "s"} advanced automatically.`
+    : "Nobody qualified for this stage.";
+  return `<div class="ladder-placeholder skip"><span aria-hidden="true">→</span><p>${note}</p></div>`;
+}
+
+function ladderHeatCard(heat, advancingIds) {
+  return `<article class="ladder-heat ${heat.complete ? "complete" : ""}">
+    <div class="ladder-heat-head"><span>Heat ${heat.heatNumber}</span><span class="${heat.complete ? "complete-chip" : "pending-chip"}">${heat.complete ? "Complete" : "In progress"}</span></div>
+    <ul class="ladder-entries">
+      ${heat.entries.map((entry) => `<li class="ladder-entry${advancingIds.has(entry.contestantId) ? " advancing" : ""}${entry.finish === 0 ? " dnf" : ""}">
+        ${marble(entry.color, "small")}<span>${escapeHtml(entry.name)}</span><b>${entry.points == null ? "" : `${entry.points}<small>pts</small>`}</b>
+      </li>`).join("")}
+    </ul>
+  </article>`;
+}
+
+function ladderStageColumn(stage, advancingIds, lockedLabel) {
+  if (!stage.ready) return ladderLockedPlaceholder(lockedLabel);
+  if (stage.skipped) return ladderSkippedPlaceholder(stage);
+  return `<div class="ladder-heats">${stage.heats.map((heat) => ladderHeatCard(heat, advancingIds)).join("")}</div>`;
+}
+
+function ladderFinalColumn(finalStage) {
+  if (!finalStage.ready) return ladderLockedPlaceholder("Preliminary results decide the final field.");
+  if (!finalStage.heat) return `<div class="ladder-placeholder"><span aria-hidden="true">—</span><p>No final field in this tournament.</p></div>`;
+  const entries = finalStage.heat.entries;
+  return `<article class="ladder-heat final ${finalStage.complete ? "complete" : ""}">
+    <div class="ladder-heat-head"><span>The Final</span><span class="${finalStage.complete ? "complete-chip" : "pending-chip"}">${finalStage.complete ? "Complete" : "In progress"}</span></div>
+    <ul class="ladder-entries">
+      ${entries.map((entry) => `<li class="ladder-entry${entry.finish === 1 ? " champion" : ""}${entry.finish === 0 ? " dnf" : ""}">
+        ${marble(entry.color, "small")}<span>${escapeHtml(entry.name)}</span><b>${entry.finish === 1 ? "🏆" : entry.points == null ? "" : `${entry.points}<small>pts</small>`}</b>
+      </li>`).join("")}
+    </ul>
+  </article>`;
+}
+
+function renderChampionshipLadder() {
+  const champ = state.championship;
+  const wildcardAdvancing = new Set(
+    champ.preliminary.heats
+      .flatMap((heat) => heat.entries)
+      .filter((entry) => entry.originStage === "wildcard")
+      .map((entry) => entry.contestantId)
+  );
+  const preliminaryAdvancing = new Set(
+    champ.final.heat
+      ? champ.final.heat.entries.filter((entry) => entry.originStage === "preliminary").map((entry) => entry.contestantId)
+      : []
+  );
+  return `<section class="panel ladder-panel">
+    <div class="panel-heading"><div><p class="eyebrow">Championship bracket</p><h2>Championship ladder</h2></div></div>
+    <div class="ladder">
+      <div class="ladder-column">
+        <div class="ladder-column-heading"><span>Stage 1</span><h3>Wildcard</h3></div>
+        ${ladderStageColumn(champ.wildcard, wildcardAdvancing, "Runs once every round heat is scored.")}
+      </div>
+      <div class="ladder-connector" aria-hidden="true">→</div>
+      <div class="ladder-column">
+        <div class="ladder-column-heading"><span>Stage 2</span><h3>Preliminary</h3></div>
+        ${ladderStageColumn(champ.preliminary, preliminaryAdvancing, "Runs once every wildcard heat is scored.")}
+      </div>
+      <div class="ladder-connector" aria-hidden="true">→</div>
+      <div class="ladder-column">
+        <div class="ladder-column-heading"><span>Stage 3</span><h3>Final</h3></div>
+        ${ladderFinalColumn(champ.final)}
+      </div>
+    </div>
+  </section>`;
+}
+
 function renderStandings() {
   const c = state.competition;
   return `${viewHeader("Live scoring", "Tournament standings", "Round totals update automatically whenever a heat result is saved.")}
+    ${renderChampionshipLadder()}
     <section class="panel table-panel"><div class="table-scroll"><table class="standings-table"><thead><tr><th>Rank</th><th>Racer</th>${Array.from({length:c.days}, (_, i) => `<th>Round ${i + 1}</th>`).join("")}<th>Wins</th><th>Total</th></tr></thead><tbody>
     ${state.standings.map((racer) => `<tr><td><span class="rank-badge">${racer.rank}</span></td><td><span class="racer-cell">${marble(racer.color, "small")}<strong>${escapeHtml(racer.name)}</strong></span></td>${racer.dayPoints.map((points) => `<td>${points}</td>`).join("")}<td>${racer.wins}</td><td><strong>${racer.totalPoints}</strong></td></tr>`).join("")}
     </tbody></table></div>
