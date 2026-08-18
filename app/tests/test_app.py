@@ -166,8 +166,8 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertEqual(len(summaries), 1)
         self.assertIsNotNone(summaries[0]["leader"])
         self.assertEqual(
-            summaries[0]["leader"]["totalPoints"],
-            max(racer["totalPoints"] for racer in updated["standings"]),
+            summaries[0]["leader"]["wins"],
+            max(racer["wins"] for racer in updated["standings"]),
         )
 
     def test_heat_dnf_scores_zero_and_completes_heat(self) -> None:
@@ -458,9 +458,11 @@ class MarbleRaceApiTest(unittest.TestCase):
 
         self.assertTrue(state["championship"]["wildcard"]["ready"])
         self.assertEqual(
-            sorted((racer["totalPoints"] for racer in state["standings"]), reverse=True),
-            [17, 17, 8, 8, 3, 3],
+            [racer["dayPlacements"][0] for racer in state["standings"]],
+            [1, 2, 3, 4, 5, 6],
         )
+        self.assertEqual(state["standings"][0]["wins"], 1)
+        self.assertEqual(sum(racer["wins"] for racer in state["standings"]), 1)
         wildcard_heats = state["championship"]["wildcard"]["heats"]
         self.assertTrue(wildcard_heats)
         self.assertTrue(

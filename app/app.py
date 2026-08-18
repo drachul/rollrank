@@ -114,7 +114,7 @@ def tournament_summaries(connection) -> list[dict[str, Any]]:
                     {
                         "name": leader["name"],
                         "color": leader["color"],
-                        "totalPoints": leader["totalPoints"],
+                        "wins": leader["wins"],
                     }
                     if leader
                     else None

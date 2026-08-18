@@ -466,47 +466,59 @@ def rebuild_schedule(connection: sqlite3.Connection, tournament_id: int) -> None
 def standings(
     connection: sqlite3.Connection, tournament_id: int
 ) -> list[dict[str, Any]]:
+    """Ranks racers by their placing within each staging round (1st, 2nd, ...)
+    rather than by points accumulated across the whole tournament. A racer's
+    rank is decided by how many rounds they placed 1st, then 2nd, then 3rd/4th,
+    with the sum of their round placings (lower is better) as a final tiebreak
+    before falling back to seed order.
+    """
     tournament = connection.execute(
         "SELECT days FROM tournaments WHERE id = ?", (tournament_id,)
     ).fetchone()
-    rows = connection.execute(
-        """
-        SELECT r.id, r.name, r.color, r.sort_order,
-               COALESCE(SUM(he.points), 0) AS total_points,
-               COALESCE(SUM(CASE WHEN he.finish = 1 THEN 1 ELSE 0 END), 0) AS wins
-        FROM racers r
-        LEFT JOIN heats h ON h.tournament_id = r.tournament_id AND h.stage = 'staging'
-        LEFT JOIN heat_entries he ON he.heat_id = h.id AND he.racer_id = r.id
-        WHERE r.tournament_id = ?
-        GROUP BY r.id
-        ORDER BY total_points DESC, wins DESC, r.sort_order ASC
-        """,
+    racers = connection.execute(
+        "SELECT id, name, color, sort_order FROM racers WHERE tournament_id = ? ORDER BY sort_order ASC",
         (tournament_id,),
     ).fetchall()
-    day_rows = connection.execute(
-        """
-        SELECT he.racer_id, h.day, COALESCE(SUM(he.points), 0) AS points
-        FROM heat_entries he
-        JOIN heats h ON h.id = he.heat_id
-        WHERE h.tournament_id = ? AND h.stage = 'staging'
-        GROUP BY he.racer_id, h.day
-        """,
-        (tournament_id,),
-    ).fetchall()
-    day_points = {(row["racer_id"], row["day"]): row["points"] for row in day_rows}
-    result = []
-    for rank, row in enumerate(rows, start=1):
-        result.append(
+
+    day_placements: dict[int, list[int | None]] = {row["id"]: [] for row in racers}
+    for day in range(1, tournament["days"] + 1):
+        ranking = round_standings(connection, tournament_id, day)
+        day_raced = any(row["totalPoints"] > 0 for row in ranking)
+        for row in ranking:
+            day_placements[row["id"]].append(row["rank"] if day_raced else None)
+
+    summaries = []
+    for row in racers:
+        placements = day_placements[row["id"]]
+        raced_placements = [place for place in placements if place is not None]
+        summaries.append(
             {
-                "rank": rank,
                 "id": row["id"],
                 "name": row["name"],
                 "color": row["color"],
-                "totalPoints": row["total_points"],
-                "wins": row["wins"],
-                "dayPoints": [day_points.get((row["id"], day), 0) for day in range(1, tournament["days"] + 1)],
+                "sortOrder": row["sort_order"],
+                "wins": sum(1 for place in placements if place == 1),
+                "seconds": sum(1 for place in placements if place == 2),
+                "thirdFourth": sum(1 for place in placements if place in (3, 4)),
+                "placementSum": sum(raced_placements),
+                "dayPlacements": placements,
             }
         )
+
+    summaries.sort(
+        key=lambda s: (
+            -s["wins"],
+            -s["seconds"],
+            -s["thirdFourth"],
+            s["placementSum"],
+            s["sortOrder"],
+        )
+    )
+    result = []
+    for rank, summary in enumerate(summaries, start=1):
+        del summary["sortOrder"]
+        del summary["placementSum"]
+        result.append({"rank": rank, **summary})
     return result
 
 
@@ -889,11 +901,7 @@ def final_field(
     if len(deduped) > max_final:
         overall = {row["id"]: row for row in standings(connection, tournament_id)}
         deduped.sort(
-            key=lambda candidate: (
-                -(overall.get(candidate["racerId"], {}).get("totalPoints") or 0),
-                -(overall.get(candidate["racerId"], {}).get("wins") or 0),
-                overall.get(candidate["racerId"], {}).get("rank", 10 ** 6),
-            )
+            key=lambda candidate: overall.get(candidate["racerId"], {}).get("rank", 10 ** 6)
         )
         trimmed = len(deduped) - max_final
         deduped = deduped[:max_final]

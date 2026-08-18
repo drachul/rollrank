@@ -20,6 +20,19 @@ LINE = HexColor("#D4DEE8")
 MUTED = HexColor("#698096")
 SOFT = HexColor("#EDF2F7")
 SKY = HexColor("#DCEEFF")
+GOLD_TINT = Color(244 / 255, 197 / 255, 66 / 255, alpha=0.35)
+SILVER_TINT = Color(203 / 255, 213 / 255, 223 / 255, alpha=0.5)
+BRONZE_TINT = Color(201 / 255, 130 / 255, 82 / 255, alpha=0.35)
+
+
+def placement_tint(place: int | None) -> Color | None:
+    if place == 1:
+        return GOLD_TINT
+    if place == 2:
+        return SILVER_TINT
+    if place in (3, 4):
+        return BRONZE_TINT
+    return None
 
 
 def ordinal(value: int) -> str:
@@ -142,7 +155,7 @@ def overview_pages(c: canvas.Canvas, state: dict[str, Any], width: float, height
         for racer_chunk in racer_chunks:
             page_index += 1
             badge = "STANDINGS" if page_count == 1 else f"STANDINGS {page_index}/{page_count}"
-            header(c, width, height, competition["name"], "Round points and overall tournament ranking", badge)
+            header(c, width, height, competition["name"], "Round placings and overall tournament ranking", badge)
             x = 32
             usable = width - 64
             metrics = [
@@ -184,7 +197,7 @@ def overview_pages(c: canvas.Canvas, state: dict[str, Any], width: float, height
                 c.drawCentredString(cursor + day_width / 2, table_top - 16, f"ROUND {day}")
                 cursor += day_width
             c.setFillColor(YELLOW)
-            c.drawCentredString(cursor + total_width / 2, table_top - 16, "TOTAL")
+            c.drawCentredString(cursor + total_width / 2, table_top - 16, "WINS")
             y = table_top - header_height
             for index, racer in enumerate(racer_chunk):
                 y -= row_height
@@ -197,17 +210,22 @@ def overview_pages(c: canvas.Canvas, state: dict[str, Any], width: float, height
                 c.drawString(x + 24, y + row_height / 2 - 2.5, fit_text(f'{racer["rank"]:02d}  {racer["name"]}', "Helvetica-Bold", 7.5, name_width - 30))
                 cursor = x + name_width
                 for day in day_chunk:
+                    place = racer["dayPlacements"][day - 1]
+                    tint = placement_tint(place)
+                    if tint is not None:
+                        c.setFillColor(tint)
+                        c.rect(cursor, y, day_width, row_height, fill=1, stroke=0)
                     c.setStrokeColor(LINE)
                     c.line(cursor, y, cursor, y + row_height)
-                    value = racer["dayPoints"][day - 1]
+                    label = ordinal(place) if place is not None else "–"
                     c.setFillColor(INK)
                     c.setFont("Helvetica-Bold", 7.5)
-                    c.drawCentredString(cursor + day_width / 2, y + row_height / 2 - 2.5, str(value))
+                    c.drawCentredString(cursor + day_width / 2, y + row_height / 2 - 2.5, label)
                     cursor += day_width
                 c.setFillColor(SKY)
                 c.rect(cursor, y, total_width, row_height, fill=1, stroke=1)
                 c.setFillColor(INK)
-                c.drawCentredString(cursor + total_width / 2, y + row_height / 2 - 2.5, str(racer["totalPoints"]))
+                c.drawCentredString(cursor + total_width / 2, y + row_height / 2 - 2.5, str(racer["wins"]))
             footer(c, width, page)
             c.showPage()
             page += 1

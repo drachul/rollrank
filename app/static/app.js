@@ -31,6 +31,9 @@ const ordinal = (value) => {
   return `${number}${({1:"st",2:"nd",3:"rd"})[number % 10] || "th"}`;
 };
 
+const placeLabel = (place) => place == null ? "–" : ordinal(place);
+const placeClass = (place) => place == null ? "" : ({1:"place-1st",2:"place-2nd",3:"place-3rd",4:"place-4th"})[place] || "";
+
 function notify(message, isError = false) {
   toast.textContent = message;
   toast.className = `toast show${isError ? " error" : ""}`;
@@ -191,7 +194,7 @@ function renderTournamentIndex(tournaments) {
     const status = tournamentStatus(tournament);
     const progress = tournament.totalHeats ? Math.round(tournament.completedHeats / tournament.totalHeats * 100) : 0;
     const leader = tournament.leader
-      ? `<div class="index-leader">${marble(tournament.leader.color, "small")}<div><small>Live leader</small><strong>${escapeHtml(tournament.leader.name)}</strong></div><b>${tournament.leader.totalPoints} pts</b></div>`
+      ? `<div class="index-leader">${marble(tournament.leader.color, "small")}<div><small>Live leader</small><strong>${escapeHtml(tournament.leader.name)}</strong></div><b>${tournament.leader.wins} win${tournament.leader.wins === 1 ? "" : "s"}</b></div>`
       : `<div class="index-leader empty">No results entered yet</div>`;
     return `<article class="tournament-index-card">
       <div class="index-card-top"><span class="index-status ${status.className}">${status.label}</span><span class="index-progress-count">${tournament.completedHeats}/${tournament.totalHeats} heats</span></div>
@@ -300,7 +303,7 @@ function renderDashboard() {
       </article>
       <article class="panel standings-preview">
         <div class="panel-heading"><div><p class="eyebrow">Live table</p><h2>Tournament standings</h2></div></div>
-        ${topRacers.map((racer) => `<div class="standing-row"><span class="rank">${racer.rank}</span>${marble(racer.color, "small")}<strong>${escapeHtml(racer.name)}</strong><span>${racer.totalPoints} pts</span></div>`).join("")}
+        ${topRacers.map((racer) => `<div class="standing-row"><span class="rank">${racer.rank}</span>${marble(racer.color, "small")}<strong>${escapeHtml(racer.name)}</strong><span>${racer.wins} win${racer.wins === 1 ? "" : "s"}</span></div>`).join("")}
         <button class="wide-link" data-view="standings">View full standings <span>→</span></button>
       </article>
     </section>`;
@@ -393,7 +396,7 @@ function renderKioskDashboard() {
     <div class="kiosk-overview">
       <article class="kiosk-leader-card">
         <p class="kiosk-card-label">Live leader</p>
-        <div class="kiosk-leader-racer">${marble(leader.color)}<div><strong>${escapeHtml(leader.name)}</strong><span>${leader.wins} heat win${leader.wins === 1 ? "" : "s"}</span></div><b>${leader.totalPoints}<small>pts</small></b></div>
+        <div class="kiosk-leader-racer">${marble(leader.color)}<div><strong>${escapeHtml(leader.name)}</strong><span>Round leader</span></div><b>${leader.wins}<small> win${leader.wins === 1 ? "" : "s"}</small></b></div>
       </article>
       <article class="kiosk-progress-card">
         <div class="kiosk-card-heading"><p class="kiosk-card-label">Heat progress</p><b>${c.completedHeats}/${c.totalHeats}</b></div>
@@ -405,7 +408,7 @@ function renderKioskDashboard() {
     <section class="kiosk-standings-panel">
       <header><div><p class="kiosk-card-label">Current standings</p><h2>Round-by-round leaderboard</h2></div></header>
       <div class="kiosk-standing-list">
-        ${visibleStandings.map((racer) => `<article><span class="kiosk-rank">${racer.rank}</span>${marble(racer.color, "small")}<strong>${escapeHtml(racer.name)}</strong><span class="kiosk-wins">${racer.wins} win${racer.wins === 1 ? "" : "s"}</span><b>${racer.totalPoints}<small> pts</small></b></article>`).join("")}
+        ${visibleStandings.map((racer) => `<article><span class="kiosk-rank">${racer.rank}</span>${marble(racer.color, "small")}<strong>${escapeHtml(racer.name)}</strong><b class="kiosk-wins">${racer.wins} win${racer.wins === 1 ? "" : "s"}</b></article>`).join("")}
       </div>
       <footer><span>Showing ${visibleStandings.length} of ${state.standings.length} racers</span><span>Updates automatically every 5 seconds</span></footer>
     </section>
@@ -571,15 +574,15 @@ function renderChampionshipLadder() {
 
 function renderStandings() {
   const c = state.competition;
-  return `${viewHeader("Live scoring", "Tournament standings", "Round totals update automatically whenever a heat result is saved.")}
+  return `${viewHeader("Live scoring", "Tournament standings", "Round placings update automatically whenever a heat result is saved.")}
     ${renderChampionshipLadder()}
-    <section class="panel table-panel"><div class="table-scroll"><table class="standings-table"><thead><tr><th>Rank</th><th>Racer</th>${Array.from({length:c.days}, (_, i) => `<th>Round ${i + 1}</th>`).join("")}<th>Wins</th><th>Total</th></tr></thead><tbody>
-    ${state.standings.map((racer) => `<tr><td><span class="rank-badge">${racer.rank}</span></td><td><span class="racer-cell">${marble(racer.color, "small")}<strong>${escapeHtml(racer.name)}</strong></span></td>${racer.dayPoints.map((points) => `<td>${points}</td>`).join("")}<td>${racer.wins}</td><td><strong>${racer.totalPoints}</strong></td></tr>`).join("")}
+    <section class="panel table-panel"><div class="table-scroll"><table class="standings-table"><thead><tr><th>Rank</th><th>Racer</th>${Array.from({length:c.days}, (_, i) => `<th>Round ${i + 1}</th>`).join("")}<th>Wins</th></tr></thead><tbody>
+    ${state.standings.map((racer) => `<tr><td><span class="rank-badge ${placeClass(racer.rank)}">${racer.rank}</span></td><td><span class="racer-cell">${marble(racer.color, "small")}<strong>${escapeHtml(racer.name)}</strong></span></td>${racer.dayPlacements.map((place) => `<td class="${placeClass(place)}">${placeLabel(place)}</td>`).join("")}<td><strong>${racer.wins}</strong></td></tr>`).join("")}
     </tbody></table></div>
     <div class="mobile-standings" aria-label="Mobile standings">
       ${state.standings.map((racer) => `<article class="mobile-standing-card">
-        <div class="mobile-standing-lead"><span class="rank-badge">${racer.rank}</span>${marble(racer.color, "small")}<strong>${escapeHtml(racer.name)}</strong><span class="mobile-total"><b>${racer.totalPoints}</b> pts</span></div>
-        <div class="mobile-standing-stats">${racer.dayPoints.map((points, index) => `<span><small>Round ${index + 1}</small><b>${points}</b></span>`).join("")}<span><small>Wins</small><b>${racer.wins}</b></span></div>
+        <div class="mobile-standing-lead"><span class="rank-badge ${placeClass(racer.rank)}">${racer.rank}</span>${marble(racer.color, "small")}<strong>${escapeHtml(racer.name)}</strong><span class="mobile-total"><b>${racer.wins}</b> win${racer.wins === 1 ? "" : "s"}</span></div>
+        <div class="mobile-standing-stats">${racer.dayPlacements.map((place, index) => `<span class="${placeClass(place)}"><small>Round ${index + 1}</small><b>${placeLabel(place)}</b></span>`).join("")}</div>
       </article>`).join("")}
     </div></section>`;
 }

@@ -272,6 +272,12 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible { 
 .standings-table tr.qualifying { background:rgba(47,128,237,.08); }
 .standings-table tr.qualifying td:first-child { border-left:3px solid var(--blue); }
 .rank-badge,.seed-number { display:inline-grid; width:25px; height:25px; place-items:center; border-radius:50%; background:rgba(47,128,237,.16); color:var(--blue-light); font-size:10px; font-weight:850; }
+.standings-table td.place-1st,.mobile-standing-stats span.place-1st { background:rgba(244,197,66,.18); color:var(--yellow); font-weight:850; }
+.standings-table td.place-2nd,.mobile-standing-stats span.place-2nd { background:rgba(201,213,220,.16); color:#cbd5df; font-weight:850; }
+.standings-table td.place-3rd,.standings-table td.place-4th,.mobile-standing-stats span.place-3rd,.mobile-standing-stats span.place-4th { background:rgba(201,130,82,.16); color:#c98252; font-weight:850; }
+.rank-badge.place-1st { background:rgba(244,197,66,.18); color:var(--yellow); }
+.rank-badge.place-2nd { background:rgba(201,213,220,.16); color:#cbd5df; }
+.rank-badge.place-3rd,.rank-badge.place-4th { background:rgba(201,130,82,.16); color:#c98252; }
 .racer-cell { display:flex; align-items:center; gap:9px; color:var(--ink); }
 .ladder-panel { margin-bottom:22px; }
 .ladder { display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr) auto minmax(0,1fr); align-items:start; gap:0 10px; }
@@ -458,15 +464,13 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible { 
 .kiosk-standings-panel>header h2 { margin:4px 0 0; color:#fff; font-size:clamp(18px,2vw,24px); letter-spacing:-.03em; }
 .kiosk-standings-panel>header>span { padding:8px 10px; border-radius:999px; background:rgba(244,197,66,.13); color:var(--yellow); font-size:9px; font-weight:900; text-transform:uppercase; }
 .kiosk-standing-list { display:grid; min-height:0; flex:1; grid-template-columns:repeat(2,minmax(0,1fr)); align-content:stretch; }
-.kiosk-standing-list article { display:grid; min-width:0; grid-template-columns:38px 30px minmax(0,1fr) auto 82px; align-items:center; gap:9px; padding:8px 18px; border-bottom:1px solid rgba(255,255,255,.1); }
+.kiosk-standing-list article { display:grid; min-width:0; grid-template-columns:38px 30px minmax(0,1fr) 82px; align-items:center; gap:9px; padding:8px 18px; border-bottom:1px solid rgba(255,255,255,.1); }
 .kiosk-standing-list article:nth-child(odd) { border-right:1px solid rgba(255,255,255,.1); }
 .kiosk-standing-list article.qualifying { background:rgba(47,128,237,.12); }
 .kiosk-standing-list article.qualifying .kiosk-rank { background:var(--blue); color:#fff; }
 .kiosk-rank { display:grid; width:30px; height:30px; place-items:center; border-radius:50%; background:rgba(255,255,255,.1); color:var(--muted); font-size:11px; font-weight:900; }
 .kiosk-standing-list article>strong { overflow:hidden; font-size:clamp(11px,1.3vw,16px); text-overflow:ellipsis; white-space:nowrap; }
-.kiosk-wins { color:var(--muted); font-size:9px; white-space:nowrap; }
-.kiosk-standing-list article>b { color:var(--blue-light); font-size:clamp(18px,2vw,27px); text-align:right; }
-.kiosk-standing-list article>b small { color:var(--muted); font-size:8px; text-transform:uppercase; }
+.kiosk-standing-list article>b.kiosk-wins { color:var(--blue-light); font-size:clamp(14px,1.6vw,20px); text-align:right; }
 .kiosk-standings-panel>footer { display:flex; min-height:35px; align-items:center; justify-content:space-between; padding:0 22px; border-top:1px solid rgba(255,255,255,.1); color:var(--muted); font-size:8px; font-weight:750; text-transform:uppercase; }
 .kiosk-final-dashboard { position:relative; overflow:hidden; }
 .kiosk-final-dashboard>:not(.kiosk-fireworks) { position:relative; z-index:2; }
@@ -743,7 +747,6 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible { 
   .kiosk-standing-list { grid-template-columns:1fr; }
   .kiosk-standing-list article:nth-child(odd) { border-right:0; }
   .kiosk-standing-list article { min-height:52px; grid-template-columns:34px 28px minmax(0,1fr) 62px; padding:7px 12px; }
-  .kiosk-wins { display:none; }
   .kiosk-standings-panel>header { padding:12px 15px; }
   .kiosk-standings-panel>footer { padding:0 15px; }
   .kiosk-standings-panel>footer span:first-child { display:none; }
