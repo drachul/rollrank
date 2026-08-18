@@ -8,10 +8,13 @@ from flask import Flask, jsonify, request, send_file
 
 from db import (
     calculate_racers_per_heat,
+    championship_field,
     completed_heat_count,
     connect,
+    consolidate_by_racer,
     create_tournament,
     final_field,
+    heat_top_n,
     init_db,
     is_staging_heat_locked,
     is_stage_complete,
@@ -180,6 +183,9 @@ def shape_heats(heat_rows) -> list[dict[str, Any]]:
                 "number": row["marble_number"],
                 "finish": row["finish"],
                 "points": row["points"],
+                "originStage": row["origin_stage"],
+                "originRound": row["origin_round"],
+                "originHeatId": row["origin_heat_id"],
             }
         )
     heats = list(heat_map.values())
@@ -202,8 +208,101 @@ def shape_heats(heat_rows) -> list[dict[str, Any]]:
     return heats
 
 
+def _resolve_seed_rounds(
+    connection, origin_stage: str | None, origin_round: int | None, origin_heat_id: int | None, racer_id: int, depth: int = 0
+) -> set[int]:
+    """The staging round(s) that ultimately produced a marble. A marble
+    seeded directly from a staging round (wildcard entries, and direct
+    preliminary/bye qualifiers) already carries that round. A marble seeded
+    by winning a prior championship heat (a preliminary entry advancing from
+    wildcard, or a final entry advancing from preliminary) only carries a
+    reference to that heat, so we look up the same racer's marbles there and
+    resolve recursively -- at most two hops (wildcard -> preliminary -> final).
+    """
+    if origin_stage in ("staging-round", "bye"):
+        return {origin_round} if origin_round is not None else set()
+    if origin_heat_id is None or depth > 3:
+        return set()
+    rows = connection.execute(
+        "SELECT DISTINCT origin_stage, origin_round, origin_heat_id FROM heat_entries WHERE heat_id = ? AND racer_id = ?",
+        (origin_heat_id, racer_id),
+    ).fetchall()
+    rounds: set[int] = set()
+    for row in rows:
+        rounds |= _resolve_seed_rounds(
+            connection, row["origin_stage"], row["origin_round"], row["origin_heat_id"], racer_id, depth + 1
+        )
+    return rounds
+
+
+def attach_seed_rounds(connection, heats: list[dict[str, Any]]) -> None:
+    """Annotate each championship-heat entry with seedRounds -- the sorted
+    staging round(s) behind every marble it's racing, so the ladder can show
+    where a multi-marble racer's marbles actually came from.
+    """
+    for heat in heats:
+        for entry in heat["entries"]:
+            if "originStage" not in entry:
+                continue
+            rounds: set[int] = set()
+            for marble in entry["marbles"]:
+                rounds |= _resolve_seed_rounds(
+                    connection,
+                    marble.get("originStage"),
+                    marble.get("originRound"),
+                    marble.get("originHeatId"),
+                    entry["contestantId"],
+                )
+            entry["seedRounds"] = sorted(rounds)
+
+
+def _projected_roster(
+    connection,
+    known_entries: list[dict[str, Any]],
+    source_heats: list[dict[str, Any]],
+    origin_stage: str,
+) -> list[dict[str, Any]]:
+    """The racers who will fill a locked stage, as far as that's knowable
+    right now: racers who already directly qualified (known_entries), plus
+    one slot per heat feeding into this stage -- the actual winner if that
+    heat is already scored, otherwise a TBD placeholder.
+    """
+    roster = [{**entry, "decided": True} for entry in known_entries]
+    for heat in source_heats:
+        winner_entry = None
+        if heat["complete"]:
+            winner_ids = heat_top_n(connection, heat["id"], 1)
+            if winner_ids:
+                winner_entry = next(
+                    (entry for entry in heat["entries"] if entry["contestantId"] == winner_ids[0]), None
+                )
+        if winner_entry:
+            roster.append(
+                {
+                    "contestantId": winner_entry["contestantId"],
+                    "name": winner_entry["name"],
+                    "color": winner_entry["color"],
+                    "originStage": origin_stage,
+                    "originHeatId": heat["id"],
+                    "seedRounds": winner_entry.get("seedRounds", []),
+                    "decided": True,
+                }
+            )
+        else:
+            roster.append(
+                {
+                    "originStage": origin_stage,
+                    "originHeatId": heat["id"],
+                    "heatNumber": heat["heatNumber"],
+                    "decided": False,
+                }
+            )
+    return roster
+
+
 def build_championship_state(connection, tournament_id: int, staging_ready: bool) -> dict[str, Any]:
     wildcard_heats = shape_heats(fetch_heat_rows(connection, tournament_id, "wildcard")) if staging_ready else []
+    attach_seed_rounds(connection, wildcard_heats)
     wildcard_complete = staging_ready and all(heat["complete"] for heat in wildcard_heats)
     wildcard_field_size = (
         sum(len(heat["entries"]) for heat in wildcard_heats)
@@ -215,6 +314,7 @@ def build_championship_state(connection, tournament_id: int, staging_ready: bool
     preliminary_heats = (
         shape_heats(fetch_heat_rows(connection, tournament_id, "preliminary")) if preliminary_ready else []
     )
+    attach_seed_rounds(connection, preliminary_heats)
     preliminary_complete = preliminary_ready and all(heat["complete"] for heat in preliminary_heats)
     preliminary_field_size = (
         sum(len(heat["entries"]) for heat in preliminary_heats)
@@ -222,8 +322,54 @@ def build_championship_state(connection, tournament_id: int, staging_ready: bool
         else (len(preliminary_field(connection, tournament_id)) if preliminary_ready else 0)
     )
 
+    racer_lookup: dict[int, dict[str, Any]] = {}
+    field = None
+    preliminary_projected: list[dict[str, Any]] = []
+    final_projected: list[dict[str, Any]] = []
+    if staging_ready:
+        racer_lookup = {
+            row["id"]: {"name": row["name"], "color": row["color"]}
+            for row in connection.execute("SELECT id, name, color FROM racers WHERE tournament_id = ?", (tournament_id,))
+        }
+        field = championship_field(connection, tournament_id)
+        if not preliminary_ready:
+            known_preliminary = [
+                {
+                    "contestantId": item["racerId"],
+                    "name": racer_lookup[item["racerId"]]["name"],
+                    "color": racer_lookup[item["racerId"]]["color"],
+                    "originStage": "staging-round",
+                    "originRound": item["originRound"],
+                    "marbleSlots": item["marbleSlots"],
+                    "seedRounds": sorted(
+                        {origin["originRound"] for origin in item["marbleOrigins"] if origin["originRound"] is not None}
+                    ),
+                }
+                for item in consolidate_by_racer(field["preliminaryDirect"])
+            ]
+            preliminary_projected = _projected_roster(connection, known_preliminary, wildcard_heats, "wildcard")
+
     final_ready = preliminary_ready and preliminary_complete
+    if staging_ready and not final_ready:
+        # The final always races one marble per racer even if a racer
+        # banked multiple bye rounds, so the preview shows them once.
+        known_final = [
+            {
+                "contestantId": item["racerId"],
+                "name": racer_lookup[item["racerId"]]["name"],
+                "color": racer_lookup[item["racerId"]]["color"],
+                "originStage": "bye",
+                "originRound": item["originRound"],
+                "seedRounds": sorted(
+                    {origin["originRound"] for origin in item["marbleOrigins"] if origin["originRound"] is not None}
+                ),
+            }
+            for item in consolidate_by_racer(field["byes"])
+        ]
+        final_projected = _projected_roster(connection, known_final, preliminary_heats, "preliminary")
+
     final_heats = shape_heats(fetch_heat_rows(connection, tournament_id, "final")) if final_ready else []
+    attach_seed_rounds(connection, final_heats)
     final_heat = final_heats[0] if final_heats else None
     final_complete = final_ready and final_heat is not None and final_heat["complete"]
     trimmed_count = 0
@@ -259,6 +405,7 @@ def build_championship_state(connection, tournament_id: int, staging_ready: bool
             "heats": preliminary_heats,
             "fieldSize": preliminary_field_size,
             "skipped": preliminary_ready and not preliminary_heats,
+            "projectedEntries": preliminary_projected,
         },
         "final": {
             "ready": final_ready,
@@ -267,6 +414,7 @@ def build_championship_state(connection, tournament_id: int, staging_ready: bool
             "champion": champion,
             "byeCount": bye_count,
             "trimmedCount": trimmed_count,
+            "projectedEntries": final_projected,
         },
     }
 

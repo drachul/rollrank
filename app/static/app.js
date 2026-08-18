@@ -33,6 +33,8 @@ const ordinal = (value) => {
 
 const placeLabel = (place) => place == null ? "–" : ordinal(place);
 const placeClass = (place) => place == null ? "" : ({1:"place-1st",2:"place-2nd",3:"place-3rd",4:"place-4th"})[place] || "";
+const tierLabel = {bye: "Bye", preliminary: "Preliminary", wildcard: "Wildcard"};
+const tierClass = (tier) => tier ? `tier-${tier}` : "";
 
 function notify(message, isError = false) {
   toast.textContent = message;
@@ -500,6 +502,29 @@ function ladderLockedPlaceholder(label) {
   return `<div class="ladder-placeholder"><span aria-hidden="true">🔒</span><p>${label}</p></div>`;
 }
 
+function seedRoundsTag(seedRounds) {
+  if (!seedRounds || !seedRounds.length) return "";
+  const label = seedRounds.length === 1 ? `Round ${seedRounds[0]}` : `Rounds ${seedRounds.join(", ")}`;
+  return `<small class="seed-tag">${label}</small>`;
+}
+
+function ladderEntryLabel(name, marbleCount, seedRounds) {
+  return `<div class="ladder-entry-info"><span>${escapeHtml(name)}${marbleCount > 1 ? ` <span class="marble-count">×${marbleCount}</span>` : ""}</span>${seedRoundsTag(seedRounds)}</div>`;
+}
+
+function ladderProjectedRoster(entries, lockedLabel) {
+  return `<div class="ladder-heat projected">
+    <div class="ladder-heat-head"><span aria-hidden="true">🔒</span><span>Not yet locked in</span></div>
+    <ul class="ladder-entries">
+      ${entries.map((entry) => entry.decided
+        ? `<li class="ladder-entry ${tierClass(entry.originStage === "wildcard" ? "wildcard" : entry.originStage === "bye" ? "bye" : "preliminary")}">${marble(entry.color, "small")}${ladderEntryLabel(entry.name, entry.marbleSlots || 1, entry.seedRounds)}</li>`
+        : `<li class="ladder-entry pending"><span class="tbd-marble" aria-hidden="true">?</span><span>Heat ${entry.heatNumber} winner</span><b>TBD</b></li>`
+      ).join("")}
+    </ul>
+    <p class="ladder-projected-note">${lockedLabel}</p>
+  </div>`;
+}
+
 function ladderSkippedPlaceholder(stage) {
   const note = stage.fieldSize
     ? `${stage.fieldSize} racer${stage.fieldSize === 1 ? "" : "s"} advanced automatically.`
@@ -507,32 +532,40 @@ function ladderSkippedPlaceholder(stage) {
   return `<div class="ladder-placeholder skip"><span aria-hidden="true">→</span><p>${note}</p></div>`;
 }
 
-function ladderHeatCard(heat, advancingIds) {
+function ladderHeatCard(heat, advancingIds, advancingTierClass) {
   return `<article class="ladder-heat ${heat.complete ? "complete" : ""}">
     <div class="ladder-heat-head"><span>Heat ${heat.heatNumber}</span><span class="${heat.complete ? "complete-chip" : "pending-chip"}">${heat.complete ? "Complete" : "In progress"}</span></div>
     <ul class="ladder-entries">
-      ${heat.entries.map((entry) => `<li class="ladder-entry${advancingIds.has(entry.contestantId) ? " advancing" : ""}${entry.finish === 0 ? " dnf" : ""}">
-        ${marble(entry.color, "small")}<span>${escapeHtml(entry.name)}</span><b>${entry.points == null ? "" : `${entry.points}<small>pts</small>`}</b>
+      ${heat.entries.map((entry) => `<li class="ladder-entry${advancingIds.has(entry.contestantId) ? " " + advancingTierClass : ""}${entry.finish === 0 ? " dnf" : ""}">
+        ${marble(entry.color, "small")}${ladderEntryLabel(entry.name, entry.marbles.length, entry.seedRounds)}<b>${entry.points == null ? "" : `${entry.points}<small>pts</small>`}</b>
       </li>`).join("")}
     </ul>
   </article>`;
 }
 
-function ladderStageColumn(stage, advancingIds, lockedLabel) {
-  if (!stage.ready) return ladderLockedPlaceholder(lockedLabel);
+function ladderStageColumn(stage, advancingIds, advancingTierClass, lockedLabel) {
+  if (!stage.ready) {
+    if (stage.projectedEntries && stage.projectedEntries.length) return ladderProjectedRoster(stage.projectedEntries, lockedLabel);
+    return ladderLockedPlaceholder(lockedLabel);
+  }
   if (stage.skipped) return ladderSkippedPlaceholder(stage);
-  return `<div class="ladder-heats">${stage.heats.map((heat) => ladderHeatCard(heat, advancingIds)).join("")}</div>`;
+  return `<div class="ladder-heats">${stage.heats.map((heat) => ladderHeatCard(heat, advancingIds, advancingTierClass)).join("")}</div>`;
 }
 
-function ladderFinalColumn(finalStage) {
-  if (!finalStage.ready) return ladderLockedPlaceholder("Preliminary results decide the final field.");
+function ladderFinalColumn(finalStage, preliminaryAdvancing) {
+  if (!finalStage.ready) {
+    if (finalStage.projectedEntries && finalStage.projectedEntries.length) {
+      return ladderProjectedRoster(finalStage.projectedEntries, "Preliminary results decide the final field.");
+    }
+    return ladderLockedPlaceholder("Preliminary results decide the final field.");
+  }
   if (!finalStage.heat) return `<div class="ladder-placeholder"><span aria-hidden="true">—</span><p>No final field in this tournament.</p></div>`;
   const entries = finalStage.heat.entries;
   return `<article class="ladder-heat final ${finalStage.complete ? "complete" : ""}">
     <div class="ladder-heat-head"><span>The Final</span><span class="${finalStage.complete ? "complete-chip" : "pending-chip"}">${finalStage.complete ? "Complete" : "In progress"}</span></div>
     <ul class="ladder-entries">
-      ${entries.map((entry) => `<li class="ladder-entry${entry.finish === 1 ? " champion" : ""}${entry.finish === 0 ? " dnf" : ""}">
-        ${marble(entry.color, "small")}<span>${escapeHtml(entry.name)}</span><b>${entry.finish === 1 ? "🏆" : entry.points == null ? "" : `${entry.points}<small>pts</small>`}</b>
+      ${entries.map((entry) => `<li class="ladder-entry${entry.finish === 1 ? " champion" : preliminaryAdvancing.has(entry.contestantId) ? " tier-preliminary" : ""}${entry.finish === 0 ? " dnf" : ""}">
+        ${marble(entry.color, "small")}${ladderEntryLabel(entry.name, 1, entry.seedRounds)}<b>${entry.finish === 1 ? "🏆" : entry.points == null ? "" : `${entry.points}<small>pts</small>`}</b>
       </li>`).join("")}
     </ul>
   </article>`;
@@ -556,17 +589,17 @@ function renderChampionshipLadder() {
     <div class="ladder">
       <div class="ladder-column">
         <div class="ladder-column-heading"><span>Stage 1</span><h3>Wildcard</h3></div>
-        ${ladderStageColumn(champ.wildcard, wildcardAdvancing, "Runs once every round heat is scored.")}
+        ${ladderStageColumn(champ.wildcard, wildcardAdvancing, "tier-wildcard", "Runs once every round heat is scored.")}
       </div>
       <div class="ladder-connector" aria-hidden="true">→</div>
       <div class="ladder-column">
         <div class="ladder-column-heading"><span>Stage 2</span><h3>Preliminary</h3></div>
-        ${ladderStageColumn(champ.preliminary, preliminaryAdvancing, "Runs once every wildcard heat is scored.")}
+        ${ladderStageColumn(champ.preliminary, preliminaryAdvancing, "tier-preliminary", "Runs once every wildcard heat is scored.")}
       </div>
       <div class="ladder-connector" aria-hidden="true">→</div>
       <div class="ladder-column">
         <div class="ladder-column-heading"><span>Stage 3</span><h3>Final</h3></div>
-        ${ladderFinalColumn(champ.final)}
+        ${ladderFinalColumn(champ.final, preliminaryAdvancing)}
       </div>
     </div>
   </section>`;
@@ -577,12 +610,12 @@ function renderStandings() {
   return `${viewHeader("Live scoring", "Tournament standings", "Round placings update automatically whenever a heat result is saved.")}
     ${renderChampionshipLadder()}
     <section class="panel table-panel"><div class="table-scroll"><table class="standings-table"><thead><tr><th>Rank</th><th>Racer</th>${Array.from({length:c.days}, (_, i) => `<th>Round ${i + 1}</th>`).join("")}<th>Wins</th></tr></thead><tbody>
-    ${state.standings.map((racer) => `<tr><td><span class="rank-badge ${placeClass(racer.rank)}">${racer.rank}</span></td><td><span class="racer-cell">${marble(racer.color, "small")}<strong>${escapeHtml(racer.name)}</strong></span></td>${racer.dayPlacements.map((place) => `<td class="${placeClass(place)}">${placeLabel(place)}</td>`).join("")}<td><strong>${racer.wins}</strong></td></tr>`).join("")}
+    ${state.standings.map((racer) => `<tr><td><span class="rank-badge ${placeClass(racer.rank)}">${racer.rank}</span></td><td><span class="racer-cell">${marble(racer.color, "small")}<strong>${escapeHtml(racer.name)}</strong></span></td>${racer.dayPlacements.map((place, index) => `<td class="${tierClass(racer.dayChampionshipTiers[index])}">${placeLabel(place)}${racer.dayChampionshipTiers[index] ? `<small class="tier-tag">${tierLabel[racer.dayChampionshipTiers[index]]}</small>` : ""}</td>`).join("")}<td><strong>${racer.wins}</strong></td></tr>`).join("")}
     </tbody></table></div>
     <div class="mobile-standings" aria-label="Mobile standings">
       ${state.standings.map((racer) => `<article class="mobile-standing-card">
         <div class="mobile-standing-lead"><span class="rank-badge ${placeClass(racer.rank)}">${racer.rank}</span>${marble(racer.color, "small")}<strong>${escapeHtml(racer.name)}</strong><span class="mobile-total"><b>${racer.wins}</b> win${racer.wins === 1 ? "" : "s"}</span></div>
-        <div class="mobile-standing-stats">${racer.dayPlacements.map((place, index) => `<span class="${placeClass(place)}"><small>Round ${index + 1}</small><b>${placeLabel(place)}</b></span>`).join("")}</div>
+        <div class="mobile-standing-stats">${racer.dayPlacements.map((place, index) => `<span class="${tierClass(racer.dayChampionshipTiers[index])}"><small>Round ${index + 1}</small><b>${placeLabel(place)}</b>${racer.dayChampionshipTiers[index] ? `<small class="tier-tag">${tierLabel[racer.dayChampionshipTiers[index]]}</small>` : ""}</span>`).join("")}</div>
       </article>`).join("")}
     </div></section>`;
 }
@@ -671,7 +704,7 @@ function renderSetup() {
     <form id="config-form" class="setup-grid">
       <section class="panel config-panel"><div class="section-title"><span>01</span><div><h2>Tournament format</h2><p>Name the event and define its schedule.</p></div></div>
         <label class="field wide"><span>Tournament name</span><input name="name" value="${escapeHtml(c.name)}" maxlength="80" required></label>
-        <div class="field-grid"><label class="field"><span>Race rounds</span><input name="days" type="number" min="1" max="30" value="${c.days}" required></label><label class="field"><span>Heats per racer / round</span><input name="heatsPerRacerPerDay" type="number" min="1" max="20" value="${c.heatsPerRacerPerDay}" required></label><label class="field"><span>Max marbles per heat</span><input name="maxMarblesPerHeat" type="number" min="2" max="480" value="${c.maxMarblesPerHeat}" required><small>The app automatically chooses the largest full heat under this limit.</small></label><label class="field"><span>Marbles per racer / heat</span><input name="marblesPerRacer" type="number" min="1" max="20" value="${c.marblesPerRacer}" required><small>Applies to round heats, wildcard, and preliminary heats.</small></label><label class="field"><span>Max marbles per championship heat</span><input name="championshipMaxMarblesPerHeat" type="number" min="2" max="480" value="${c.championshipMaxMarblesPerHeat}" required><small>Sizes wildcard and preliminary heats automatically.</small></label><label class="field"><span>Max bye marbles per racer</span><input name="maxByeMarblesPerRacer" type="number" min="0" max="20" value="${c.maxByeMarblesPerRacer}" required><small>Caps how many round wins one racer can bank as byes into the final.</small></label><label class="field"><span>Max final racers</span><input name="maxFinalRacers" type="number" min="2" max="24" value="${c.maxFinalRacers}" required><small>Trims the final field if byes and preliminary winners exceed this.</small></label></div>
+        <div class="field-grid"><label class="field"><span>Race rounds</span><input name="days" type="number" min="1" max="30" value="${c.days}" required></label><label class="field"><span>Heats per racer / round</span><input name="heatsPerRacerPerDay" type="number" min="1" max="20" value="${c.heatsPerRacerPerDay}" required></label><label class="field"><span>Max marbles per heat</span><input name="maxMarblesPerHeat" type="number" min="2" max="480" value="${c.maxMarblesPerHeat}" required><small>The app automatically chooses the largest full heat under this limit.</small></label><label class="field"><span>Marbles per racer / heat</span><input name="marblesPerRacer" type="number" min="1" max="20" value="${c.marblesPerRacer}" required><small>Applies to round heats only.</small></label><label class="field"><span>Max marbles per championship heat</span><input name="championshipMaxMarblesPerHeat" type="number" min="2" max="480" value="${c.championshipMaxMarblesPerHeat}" required><small>Sizes wildcard and preliminary heats automatically.</small></label><label class="field"><span>Max bye marbles per racer</span><input name="maxByeMarblesPerRacer" type="number" min="0" max="20" value="${c.maxByeMarblesPerRacer}" required><small>Caps how many round wins one racer can bank as byes, and how many marbles a racer can earn in the preliminary heat. Wildcard marbles are uncapped.</small></label><label class="field"><span>Max final racers</span><input name="maxFinalRacers" type="number" min="2" max="24" value="${c.maxFinalRacers}" required><small>Trims the final field if byes and preliminary winners exceed this.</small></label></div>
         <div class="schedule-preview" id="schedule-preview"><strong>${c.heatsPerDay} heats per round · ${c.racersPerHeat} racers per heat</strong><span>Every racer appears ${c.heatsPerRacerPerDay} times each round; each heat uses ${c.marblesPerHeat} of the ${c.maxMarblesPerHeat} allowed marbles.</span></div>
         <label class="field wide"><span>Points by finishing place</span><input name="points" value="${state.points.join(", ")}" required><small>Comma-separated, starting with first place. Missing places receive zero points.</small></label>
       </section>

@@ -480,12 +480,23 @@ def standings(
         (tournament_id,),
     ).fetchall()
 
+    field = championship_field(connection, tournament_id)
+    day_tier: dict[tuple[int, int], str] = {}
+    for item in field["byes"]:
+        day_tier[(item["originRound"], item["racerId"])] = "bye"
+    for item in field["preliminaryDirect"]:
+        day_tier.setdefault((item["originRound"], item["racerId"]), "preliminary")
+    for item in field["wildcardPool"]:
+        day_tier.setdefault((item["originRound"], item["racerId"]), "wildcard")
+
     day_placements: dict[int, list[int | None]] = {row["id"]: [] for row in racers}
+    day_tiers: dict[int, list[str | None]] = {row["id"]: [] for row in racers}
     for day in range(1, tournament["days"] + 1):
         ranking = round_standings(connection, tournament_id, day)
         day_raced = any(row["totalPoints"] > 0 for row in ranking)
         for row in ranking:
             day_placements[row["id"]].append(row["rank"] if day_raced else None)
+            day_tiers[row["id"]].append(day_tier.get((day, row["id"])) if day_raced else None)
 
     summaries = []
     for row in racers:
@@ -502,6 +513,7 @@ def standings(
                 "thirdFourth": sum(1 for place in placements if place in (3, 4)),
                 "placementSum": sum(raced_placements),
                 "dayPlacements": placements,
+                "dayChampionshipTiers": day_tiers[row["id"]],
             }
         )
 
@@ -621,11 +633,16 @@ def is_staging_heat_locked(connection: sqlite3.Connection, tournament_id: int, g
     return row is not None
 
 
-def stage_racer_ids(
+def stage_racer_marbles(
     connection: sqlite3.Connection, tournament_id: int, stage: str
-) -> list[int] | None:
-    """Sorted distinct racer ids currently in a stage's heats, or None if the
-    stage has no heats at all (distinct from "heats exist but are empty")."""
+) -> list[tuple[int, int, int | None, int | None]] | None:
+    """Sorted (racer_id, marble_count, origin_round, origin_heat_id) tuples
+    currently in a stage's heats, or None if the stage has no heats at all
+    (distinct from "heats exist but are empty"). Marble counts and origin
+    metadata, not just racer identity, must match the prospective field -- a
+    racer who keeps qualifying but earns a different number of marbles, or
+    the same slot from a different round/heat, still needs the stage
+    rebuilt so its origin metadata doesn't go stale."""
     heats = connection.execute(
         "SELECT id FROM heats WHERE tournament_id = ? AND stage = ?", (tournament_id, stage)
     ).fetchall()
@@ -633,10 +650,18 @@ def stage_racer_ids(
         return None
     placeholders = ",".join("?" * len(heats))
     rows = connection.execute(
-        f"SELECT DISTINCT racer_id FROM heat_entries WHERE heat_id IN ({placeholders})",
+        f"""
+        SELECT racer_id, COUNT(*) AS marble_count,
+               MIN(origin_round) AS origin_round, MIN(origin_heat_id) AS origin_heat_id
+        FROM heat_entries
+        WHERE heat_id IN ({placeholders})
+        GROUP BY racer_id
+        """,
         [row["id"] for row in heats],
     ).fetchall()
-    return sorted(row["racer_id"] for row in rows)
+    return sorted(
+        (row["racer_id"], row["marble_count"], row["origin_round"], row["origin_heat_id"]) for row in rows
+    )
 
 
 def heat_top_n(connection: sqlite3.Connection, heat_id: int, n: int) -> list[int]:
@@ -658,57 +683,83 @@ def heat_top_n(connection: sqlite3.Connection, heat_id: int, n: int) -> list[int
 
 
 def championship_field(connection: sqlite3.Connection, tournament_id: int) -> dict[str, list[dict[str, Any]]]:
-    """Pure computation over every staging round's round_standings(): rank 1 is a
-    bye candidate, rank 2 goes straight to preliminary, ranks 3-4 go to the
-    wildcard pool, rank 5+ is eliminated. Bye wins beyond max_bye_marbles_per_racer
-    are forfeited (earliest wins kept, by day ascending) -- no reassignment.
+    """Pure computation over every staging round's round_standings().
 
-    In the shared-pool model every racer competes in every round, so the same
-    racer can land in the advancement zone (#1-4) of more than one round. Each
-    racer gets exactly one slot in the bracket, at their best tier (bye beats
-    preliminary-direct beats wildcard) -- otherwise the same racer_id could be
-    inserted into the same wildcard/preliminary heat more than once.
+    Tier priority is bye > preliminary > wildcard: a racer who ever wins a
+    round (rank 1) is permanently ineligible for preliminary or wildcard,
+    even in rounds where they didn't win. Each round's rank-1 finisher is
+    always its bye candidate -- no cascading, no reassignment; wins beyond
+    max_bye_marbles_per_racer are simply forfeited (earliest wins kept, by
+    day ascending).
+
+    A round's preliminary candidate is normally its rank-2 finisher, but if
+    that racer is already bye-ineligible, we cascade down the round's own
+    standings (rank 3, 4, ...) until we reach someone who isn't. The
+    wildcard pool then draws two seats per round from whoever's left after
+    the bye and preliminary claims.
+
+    In the shared-pool model every racer competes in every round, so the
+    same racer can qualify for the same tier in more than one round. Rather
+    than keeping only their single best slot, each racer's qualifying
+    occurrences (by day ascending) become separate marbles in that tier's
+    heat. max_bye_marbles_per_racer caps this for the bye and preliminary
+    tiers only -- wildcard marbles are uncapped, since a round's two
+    wildcard seats are filled fresh from whoever's left every time (unlike
+    bye/preliminary, a racer's wildcard occurrence in one round is never
+    "spent" in a way that would leave another round's seat empty).
     """
     tournament = connection.execute(
         "SELECT * FROM tournaments WHERE id = ?", (tournament_id,)
     ).fetchone()
+    marble_cap = tournament["max_bye_marbles_per_racer"]
+
+    rankings: dict[int, list[dict[str, Any]]] = {}
     bye_wins: dict[int, list[int]] = {}
-    prelim_occurrences: dict[int, list[tuple[int, int]]] = {}
-    wildcard_occurrences: dict[int, list[tuple[int, int]]] = {}
     for day in range(1, tournament["days"] + 1):
         ranking = round_standings(connection, tournament_id, day)
-        if len(ranking) >= 1:
+        rankings[day] = ranking
+        if ranking:
             bye_wins.setdefault(ranking[0]["id"], []).append(day)
-        if len(ranking) >= 2:
-            prelim_occurrences.setdefault(ranking[1]["id"], []).append(
-                (day, ranking[1]["totalPoints"])
-            )
-        for rank_row in ranking[2:4]:
-            wildcard_occurrences.setdefault(rank_row["id"], []).append(
-                (day, rank_row["totalPoints"])
-            )
 
-    bye_cap = tournament["max_bye_marbles_per_racer"]
     byes: list[dict[str, Any]] = []
     for racer_id, days_won in bye_wins.items():
-        for day in sorted(days_won)[:bye_cap]:
+        for day in sorted(days_won)[:marble_cap]:
             byes.append({"racerId": racer_id, "originRound": day})
     bye_racer_ids = set(bye_wins.keys())
 
+    # Each round's preliminary occurrence is the first (highest-ranked)
+    # finisher who isn't bye-ineligible -- normally rank 2, but cascading
+    # past bye-tier racers as far down the standings as it takes.
+    prelim_occurrences: dict[int, list[tuple[int, int]]] = {}
+    for day, ranking in rankings.items():
+        for rank_row in ranking[1:]:
+            if rank_row["id"] in bye_racer_ids:
+                continue
+            prelim_occurrences.setdefault(rank_row["id"], []).append(
+                (day, rank_row["totalPoints"])
+            )
+            break
+
     preliminary_direct: list[dict[str, Any]] = []
     for racer_id, occurrences in prelim_occurrences.items():
-        if racer_id in bye_racer_ids:
-            continue
-        day, points = sorted(occurrences)[0]
-        preliminary_direct.append({"racerId": racer_id, "originRound": day, "points": points})
-    preliminary_racer_ids = {item["racerId"] for item in preliminary_direct}
+        for day, points in sorted(occurrences)[:marble_cap]:
+            preliminary_direct.append({"racerId": racer_id, "originRound": day, "points": points})
+    preliminary_racer_ids = set(prelim_occurrences.keys())
 
+    # Each round's wildcard seats are the first two finishers, in rank
+    # order, who aren't themselves bye- or preliminary-tier -- uncapped, so
+    # a racer eligible in several rounds races a marble for each one.
     wildcard_pool: list[dict[str, Any]] = []
-    for racer_id, occurrences in wildcard_occurrences.items():
-        if racer_id in bye_racer_ids or racer_id in preliminary_racer_ids:
-            continue
-        day, points = sorted(occurrences)[0]
-        wildcard_pool.append({"racerId": racer_id, "originRound": day, "points": points})
+    for day, ranking in rankings.items():
+        eligible = [
+            rank_row
+            for rank_row in ranking[1:]
+            if rank_row["id"] not in bye_racer_ids and rank_row["id"] not in preliminary_racer_ids
+        ]
+        for rank_row in eligible[:2]:
+            wildcard_pool.append(
+                {"racerId": rank_row["id"], "originRound": day, "points": rank_row["totalPoints"]}
+            )
 
     return {"byes": byes, "preliminaryDirect": preliminary_direct, "wildcardPool": wildcard_pool}
 
@@ -781,8 +832,15 @@ def _insert_championship_heat(
     heat_number: int,
     global_number: int,
     participants: Sequence[dict[str, Any]],
-    marbles_per_racer: int,
+    default_marbles_per_racer: int = 1,
 ) -> int:
+    """Each participant races default_marbles_per_racer marbles, unless it
+    carries its own marbleSlots count (wildcard/preliminary entrants who
+    qualified more than once race one marble per qualifying occurrence).
+    Each marble is tagged with its own origin (from marbleOrigins, when
+    present) rather than the entry's single representative origin, since a
+    racer's marbles can trace back to different staging rounds.
+    """
     cursor = connection.execute(
         """
         INSERT INTO heats (tournament_id, stage, day, heat_number, global_number)
@@ -791,35 +849,79 @@ def _insert_championship_heat(
         (tournament_id, stage, heat_number, global_number),
     )
     heat_id = int(cursor.lastrowid)
+    rows = []
+    for lane, entry in enumerate(participants, start=1):
+        marble_count = entry.get("marbleSlots", default_marbles_per_racer)
+        origins = entry.get("marbleOrigins")
+        for marble_number in range(1, marble_count + 1):
+            origin = origins[marble_number - 1] if origins else entry
+            rows.append(
+                (
+                    heat_id,
+                    lane,
+                    entry["racerId"],
+                    marble_number,
+                    origin.get("originStage"),
+                    origin.get("originRound"),
+                    origin.get("originHeatId"),
+                )
+            )
     connection.executemany(
         """
         INSERT INTO heat_entries
             (heat_id, lane, racer_id, marble_number, origin_stage, origin_round, origin_heat_id)
         VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        [
-            (
-                heat_id,
-                lane,
-                entry["racerId"],
-                marble_number,
-                entry.get("originStage"),
-                entry.get("originRound"),
-                entry.get("originHeatId"),
-            )
-            for lane, entry in enumerate(participants, start=1)
-            for marble_number in range(1, marbles_per_racer + 1)
-        ],
+        rows,
     )
     return heat_id
 
 
+def consolidate_by_racer(entries: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge multiple per-occurrence qualifying entries for the same racer
+    into a single participant record carrying a marbleSlots count, so a
+    racer who qualified more than once races every earned marble in one
+    heat instead of being split across heats or colliding on marble_number.
+
+    Each occurrence's own origin metadata is kept, per marble, in
+    marbleOrigins (in origin-round order) -- a racer's marbles can come from
+    different staging rounds, so this is what lets a heat entry later report
+    exactly which round(s) seeded it, not just its earliest one. The
+    earliest occurrence's metadata also represents the entry itself, for
+    callers that only need a single origin (bucketing, cap comparisons).
+    """
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    order: list[int] = []
+    for entry in entries:
+        racer_id = entry["racerId"]
+        if racer_id not in grouped:
+            order.append(racer_id)
+        grouped.setdefault(racer_id, []).append(entry)
+    consolidated = []
+    for racer_id in order:
+        occurrences = sorted(grouped[racer_id], key=lambda item: item.get("originRound") or 0)
+        primary = occurrences[0]
+        merged = dict(primary)
+        merged["marbleSlots"] = len(occurrences)
+        merged["marbleOrigins"] = [
+            {
+                "originStage": item.get("originStage"),
+                "originRound": item.get("originRound"),
+                "originHeatId": item.get("originHeatId"),
+            }
+            for item in occurrences
+        ]
+        consolidated.append(merged)
+    return consolidated
+
+
 def wildcard_field(connection: sqlite3.Connection, tournament_id: int) -> list[dict[str, Any]]:
     field = championship_field(connection, tournament_id)
-    return [
+    entries = [
         {"racerId": item["racerId"], "originStage": "staging-round", "originRound": item["originRound"]}
         for item in field["wildcardPool"]
     ]
+    return consolidate_by_racer(entries)
 
 
 def preliminary_field(connection: sqlite3.Connection, tournament_id: int) -> list[dict[str, Any]]:
@@ -839,7 +941,7 @@ def preliminary_field(connection: sqlite3.Connection, tournament_id: int) -> lis
     ).fetchall()
     if wildcard_heats:
         for heat_row in wildcard_heats:
-            for racer_id in heat_top_n(connection, heat_row["id"], 2):
+            for racer_id in heat_top_n(connection, heat_row["id"], 1):
                 entries.append(
                     {
                         "racerId": racer_id,
@@ -858,7 +960,7 @@ def preliminary_field(connection: sqlite3.Connection, tournament_id: int) -> lis
                     "bucketKey": ("round", item["originRound"]),
                 }
             )
-    return entries
+    return consolidate_by_racer(entries)
 
 
 def final_field(
@@ -884,7 +986,11 @@ def final_field(
                 )
     else:
         for entry in preliminary_field(connection, tournament_id):
-            skipped = {key: value for key, value in entry.items() if key != "bucketKey"}
+            skipped = {
+                key: value
+                for key, value in entry.items()
+                if key not in ("bucketKey", "marbleSlots", "marbleOrigins")
+            }
             skipped["originStage"] = "stage-skip"
             candidates.append(skipped)
 
@@ -908,6 +1014,51 @@ def final_field(
     return deduped, trimmed
 
 
+def _wildcard_groups_with_marble_splitting(
+    entries: Sequence[dict[str, Any]], heat_count: int, seed: int
+) -> list[list[dict[str, Any]]]:
+    """Group wildcard entries into heat_count heats, splitting a racer's
+    marbleSlots evenly across multiple heats when they have more marbles
+    than a single heat should absorb -- instead of crowding out other
+    racers by stacking every marble from one racer into one heat.
+
+    interleave_groups() first decides each racer's "anchor" heat the usual
+    way (spread by origin round). A racer with only one marble stays there.
+    A racer with more marbles fans out chunk_count = min(marbleSlots,
+    heat_count) chunks starting at their anchor and stepping to the next
+    heat index each time (wrapping around), which -- because chunk_count
+    never exceeds heat_count -- guarantees no two chunks from the same
+    racer ever land in the same heat (that would collide on marble_number).
+    """
+    if heat_count <= 1:
+        return interleave_groups(entries, heat_count, seed, lambda entry: entry["originRound"])
+    anchor_groups = interleave_groups(entries, heat_count, seed, lambda entry: entry["originRound"])
+    anchor_index = {
+        entry["racerId"]: index for index, group in enumerate(anchor_groups) for entry in group
+    }
+    groups: list[list[dict[str, Any]]] = [[] for _ in range(heat_count)]
+    for entry in entries:
+        marbles = entry["marbleSlots"]
+        anchor = anchor_index[entry["racerId"]]
+        if marbles <= 1:
+            groups[anchor].append(entry)
+            continue
+        chunk_count = min(marbles, heat_count)
+        base, extra = divmod(marbles, chunk_count)
+        origins = entry.get("marbleOrigins")
+        cursor = 0
+        for offset in range(chunk_count):
+            heat_index = (anchor + offset) % heat_count
+            chunk_size = base + (1 if offset < extra else 0)
+            chunk = dict(entry)
+            chunk["marbleSlots"] = chunk_size
+            if origins is not None:
+                chunk["marbleOrigins"] = origins[cursor : cursor + chunk_size]
+                cursor += chunk_size
+            groups[heat_index].append(chunk)
+    return groups
+
+
 def build_wildcard_heats(connection: sqlite3.Connection, tournament_id: int) -> None:
     tournament = connection.execute(
         "SELECT * FROM tournaments WHERE id = ?", (tournament_id,)
@@ -915,18 +1066,24 @@ def build_wildcard_heats(connection: sqlite3.Connection, tournament_id: int) -> 
     entries = wildcard_field(connection, tournament_id)
     if not entries:
         return
-    _racers_per_heat, heat_count = calculate_championship_heat_size(
-        len(entries), tournament["championship_max_marbles_per_heat"], tournament["marbles_per_racer"]
+    # Entries carry their own marbleSlots (racers who qualified more than
+    # once race more than one marble), so heat sizing is budgeted against
+    # total marble volume rather than racer count.
+    total_marbles = sum(entry["marbleSlots"] for entry in entries)
+    _marbles_per_heat, heat_count = calculate_championship_heat_size(
+        total_marbles, tournament["championship_max_marbles_per_heat"], 1
     )
     if heat_count == 0:
         return
     global_number = _next_global_number(connection, tournament_id)
-    groups = interleave_groups(entries, heat_count, tournament["seed"], lambda entry: entry["originRound"])
+    groups = [
+        group
+        for group in _wildcard_groups_with_marble_splitting(entries, heat_count, tournament["seed"])
+        if group
+    ]
     for heat_number, group in enumerate(groups, start=1):
         global_number += 1
-        _insert_championship_heat(
-            connection, tournament_id, "wildcard", heat_number, global_number, group, tournament["marbles_per_racer"]
-        )
+        _insert_championship_heat(connection, tournament_id, "wildcard", heat_number, global_number, group)
 
 
 def build_preliminary_heats(connection: sqlite3.Connection, tournament_id: int) -> None:
@@ -936,8 +1093,9 @@ def build_preliminary_heats(connection: sqlite3.Connection, tournament_id: int) 
     entries = preliminary_field(connection, tournament_id)
     if not entries:
         return
-    _racers_per_heat, heat_count = calculate_championship_heat_size(
-        len(entries), tournament["championship_max_marbles_per_heat"], tournament["marbles_per_racer"]
+    total_marbles = sum(entry["marbleSlots"] for entry in entries)
+    _marbles_per_heat, heat_count = calculate_championship_heat_size(
+        total_marbles, tournament["championship_max_marbles_per_heat"], 1
     )
     if heat_count == 0:
         return
@@ -945,9 +1103,7 @@ def build_preliminary_heats(connection: sqlite3.Connection, tournament_id: int) 
     groups = interleave_groups(entries, heat_count, tournament["seed"] + 101, lambda entry: entry["bucketKey"])
     for heat_number, group in enumerate(groups, start=1):
         global_number += 1
-        _insert_championship_heat(
-            connection, tournament_id, "preliminary", heat_number, global_number, group, tournament["marbles_per_racer"]
-        )
+        _insert_championship_heat(connection, tournament_id, "preliminary", heat_number, global_number, group)
 
 
 def build_final_heat(connection: sqlite3.Connection, tournament_id: int) -> None:
@@ -985,19 +1141,37 @@ def _stage_ready_to_advance(
 ) -> bool:
     """True once this stage no longer blocks the next one: either its field is
     empty/too small to form a heat (auto-advance -- nothing to wait for) or its
-    heats exist and are fully scored. Deciding this from field_size + config
-    (the same sizing calculation build_*_heats uses) rather than from "did a
-    heat row get created" is what lets the skip case be recognized as settled
-    even though it leaves zero rows behind.
+    heats exist and are fully scored. Deciding this from field_size (total
+    marbles, the same sizing calculation build_*_heats uses) + config rather
+    than from "did a heat row get created" is what lets the skip case be
+    recognized as settled even though it leaves zero rows behind.
     """
     if field_size == 0:
         return True
-    _racers_per_heat, heat_count = calculate_championship_heat_size(
-        field_size, tournament_row["championship_max_marbles_per_heat"], tournament_row["marbles_per_racer"]
+    _marbles_per_heat, heat_count = calculate_championship_heat_size(
+        field_size, tournament_row["championship_max_marbles_per_heat"], 1
     )
     if heat_count == 0:
         return True
     return is_stage_complete(connection, tournament_id, stage)
+
+
+def _field_marble_signature(
+    entries: Sequence[dict[str, Any]], marble_slots_key: str | None = None
+) -> list[tuple[int, int, int | None, int | None]]:
+    """Sorted (racer_id, marble_count, origin_round, origin_heat_id) tuples
+    for a prospective field, in the same shape stage_racer_marbles() returns
+    for what's currently stored -- so a change in marble count or origin,
+    not just racer identity, is detected as a field change."""
+    return sorted(
+        (
+            item["racerId"],
+            item[marble_slots_key] if marble_slots_key else 1,
+            item.get("originRound"),
+            item.get("originHeatId"),
+        )
+        for item in entries
+    )
 
 
 def sync_championship(connection: sqlite3.Connection, tournament_id: int) -> None:
@@ -1016,29 +1190,33 @@ def sync_championship(connection: sqlite3.Connection, tournament_id: int) -> Non
         delete_championship_stages(connection, tournament_id, "wildcard")
         return
 
-    wildcard_ids = sorted(item["racerId"] for item in wildcard_field(connection, tournament_id))
-    current_wildcard_ids = stage_racer_ids(connection, tournament_id, "wildcard")
-    if wildcard_ids != (current_wildcard_ids or []):
+    wildcard_entries = wildcard_field(connection, tournament_id)
+    wildcard_marbles = _field_marble_signature(wildcard_entries, "marbleSlots")
+    current_wildcard_marbles = stage_racer_marbles(connection, tournament_id, "wildcard")
+    if wildcard_marbles != (current_wildcard_marbles or []):
         delete_championship_stages(connection, tournament_id, "wildcard")
-        if wildcard_ids:
+        if wildcard_marbles:
             build_wildcard_heats(connection, tournament_id)
-    if not _stage_ready_to_advance(connection, tournament_id, "wildcard", len(wildcard_ids), tournament):
+    total_wildcard_marbles = sum(entry["marbleSlots"] for entry in wildcard_entries)
+    if not _stage_ready_to_advance(connection, tournament_id, "wildcard", total_wildcard_marbles, tournament):
         delete_championship_stages(connection, tournament_id, "preliminary")
         return
 
-    preliminary_ids = sorted(item["racerId"] for item in preliminary_field(connection, tournament_id))
-    current_preliminary_ids = stage_racer_ids(connection, tournament_id, "preliminary")
-    if preliminary_ids != (current_preliminary_ids or []):
+    preliminary_entries = preliminary_field(connection, tournament_id)
+    preliminary_marbles = _field_marble_signature(preliminary_entries, "marbleSlots")
+    current_preliminary_marbles = stage_racer_marbles(connection, tournament_id, "preliminary")
+    if preliminary_marbles != (current_preliminary_marbles or []):
         delete_championship_stages(connection, tournament_id, "preliminary")
-        if preliminary_ids:
+        if preliminary_marbles:
             build_preliminary_heats(connection, tournament_id)
-    if not _stage_ready_to_advance(connection, tournament_id, "preliminary", len(preliminary_ids), tournament):
+    total_preliminary_marbles = sum(entry["marbleSlots"] for entry in preliminary_entries)
+    if not _stage_ready_to_advance(connection, tournament_id, "preliminary", total_preliminary_marbles, tournament):
         delete_championship_stages(connection, tournament_id, "final")
         return
 
     final_candidates, _trimmed = final_field(connection, tournament_id)
-    final_ids = sorted(item["racerId"] for item in final_candidates)
-    current_final_ids = stage_racer_ids(connection, tournament_id, "final")
+    final_ids = _field_marble_signature(final_candidates)
+    current_final_ids = stage_racer_marbles(connection, tournament_id, "final")
     if final_ids != (current_final_ids or []):
         delete_championship_stages(connection, tournament_id, "final")
         if final_ids:
@@ -1061,27 +1239,31 @@ def stages_pending_cascade_reset(connection: sqlite3.Connection, tournament_id: 
     if not staging_complete:
         return [stage for stage in CHAMPIONSHIP_STAGES if stage_has_results(connection, tournament_id, stage)]
 
-    wildcard_ids = sorted(item["racerId"] for item in wildcard_field(connection, tournament_id))
-    current_wildcard_ids = stage_racer_ids(connection, tournament_id, "wildcard")
-    if wildcard_ids != (current_wildcard_ids or []):
+    wildcard_entries = wildcard_field(connection, tournament_id)
+    wildcard_marbles = _field_marble_signature(wildcard_entries, "marbleSlots")
+    current_wildcard_marbles = stage_racer_marbles(connection, tournament_id, "wildcard")
+    if wildcard_marbles != (current_wildcard_marbles or []):
         return [stage for stage in CHAMPIONSHIP_STAGES if stage_has_results(connection, tournament_id, stage)]
-    if not _stage_ready_to_advance(connection, tournament_id, "wildcard", len(wildcard_ids), tournament):
+    total_wildcard_marbles = sum(entry["marbleSlots"] for entry in wildcard_entries)
+    if not _stage_ready_to_advance(connection, tournament_id, "wildcard", total_wildcard_marbles, tournament):
         return []
 
-    preliminary_ids = sorted(item["racerId"] for item in preliminary_field(connection, tournament_id))
-    current_preliminary_ids = stage_racer_ids(connection, tournament_id, "preliminary")
-    if preliminary_ids != (current_preliminary_ids or []):
+    preliminary_entries = preliminary_field(connection, tournament_id)
+    preliminary_marbles = _field_marble_signature(preliminary_entries, "marbleSlots")
+    current_preliminary_marbles = stage_racer_marbles(connection, tournament_id, "preliminary")
+    if preliminary_marbles != (current_preliminary_marbles or []):
         return [
             stage
             for stage in ("preliminary", "final")
             if stage_has_results(connection, tournament_id, stage)
         ]
-    if not _stage_ready_to_advance(connection, tournament_id, "preliminary", len(preliminary_ids), tournament):
+    total_preliminary_marbles = sum(entry["marbleSlots"] for entry in preliminary_entries)
+    if not _stage_ready_to_advance(connection, tournament_id, "preliminary", total_preliminary_marbles, tournament):
         return []
 
     final_candidates, _trimmed = final_field(connection, tournament_id)
-    final_ids = sorted(item["racerId"] for item in final_candidates)
-    current_final_ids = stage_racer_ids(connection, tournament_id, "final")
+    final_ids = _field_marble_signature(final_candidates)
+    current_final_ids = stage_racer_marbles(connection, tournament_id, "final")
     if final_ids != (current_final_ids or []) and stage_has_results(connection, tournament_id, "final"):
         return ["final"]
     return []

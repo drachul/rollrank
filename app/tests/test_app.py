@@ -11,7 +11,14 @@ TEST_DATA = tempfile.TemporaryDirectory()
 os.environ["APP_DATA_DIR"] = TEST_DATA.name
 
 from app import app  # noqa: E402
-from db import balanced_schedule, championship_field, connect  # noqa: E402
+from db import (  # noqa: E402
+    balanced_schedule,
+    championship_field,
+    connect,
+    preliminary_field,
+    standings,
+    wildcard_field,
+)
 from report import final_finish_label, heat_finish_label  # noqa: E402
 
 
@@ -463,10 +470,13 @@ class MarbleRaceApiTest(unittest.TestCase):
         )
         self.assertEqual(state["standings"][0]["wins"], 1)
         self.assertEqual(sum(racer["wins"] for racer in state["standings"]), 1)
+        # marblesPerRacer only applies to staging heats -- wildcard/preliminary
+        # heats race one marble per qualifying occurrence (capped by
+        # maxByeMarblesPerRacer, which is 1 here), regardless of this setting.
         wildcard_heats = state["championship"]["wildcard"]["heats"]
         self.assertTrue(wildcard_heats)
         self.assertTrue(
-            all(len(entry["marbles"]) == 2 for heat in wildcard_heats for entry in heat["entries"])
+            all(len(entry["marbles"]) == 1 for heat in wildcard_heats for entry in heat["entries"])
         )
 
         # The final always races one marble per racer regardless of
@@ -651,6 +661,328 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertTrue(all(item["racerId"] != winner_id for item in field["preliminaryDirect"]))
         self.assertTrue(all(item["racerId"] != winner_id for item in field["wildcardPool"]))
 
+    def test_wildcard_seats_reach_past_excluded_finishers_and_stay_uncapped(self) -> None:
+        created = self.client.post(
+            "/api/tournaments", json={"name": "Backfill Cup"}
+        ).get_json()
+        tournament_id = created["competition"]["id"]
+        self.addCleanup(
+            lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close()
+        )
+        contestant_ids = [racer["id"] for racer in created["contestants"]]
+        configured = self.client.put(
+            f"/api/tournaments/{tournament_id}",
+            json={
+                "name": "Backfill Cup",
+                "days": 3,
+                "heatsPerRacerPerDay": 1,
+                "maxMarblesPerHeat": 8,
+                "marblesPerRacer": 1,
+                "championshipMaxMarblesPerHeat": 6,
+                "maxByeMarblesPerRacer": 1,
+                "maxFinalRacers": 6,
+                "points": [10, 7, 5, 3, 2, 1, 0, 0],
+                "contestants": [
+                    {"name": racer["name"], "color": racer["color"]}
+                    for racer in created["contestants"]
+                ],
+            },
+        ).get_json()
+
+        # Contestants are seeded as Ruby Rocket(0), Blue Bolt(1), Golden
+        # Globe(2), Emerald Flash(3), Purple Comet(4), Orange Orbit(5),
+        # Silver Streak(6), Pink Lightning(7). Day 1's 3rd/4th (Orange
+        # Orbit, Pink Lightning) both go on to place 2nd/1st in a later
+        # round, and day 3's 3rd/4th (Blue Bolt, Golden Globe) are likewise
+        # already claimed elsewhere -- those rounds' wildcard seats reach
+        # past them to the next eligible finisher rather than sitting empty.
+        finish_orders = [
+            [6, 1, 5, 7, 4, 2, 0, 3],
+            [7, 3, 0, 2, 5, 4, 1, 6],
+            [6, 5, 1, 2, 3, 0, 4, 7],
+        ]
+        state = configured
+        for day, order in zip(state["days"], finish_orders):
+            heat = day["heats"][0]
+            finishes = {
+                contestant_ids[racer_index]: place
+                for place, racer_index in enumerate(order, start=1)
+            }
+            results = [
+                {
+                    "contestantId": entry["contestantId"],
+                    "marbleNumber": entry["marbles"][0]["number"],
+                    "finish": finishes[entry["contestantId"]],
+                }
+                for entry in heat["entries"]
+            ]
+            start_heat(self.client, heat)
+            saved = self.client.put(f'/api/heats/{heat["id"]}/results', json={"results": results})
+            self.assertEqual(saved.status_code, 200)
+            state = saved.get_json()
+
+        connection = connect()
+        try:
+            field = championship_field(connection, tournament_id)
+        finally:
+            connection.close()
+
+        wildcard_days_by_racer: dict[int, list[int]] = {}
+        for item in field["wildcardPool"]:
+            wildcard_days_by_racer.setdefault(item["racerId"], []).append(item["originRound"])
+        ruby_rocket, golden_globe, purple_comet = (contestant_ids[i] for i in (0, 2, 4))
+        orange_orbit, pink_lightning, blue_bolt = (contestant_ids[i] for i in (5, 7, 1))
+
+        # Naturally-qualifying 3rd/4th finishers who already claimed a
+        # better tier elsewhere never show up in the wildcard pool.
+        self.assertNotIn(orange_orbit, wildcard_days_by_racer)
+        self.assertNotIn(pink_lightning, wildcard_days_by_racer)
+        self.assertNotIn(blue_bolt, wildcard_days_by_racer)
+
+        # Day 1's two seats (3rd/4th both claimed elsewhere) reach past them
+        # to the next eligible finishers: Purple Comet (5th) and Golden
+        # Globe (6th).
+        self.assertEqual(sorted(wildcard_days_by_racer[purple_comet]), [1])
+        # Golden Globe is eligible (never bye- or preliminary-tier) every
+        # single round -- and unlike bye/preliminary, wildcard marbles are
+        # uncapped, so they earn a marble in all three rounds, not just one.
+        self.assertEqual(sorted(wildcard_days_by_racer[golden_globe]), [1, 2, 3])
+        # Ruby Rocket is likewise eligible on both day 2 and day 3.
+        self.assertEqual(sorted(wildcard_days_by_racer[ruby_rocket]), [2, 3])
+        self.assertEqual(set(wildcard_days_by_racer), {purple_comet, golden_globe, ruby_rocket})
+
+        connection = connect()
+        try:
+            table = standings(connection, tournament_id)
+        finally:
+            connection.close()
+
+        by_id = {row["id"]: row for row in table}
+        self.assertEqual(by_id[purple_comet]["dayChampionshipTiers"][0], "wildcard")
+        self.assertEqual(by_id[golden_globe]["dayChampionshipTiers"], ["wildcard", "wildcard", "wildcard"])
+        self.assertEqual(by_id[ruby_rocket]["dayChampionshipTiers"][1], "wildcard")
+        self.assertEqual(by_id[ruby_rocket]["dayChampionshipTiers"][2], "wildcard")
+        self.assertEqual(by_id[orange_orbit]["dayChampionshipTiers"][0], None)
+        self.assertIsNotNone(by_id[orange_orbit]["dayChampionshipTiers"][2])
+
+    def test_bye_ineligibility_cascades_preliminary_and_stacks_multiple_marbles(self) -> None:
+        created = self.client.post(
+            "/api/tournaments", json={"name": "Multi-Marble Cup"}
+        ).get_json()
+        tournament_id = created["competition"]["id"]
+        self.addCleanup(
+            lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close()
+        )
+        contestant_ids = [racer["id"] for racer in created["contestants"]]
+        state = self.client.put(
+            f"/api/tournaments/{tournament_id}",
+            json={
+                "name": "Multi-Marble Cup",
+                "days": 3,
+                "heatsPerRacerPerDay": 1,
+                "maxMarblesPerHeat": 8,
+                "marblesPerRacer": 1,
+                "championshipMaxMarblesPerHeat": 24,
+                "maxByeMarblesPerRacer": 2,
+                "maxFinalRacers": 8,
+                "points": [10, 7, 5, 3, 2, 1, 0, 0],
+                "contestants": [
+                    {"name": racer["name"], "color": racer["color"]}
+                    for racer in created["contestants"]
+                ],
+            },
+        ).get_json()
+
+        # Contestants seeded as Ruby Rocket(0)=A, Blue Bolt(1)=B, Golden
+        # Globe(2)=C, Emerald Flash(3)=D, Purple Comet(4)=E, Orange
+        # Orbit(5)=F, Silver Streak(6)=G, Pink Lightning(7)=H.
+        #
+        # A wins day 1 and day 2 (bye-eligible each time, cap 2 keeps both);
+        # D wins day 3. B places 2nd on day 1 and day 2 -- two separate
+        # preliminary marbles. Day 3's 2nd place is A, who is bye-ineligible
+        # for preliminary, so the cascade moves to 3rd place (C) instead.
+        # E and F are the natural wildcard pair on both day 1 and day 3,
+        # stacking two wildcard marbles each -- wildcard is uncapped, so
+        # this is their full natural count, not a truncation; G and H are
+        # the natural pair on day 2 only, one marble each.
+        finish_orders = [
+            [0, 1, 4, 5, 6, 7, 2, 3],
+            [0, 1, 6, 7, 4, 5, 3, 2],
+            [3, 0, 2, 4, 5, 6, 7, 1],
+        ]
+        for day, order in zip(state["days"], finish_orders):
+            heat = day["heats"][0]
+            finishes = {
+                contestant_ids[racer_index]: place
+                for place, racer_index in enumerate(order, start=1)
+            }
+            results = [
+                {
+                    "contestantId": entry["contestantId"],
+                    "marbleNumber": entry["marbles"][0]["number"],
+                    "finish": finishes[entry["contestantId"]],
+                }
+                for entry in heat["entries"]
+            ]
+            start_heat(self.client, heat)
+            saved = self.client.put(f'/api/heats/{heat["id"]}/results', json={"results": results})
+            self.assertEqual(saved.status_code, 200)
+            state = saved.get_json()
+
+        a, b, c, d, e, f, g, h = contestant_ids
+
+        connection = connect()
+        try:
+            field = championship_field(connection, tournament_id)
+            prelim_entries = preliminary_field(connection, tournament_id)
+            wildcard_entries = wildcard_field(connection, tournament_id)
+        finally:
+            connection.close()
+
+        # Rule 1: a bye winner is permanently ineligible for preliminary or
+        # wildcard, even from a round they didn't win.
+        self.assertTrue(all(item["racerId"] != a for item in field["preliminaryDirect"]))
+        self.assertTrue(all(item["racerId"] != a for item in field["wildcardPool"]))
+
+        # Rule 2: day 3's bye-ineligible 2nd place (A) cascades to 3rd (C).
+        prelim_by_racer = {item["racerId"]: item["originRound"] for item in field["preliminaryDirect"]}
+        self.assertEqual(prelim_by_racer.get(c), 3)
+        self.assertNotIn(a, prelim_by_racer)
+
+        # Rule 3: B, who placed 2nd twice, gets two consolidated preliminary
+        # marbles instead of losing the second occurrence.
+        prelim_by_id = {entry["racerId"]: entry for entry in prelim_entries}
+        self.assertEqual(prelim_by_id[b]["marbleSlots"], 2)
+        self.assertEqual(prelim_by_id[c]["marbleSlots"], 1)
+
+        # Rule 4: E and F each naturally qualify for the wildcard pool on two
+        # different rounds and stack two marbles -- wildcard is uncapped, so
+        # nothing forces this down further; G and H only qualify once each.
+        wildcard_by_id = {entry["racerId"]: entry for entry in wildcard_entries}
+        self.assertEqual(wildcard_by_id[e]["marbleSlots"], 2)
+        self.assertEqual(wildcard_by_id[f]["marbleSlots"], 2)
+        self.assertEqual(wildcard_by_id[g]["marbleSlots"], 1)
+        self.assertEqual(wildcard_by_id[h]["marbleSlots"], 1)
+
+        # The consolidated entries feed straight into the actual wildcard
+        # heat, so a multi-marble racer races every earned marble in one
+        # heat rather than being split or colliding on marble_number.
+        state = self.client.get(f"/api/state?tournamentId={tournament_id}").get_json()
+        wildcard_heats = state["championship"]["wildcard"]["heats"]
+        self.assertTrue(wildcard_heats)
+        entries_by_racer = {
+            entry["contestantId"]: entry for heat in wildcard_heats for entry in heat["entries"]
+        }
+        self.assertEqual(len(entries_by_racer[e]["marbles"]), 2)
+        self.assertEqual(len(entries_by_racer[f]["marbles"]), 2)
+        self.assertEqual(len(entries_by_racer[g]["marbles"]), 1)
+
+    def test_wildcard_marbles_split_across_heats_when_too_many_for_one(self) -> None:
+        created = self.client.post(
+            "/api/tournaments", json={"name": "Wildcard Split Cup"}
+        ).get_json()
+        tournament_id = created["competition"]["id"]
+        self.addCleanup(
+            lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close()
+        )
+        contestant_ids = [racer["id"] for racer in created["contestants"]]
+        state = self.client.put(
+            f"/api/tournaments/{tournament_id}",
+            json={
+                "name": "Wildcard Split Cup",
+                "days": 5,
+                "heatsPerRacerPerDay": 1,
+                "maxMarblesPerHeat": 8,
+                "marblesPerRacer": 1,
+                "championshipMaxMarblesPerHeat": 3,
+                "maxByeMarblesPerRacer": 4,
+                "maxFinalRacers": 8,
+                "points": [10, 7, 5, 3, 2, 1, 0, 0],
+                "contestants": [
+                    {"name": racer["name"], "color": racer["color"]}
+                    for racer in created["contestants"]
+                ],
+            },
+        ).get_json()
+
+        # Ruby Rocket(0)/Blue Bolt(1)/Golden Globe(2) rotate the win, Emerald
+        # Flash(3) is always 2nd (a steady single-marble preliminary
+        # qualifier), and Orange Orbit(5)/Purple Comet(4) are always
+        # eligible for wildcard and rack up a marble every round (uncapped)
+        # -- far more than the tiny championshipMaxMarblesPerHeat of 3 can
+        # hold from one racer alongside anyone else.
+        finish_orders = [
+            [0, 3, 5, 1, 2, 4, 6, 7],
+            [1, 3, 5, 2, 0, 4, 6, 7],
+            [2, 3, 5, 0, 1, 4, 6, 7],
+            [0, 3, 5, 1, 2, 4, 6, 7],
+            [1, 3, 5, 2, 0, 4, 6, 7],
+        ]
+        for day, order in zip(state["days"], finish_orders):
+            heat = day["heats"][0]
+            finishes = {
+                contestant_ids[racer_index]: place
+                for place, racer_index in enumerate(order, start=1)
+            }
+            results = [
+                {
+                    "contestantId": entry["contestantId"],
+                    "marbleNumber": entry["marbles"][0]["number"],
+                    "finish": finishes[entry["contestantId"]],
+                }
+                for entry in heat["entries"]
+            ]
+            start_heat(self.client, heat)
+            saved = self.client.put(f'/api/heats/{heat["id"]}/results', json={"results": results})
+            self.assertEqual(saved.status_code, 200)
+            state = saved.get_json()
+
+        orange_orbit, purple_comet = contestant_ids[5], contestant_ids[4]
+
+        connection = connect()
+        try:
+            entries = wildcard_field(connection, tournament_id)
+        finally:
+            connection.close()
+        marbles_by_racer = {entry["racerId"]: entry["marbleSlots"] for entry in entries}
+        self.assertEqual(marbles_by_racer[orange_orbit], 5)
+        self.assertEqual(marbles_by_racer[purple_comet], 5)
+
+        wildcard_heats = state["championship"]["wildcard"]["heats"]
+        self.assertGreater(len(wildcard_heats), 1)
+
+        # Each heavily-qualified racer's marbles are spread across more than
+        # one heat, and never more than once in the same heat (which would
+        # collide on marble_number) -- but the total across all heats still
+        # equals their full marble count.
+        for racer_id in (orange_orbit, purple_comet):
+            heats_with_racer = [
+                heat for heat in wildcard_heats
+                if any(entry["contestantId"] == racer_id for entry in heat["entries"])
+            ]
+            self.assertGreater(len(heats_with_racer), 1)
+            total_marbles = sum(
+                len(entry["marbles"])
+                for heat in heats_with_racer
+                for entry in heat["entries"]
+                if entry["contestantId"] == racer_id
+            )
+            self.assertEqual(total_marbles, 5)
+
+            # Every marble is tagged with the specific staging round that
+            # seeded it, and split chunks each carry only their own rounds
+            # (never the full set duplicated onto every heat) -- but the
+            # union across all of the racer's heats covers every round they
+            # qualified in.
+            seed_rounds_by_heat = [
+                entry["seedRounds"]
+                for heat in heats_with_racer
+                for entry in heat["entries"]
+                if entry["contestantId"] == racer_id
+            ]
+            self.assertTrue(all(len(rounds) < 5 for rounds in seed_rounds_by_heat))
+            self.assertEqual(set().union(*seed_rounds_by_heat), {1, 2, 3, 4, 5})
+
     def test_wildcard_preliminary_interleaving_avoids_same_round_clustering(self) -> None:
         created = self.client.post(
             "/api/tournaments", json={"name": "Interleave Cup"}
@@ -711,6 +1043,104 @@ class MarbleRaceApiTest(unittest.TestCase):
         for heat in wildcard["heats"]:
             origin_rounds = [entry["originRound"] for entry in heat["entries"]]
             self.assertEqual(len(origin_rounds), len(set(origin_rounds)))
+
+    def test_ladder_projects_known_placements_before_a_stage_unlocks(self) -> None:
+        created = self.client.post(
+            "/api/tournaments", json={"name": "Projection Cup"}
+        ).get_json()
+        tournament_id = created["competition"]["id"]
+        self.addCleanup(
+            lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close()
+        )
+        contestant_ids = [racer["id"] for racer in created["contestants"]]
+        state = self.client.put(
+            f"/api/tournaments/{tournament_id}",
+            json={
+                "name": "Projection Cup",
+                "days": 3,
+                "heatsPerRacerPerDay": 1,
+                "maxMarblesPerHeat": 8,
+                "marblesPerRacer": 1,
+                "championshipMaxMarblesPerHeat": 3,
+                "maxByeMarblesPerRacer": 1,
+                "maxFinalRacers": 6,
+                "points": [10, 7, 5, 3, 2, 1, 0, 0],
+                "contestants": [
+                    {"name": racer["name"], "color": racer["color"]}
+                    for racer in created["contestants"]
+                ],
+            },
+        ).get_json()
+
+        # racers[6]/[7] always take 1st/2nd, so racer[6] banks the only bye
+        # (day 1, capped at 1) and racer[7] is the sole direct preliminary
+        # qualifier (day 1). The remaining six racers fill two 3-racer
+        # wildcard heats.
+        finish_orders = [
+            [6, 7, 0, 1, 2, 3, 4, 5],
+            [6, 7, 2, 3, 0, 1, 4, 5],
+            [6, 7, 4, 5, 0, 1, 2, 3],
+        ]
+        for day, order in zip(state["days"], finish_orders):
+            heat = day["heats"][0]
+            finishes = {
+                contestant_ids[racer_index]: place
+                for place, racer_index in enumerate(order, start=1)
+            }
+            results = [
+                {
+                    "contestantId": entry["contestantId"],
+                    "marbleNumber": entry["marbles"][0]["number"],
+                    "finish": finishes[entry["contestantId"]],
+                }
+                for entry in heat["entries"]
+            ]
+            start_heat(self.client, heat)
+            saved = self.client.put(f'/api/heats/{heat["id"]}/results', json={"results": results})
+            self.assertEqual(saved.status_code, 200)
+            state = saved.get_json()
+
+        champ = state["championship"]
+        self.assertFalse(champ["preliminary"]["ready"])
+        preliminary_projected = champ["preliminary"]["projectedEntries"]
+        decided = [entry for entry in preliminary_projected if entry["decided"]]
+        pending = [entry for entry in preliminary_projected if not entry["decided"]]
+        self.assertEqual([entry["contestantId"] for entry in decided], [contestant_ids[7]])
+        self.assertEqual(len(pending), len(champ["wildcard"]["heats"]))
+        self.assertTrue(all(entry["originStage"] == "wildcard" for entry in pending))
+
+        self.assertFalse(champ["final"]["ready"])
+        final_projected = champ["final"]["projectedEntries"]
+        self.assertEqual(len(final_projected), 1)
+        self.assertTrue(final_projected[0]["decided"])
+        self.assertEqual(final_projected[0]["contestantId"], contestant_ids[6])
+        self.assertEqual(final_projected[0]["originStage"], "bye")
+
+        # Score just the first wildcard heat; its winner should now appear
+        # decided in the preliminary projection while the other heat's slot
+        # is still pending.
+        first_heat = champ["wildcard"]["heats"][0]
+        second_heat_id = champ["wildcard"]["heats"][1]["id"]
+        results = [
+            {
+                "contestantId": entry["contestantId"],
+                "marbleNumber": entry["marbles"][0]["number"],
+                "finish": index + 1,
+            }
+            for index, entry in enumerate(first_heat["entries"])
+        ]
+        start_heat(self.client, first_heat)
+        saved = self.client.put(f'/api/heats/{first_heat["id"]}/results', json={"results": results})
+        self.assertEqual(saved.status_code, 200)
+        state = saved.get_json()
+
+        self.assertFalse(state["championship"]["preliminary"]["ready"])
+        projected = state["championship"]["preliminary"]["projectedEntries"]
+        decided_ids = {entry["contestantId"] for entry in projected if entry["decided"]}
+        self.assertIn(first_heat["entries"][0]["contestantId"], decided_ids)
+        still_pending = [entry for entry in projected if not entry["decided"]]
+        self.assertEqual(len(still_pending), 1)
+        self.assertEqual(still_pending[0]["originHeatId"], second_heat_id)
 
     def test_cascade_reset_confirmation_required_then_rebuilds(self) -> None:
         created = self.client.post(
