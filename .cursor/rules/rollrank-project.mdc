@@ -1,0 +1,15 @@
+---
+description: RollRank project conventions and safety rules
+globs: app/**
+alwaysApply: false
+---
+
+# RollRank project rules
+
+- Read the repository-root `AGENTS.md` before modifying the RollRank application.
+- Use `.cursor/skills/rollrank-development/SKILL.md` for feature, scoring, final, kiosk, PDF, Docker, and database work.
+- Use tournament, racer, round, heat, and final in user-facing copy.
+- Keep API, regular dashboard, kiosk, Final tab, and PDF result semantics aligned.
+- Treat root `data/` as user data. Never delete or replace it unless explicitly authorized.
+- Test inside Docker with a temporary `APP_DATA_DIR`; never test against the live database.
+- Preserve the dependency-free Flask, SQLite, ReportLab, HTML, CSS, and JavaScript architecture unless a broader rewrite is requested.
