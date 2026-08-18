@@ -32,7 +32,6 @@ const ordinal = (value) => {
 };
 
 const placeLabel = (place) => place == null ? "Pending" : ordinal(place);
-const placeClass = (place) => place == null ? "" : ({1:"place-1st",2:"place-2nd",3:"place-3rd",4:"place-4th"})[place] || "";
 const tierLabel = {bye: "Bye", preliminary: "Preliminary", wildcard: "Wildcard"};
 const tierClass = (tier) => tier ? `tier-${tier}` : "";
 
@@ -434,6 +433,15 @@ function finalFinishLabel(finish, racers) {
   return Number(finish) === 0 ? `Tied ${ordinal(finalDnfPlace(racers))} · DNF` : `${ordinal(finish)} place`;
 }
 
+function marblePlaceLabel(raceMarble) {
+  return raceMarble.finish == null ? "-" : raceMarble.finish === 0 ? "DNF" : ordinal(raceMarble.finish);
+}
+
+function entryPlaceSummary(entry) {
+  const labels = entry.marbles.map(marblePlaceLabel);
+  return labels.every((label) => label === "-") ? "-" : labels.join(", ");
+}
+
 function heatRacerPreview(heat) {
   return `<div class="racer-preview">${heat.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>`;
 }
@@ -470,8 +478,8 @@ function editLockedHeatCard(heat) {
     <div class="heat-entry-list">
       ${heat.entries.map((entry) => `<div class="heat-entry">
         <span class="lane">${entry.lane}</span>${marble(entry.color, "small")}<span class="heat-entry-name"><strong>${escapeHtml(entry.name)}</strong>${originBadge(entry)}</span>
-        <div class="marble-results">${entry.marbles.map((raceMarble) => `<div class="marble-result"><span>M${raceMarble.number}<small>${raceMarble.points == null ? "-" : `${raceMarble.points} pts`}</small></span><b>${raceMarble.finish == null ? "-" : raceMarble.finish === 0 ? "DNF" : ordinal(raceMarble.finish)}</b></div>`).join("")}</div>
-        <span class="points-result">${entry.points == null ? "-" : `${entry.points} total`}</span>
+        <div class="marble-results">${entry.marbles.map((raceMarble) => `<div class="marble-result"><span>M${raceMarble.number}<small>${heat.stage === "staging" ? (raceMarble.points == null ? "-" : `${raceMarble.points} pts`) : marblePlaceLabel(raceMarble)}</small></span><b>${raceMarble.finish == null ? "-" : raceMarble.finish === 0 ? "DNF" : ordinal(raceMarble.finish)}</b></div>`).join("")}</div>
+        <span class="points-result">${heat.stage === "staging" ? (entry.points == null ? "-" : `${entry.points} total`) : entryPlaceSummary(entry)}</span>
       </div>`).join("")}
     </div>
   </article>`;
@@ -491,8 +499,8 @@ function heatEditor(heat) {
     <div class="heat-entry-list">
       ${heat.entries.map((entry) => `<div class="heat-entry">
         <span class="lane">${entry.lane}</span>${marble(entry.color, "small")}<span class="heat-entry-name"><strong>${escapeHtml(entry.name)}</strong>${originBadge(entry)}</span>
-        <div class="marble-results">${entry.marbles.map((raceMarble) => `<label class="marble-result"><span>M${raceMarble.number}<small>${raceMarble.points == null ? "-" : `${raceMarble.points} pts`}</small></span><select aria-label="Finish for ${escapeHtml(entry.name)}, marble ${raceMarble.number}" data-result-for="${entry.contestantId}" data-marble-number="${raceMarble.number}">${resultOptions(finishCount, raceMarble.finish)}</select></label>`).join("")}</div>
-        <span class="points-result">${entry.points == null ? "-" : `${entry.points} total`}</span>
+        <div class="marble-results">${entry.marbles.map((raceMarble) => `<label class="marble-result"><span>M${raceMarble.number}<small>${heat.stage === "staging" ? (raceMarble.points == null ? "-" : `${raceMarble.points} pts`) : marblePlaceLabel(raceMarble)}</small></span><select aria-label="Finish for ${escapeHtml(entry.name)}, marble ${raceMarble.number}" data-result-for="${entry.contestantId}" data-marble-number="${raceMarble.number}">${resultOptions(finishCount, raceMarble.finish)}</select></label>`).join("")}</div>
+        <span class="points-result">${heat.stage === "staging" ? (entry.points == null ? "-" : `${entry.points} total`) : entryPlaceSummary(entry)}</span>
       </div>`).join("")}
     </div>
   </article>`;
@@ -526,8 +534,26 @@ function seedRoundsTag(seedRounds) {
   return `<small class="seed-tag">${label}</small>`;
 }
 
-function ladderEntryLabel(name, marbleCount, seedRounds) {
-  return `<div class="ladder-entry-info"><span>${escapeHtml(name)}${marbleCount > 1 ? ` <span class="marble-count">×${marbleCount}</span>` : ""}</span>${seedRoundsTag(seedRounds)}</div>`;
+function seedHeatTag(entry, sourceHeats, stageLabel) {
+  if (!sourceHeats || !sourceHeats.length) return "";
+  const heatIds = new Set((entry.marbles || []).map((raceMarble) => raceMarble.originHeatId).filter((id) => id != null));
+  if (!heatIds.size) return "";
+  const heatNumbers = sourceHeats
+    .filter((heat) => heatIds.has(heat.id))
+    .map((heat) => heat.heatNumber)
+    .sort((a, b) => a - b);
+  if (!heatNumbers.length) return "";
+  const label = heatNumbers.length === 1
+    ? `${stageLabel} Heat ${heatNumbers[0]}`
+    : `${stageLabel} Heats ${heatNumbers.join(", ")}`;
+  return `<small class="seed-tag">${escapeHtml(label)}</small>`;
+}
+
+function ladderEntryLabel(name, marbleCount, seedRounds, extraTag = "") {
+  // A direct wildcard/preliminary heat seed is a more specific answer to
+  // "where did this racer come from" than the original staging round(s)
+  // behind that heat win, so it takes over the tag slot entirely.
+  return `<div class="ladder-entry-info"><span>${escapeHtml(name)}${marbleCount > 1 ? ` <span class="marble-count">×${marbleCount}</span>` : ""}</span>${extraTag || seedRoundsTag(seedRounds)}</div>`;
 }
 
 function ladderProjectedRoster(entries, lockedLabel) {
@@ -550,27 +576,32 @@ function ladderSkippedPlaceholder(stage) {
   return `<div class="ladder-placeholder skip"><span aria-hidden="true">→</span><p>${note}</p></div>`;
 }
 
-function ladderHeatCard(heat, advancingIds, advancingTierClass) {
+function ladderPlaceLabel(entry) {
+  const label = entryPlaceSummary(entry);
+  return label === "-" ? "" : label;
+}
+
+function ladderHeatCard(heat, sourceHeats, sourceStageLabel) {
   return `<article class="ladder-heat ${heat.complete ? "complete" : ""}">
     <div class="ladder-heat-head"><span>Heat ${heat.heatNumber}</span><span class="${heat.complete ? "complete-chip" : "pending-chip"}">${heat.complete ? "Complete" : "In progress"}</span></div>
     <ul class="ladder-entries">
-      ${heat.entries.map((entry) => `<li class="ladder-entry${advancingIds.has(entry.contestantId) ? " " + advancingTierClass : ""}${entry.finish === 0 ? " dnf" : ""}">
-        ${marble(entry.color, "small")}${ladderEntryLabel(entry.name, entry.marbles.length, entry.seedRounds)}<b>${entry.points == null ? "" : `${entry.points}<small>pts</small>`}</b>
+      ${heat.entries.map((entry) => `<li class="ladder-entry${entry.finish === 0 ? " dnf" : ""}">
+        ${marble(entry.color, "small")}${ladderEntryLabel(entry.name, entry.marbles.length, entry.seedRounds, seedHeatTag(entry, sourceHeats, sourceStageLabel))}<b>${ladderPlaceLabel(entry)}</b>
       </li>`).join("")}
     </ul>
   </article>`;
 }
 
-function ladderStageColumn(stage, advancingIds, advancingTierClass, lockedLabel) {
+function ladderStageColumn(stage, lockedLabel, sourceHeats, sourceStageLabel) {
   if (!stage.ready) {
     if (stage.projectedEntries && stage.projectedEntries.length) return ladderProjectedRoster(stage.projectedEntries, lockedLabel);
     return ladderLockedPlaceholder(lockedLabel);
   }
   if (stage.skipped) return ladderSkippedPlaceholder(stage);
-  return `<div class="ladder-heats">${stage.heats.map((heat) => ladderHeatCard(heat, advancingIds, advancingTierClass)).join("")}</div>`;
+  return `<div class="ladder-heats">${stage.heats.map((heat) => ladderHeatCard(heat, sourceHeats, sourceStageLabel)).join("")}</div>`;
 }
 
-function ladderFinalColumn(finalStage, preliminaryAdvancing) {
+function ladderFinalColumn(finalStage, sourceHeats) {
   if (!finalStage.ready) {
     if (finalStage.projectedEntries && finalStage.projectedEntries.length) {
       return ladderProjectedRoster(finalStage.projectedEntries, "Preliminary results decide the final field.");
@@ -582,8 +613,8 @@ function ladderFinalColumn(finalStage, preliminaryAdvancing) {
   return `<article class="ladder-heat final ${finalStage.complete ? "complete" : ""}">
     <div class="ladder-heat-head"><span>The Final</span><span class="${finalStage.complete ? "complete-chip" : "pending-chip"}">${finalStage.complete ? "Complete" : "In progress"}</span></div>
     <ul class="ladder-entries">
-      ${entries.map((entry) => `<li class="ladder-entry${entry.finish === 1 ? " champion" : preliminaryAdvancing.has(entry.contestantId) ? " tier-preliminary" : ""}${entry.finish === 0 ? " dnf" : ""}">
-        ${marble(entry.color, "small")}${ladderEntryLabel(entry.name, 1, entry.seedRounds)}<b>${entry.finish === 1 ? "🏆" : entry.points == null ? "" : `${entry.points}<small>pts</small>`}</b>
+      ${entries.map((entry) => `<li class="ladder-entry${entry.finish === 0 ? " dnf" : ""}">
+        ${marble(entry.color, "small")}${ladderEntryLabel(entry.name, 1, entry.seedRounds, seedHeatTag(entry, sourceHeats, "Preliminary"))}<b>${entry.finish === 1 ? "🏆" : entry.points == null ? "" : `${entry.points}<small>pts</small>`}</b>
       </li>`).join("")}
     </ul>
   </article>`;
@@ -591,33 +622,22 @@ function ladderFinalColumn(finalStage, preliminaryAdvancing) {
 
 function renderChampionshipLadder() {
   const champ = state.championship;
-  const wildcardAdvancing = new Set(
-    champ.preliminary.heats
-      .flatMap((heat) => heat.entries)
-      .filter((entry) => entry.originStage === "wildcard")
-      .map((entry) => entry.contestantId)
-  );
-  const preliminaryAdvancing = new Set(
-    champ.final.heat
-      ? champ.final.heat.entries.filter((entry) => entry.originStage === "preliminary").map((entry) => entry.contestantId)
-      : []
-  );
   return `<section class="panel ladder-panel">
     <div class="panel-heading"><div><p class="eyebrow">Championship bracket</p><h2>Championship ladder</h2></div></div>
     <div class="ladder">
       <div class="ladder-column">
         <div class="ladder-column-heading"><span>Stage 1</span><h3>Wildcard</h3></div>
-        ${ladderStageColumn(champ.wildcard, wildcardAdvancing, "tier-wildcard", "Runs once every round heat is scored.")}
+        ${ladderStageColumn(champ.wildcard, "Runs once every round heat is scored.")}
       </div>
       <div class="ladder-connector" aria-hidden="true">→</div>
       <div class="ladder-column">
         <div class="ladder-column-heading"><span>Stage 2</span><h3>Preliminary</h3></div>
-        ${ladderStageColumn(champ.preliminary, preliminaryAdvancing, "tier-preliminary", "Runs once every wildcard heat is scored.")}
+        ${ladderStageColumn(champ.preliminary, "Runs once every wildcard heat is scored.", champ.wildcard.heats, "Wildcard")}
       </div>
       <div class="ladder-connector" aria-hidden="true">→</div>
       <div class="ladder-column">
         <div class="ladder-column-heading"><span>Stage 3</span><h3>Final</h3></div>
-        ${ladderFinalColumn(champ.final, preliminaryAdvancing)}
+        ${ladderFinalColumn(champ.final, champ.preliminary.heats)}
       </div>
     </div>
   </section>`;
@@ -627,12 +647,12 @@ function renderStandings() {
   const c = state.competition;
   return `${viewHeader("Live scoring", "Tournament standings", "Round placings update automatically whenever a heat result is saved.")}
     ${renderChampionshipLadder()}
-    <section class="panel table-panel"><div class="table-scroll"><table class="standings-table"><thead><tr><th>Rank</th><th>Racer</th>${Array.from({length:c.days}, (_, i) => `<th>Round ${i + 1}</th>`).join("")}<th>Wins</th></tr></thead><tbody>
-    ${state.standings.map((racer) => `<tr><td><span class="rank-badge ${placeClass(racer.rank)}">${racer.rank}</span></td><td><span class="racer-cell">${marble(racer.color, "small")}<strong>${escapeHtml(racer.name)}</strong></span></td>${racer.dayPlacements.map((place, index) => `<td class="${tierClass(racer.dayChampionshipTiers[index])}">${placeLabel(place)}${racer.dayChampionshipTiers[index] ? `<small class="tier-tag">${tierLabel[racer.dayChampionshipTiers[index]]}</small>` : ""}</td>`).join("")}<td><strong>${racer.wins}</strong></td></tr>`).join("")}
+    <section class="panel table-panel"><div class="table-scroll"><table class="standings-table"><thead><tr><th>Racer</th>${Array.from({length:c.days}, (_, i) => `<th>Round ${i + 1}</th>`).join("")}</tr></thead><tbody>
+    ${state.standings.map((racer) => `<tr><td><span class="racer-cell">${marble(racer.color, "small")}<strong>${escapeHtml(racer.name)}</strong></span></td>${racer.dayPlacements.map((place, index) => `<td class="${tierClass(racer.dayChampionshipTiers[index])}">${placeLabel(place)}${racer.dayChampionshipTiers[index] ? `<small class="tier-tag">${tierLabel[racer.dayChampionshipTiers[index]]}</small>` : ""}</td>`).join("")}</tr>`).join("")}
     </tbody></table></div>
     <div class="mobile-standings" aria-label="Mobile standings">
       ${state.standings.map((racer) => `<article class="mobile-standing-card">
-        <div class="mobile-standing-lead"><span class="rank-badge ${placeClass(racer.rank)}">${racer.rank}</span>${marble(racer.color, "small")}<strong>${escapeHtml(racer.name)}</strong><span class="mobile-total"><b>${racer.wins}</b> win${racer.wins === 1 ? "" : "s"}</span></div>
+        <div class="mobile-standing-lead">${marble(racer.color, "small")}<strong>${escapeHtml(racer.name)}</strong></div>
         <div class="mobile-standing-stats">${racer.dayPlacements.map((place, index) => `<span class="${tierClass(racer.dayChampionshipTiers[index])}"><small>Round ${index + 1}</small><b>${placeLabel(place)}</b>${racer.dayChampionshipTiers[index] ? `<small class="tier-tag">${tierLabel[racer.dayChampionshipTiers[index]]}</small>` : ""}</span>`).join("")}</div>
       </article>`).join("")}
     </div></section>`;

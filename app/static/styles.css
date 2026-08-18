@@ -266,15 +266,11 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible { 
 .mobile-standings { display:none; }
 .standings-table { width:100%; border-collapse:collapse; white-space:nowrap; }
 .standings-table th { padding:13px 15px; background:var(--navy); color:#dfeaf4; font-size:8px; letter-spacing:.08em; text-align:center; text-transform:uppercase; }
-.standings-table th:nth-child(2) { text-align:left; }
+.standings-table th:nth-child(1) { text-align:left; }
 .standings-table td { height:48px; padding:8px 15px; border-bottom:1px solid var(--line); color:var(--muted); font-size:11px; text-align:center; }
-.standings-table td:nth-child(2) { min-width:220px; text-align:left; }
+.standings-table td:nth-child(1) { min-width:220px; text-align:left; }
 .standings-table tr.qualifying { background:rgba(47,128,237,.08); }
 .standings-table tr.qualifying td:first-child { border-left:3px solid var(--blue); }
-.rank-badge,.seed-number { display:inline-grid; width:25px; height:25px; place-items:center; border-radius:50%; background:rgba(47,128,237,.16); color:var(--blue-light); font-size:10px; font-weight:850; }
-.rank-badge.place-1st { background:rgba(244,197,66,.18); color:var(--yellow); }
-.rank-badge.place-2nd { background:rgba(201,213,220,.16); color:#cbd5df; }
-.rank-badge.place-3rd,.rank-badge.place-4th { background:rgba(201,130,82,.16); color:#c98252; }
 .standings-table td.tier-bye,.mobile-standing-stats span.tier-bye { background:rgba(244,197,66,.18); color:var(--yellow); font-weight:850; }
 .standings-table td.tier-preliminary,.mobile-standing-stats span.tier-preliminary { background:rgba(201,213,220,.16); color:#cbd5df; font-weight:850; }
 .standings-table td.tier-wildcard,.mobile-standing-stats span.tier-wildcard { background:rgba(201,130,82,.16); color:#c98252; font-weight:850; }
@@ -309,9 +305,6 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible { 
 .ladder-entry.tier-preliminary span { color:#cbd5df; font-weight:750; }
 .ladder-entry.tier-wildcard { background:rgba(201,130,82,.14); }
 .ladder-entry.tier-wildcard span { color:#c98252; font-weight:750; }
-.ladder-entry.champion { background:rgba(244,197,66,.14); }
-.ladder-entry.champion span { color:var(--yellow); font-weight:850; }
-.ladder-entry.champion b { color:var(--yellow); font-size:13px; }
 .ladder-entry.pending { opacity:.6; }
 .ladder-entry.pending span { font-style:italic; }
 .ladder-entry.pending b { color:var(--muted); }
@@ -612,10 +605,8 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible { 
   .mobile-standings { display:grid; gap:10px; padding:12px; background:rgba(255,255,255,.03); }
   .mobile-standing-card { overflow:hidden; border:1px solid var(--line); border-radius:11px; background:var(--panel); box-shadow:var(--shadow); }
   .mobile-standing-card.qualifying { border-left:4px solid var(--blue); }
-  .mobile-standing-lead { display:grid; grid-template-columns:30px 26px minmax(0,1fr) auto; align-items:center; gap:7px; min-height:54px; padding:8px 11px; }
+  .mobile-standing-lead { display:grid; grid-template-columns:26px minmax(0,1fr); align-items:center; gap:7px; min-height:54px; padding:8px 11px; }
   .mobile-standing-lead>strong { overflow:hidden; font-size:12px; text-overflow:ellipsis; white-space:nowrap; }
-  .mobile-total { display:flex; align-items:baseline; gap:3px; color:var(--muted); font-size:8px; text-transform:uppercase; }
-  .mobile-total b { color:var(--ink); font-size:18px; }
   .mobile-standing-stats { display:flex; overflow-x:auto; border-top:1px solid var(--line); background:rgba(255,255,255,.03); scrollbar-width:none; }
   .mobile-standing-stats::-webkit-scrollbar { display:none; }
   .mobile-standing-stats span { display:flex; min-width:62px; min-height:47px; flex:1 0 62px; align-items:center; flex-direction:column; justify-content:center; border-right:1px solid var(--line); }
