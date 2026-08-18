@@ -53,8 +53,9 @@ def transaction() -> Iterator[sqlite3.Connection]:
         connection.close()
 
 
-COMPETITION_TABLE_SQL = """
-    CREATE TABLE IF NOT EXISTS competitions (
+SCHEMA = [
+    """
+    CREATE TABLE IF NOT EXISTS tournaments (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
         days INTEGER NOT NULL CHECK (days >= 1),
@@ -63,113 +64,77 @@ COMPETITION_TABLE_SQL = """
         racers_per_heat INTEGER NOT NULL CHECK (racers_per_heat >= 2),
         max_marbles_per_heat INTEGER NOT NULL CHECK (max_marbles_per_heat >= 2),
         marbles_per_racer INTEGER NOT NULL DEFAULT 1 CHECK (marbles_per_racer >= 1),
-        championship_racers INTEGER NOT NULL CHECK (championship_racers >= 2),
+        final_racers INTEGER NOT NULL CHECK (final_racers >= 2),
         seed INTEGER NOT NULL DEFAULT 7,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
+    """,
     """
-
-
-SCHEMA = [
-    COMPETITION_TABLE_SQL,
-    """
-    CREATE TABLE IF NOT EXISTS contestants (
+    CREATE TABLE IF NOT EXISTS racers (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        competition_id INTEGER NOT NULL REFERENCES competitions(id) ON DELETE CASCADE,
+        tournament_id INTEGER NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
         name TEXT NOT NULL,
         color TEXT NOT NULL,
         sort_order INTEGER NOT NULL,
-        UNIQUE (competition_id, name COLLATE NOCASE),
-        UNIQUE (competition_id, sort_order)
+        UNIQUE (tournament_id, name COLLATE NOCASE),
+        UNIQUE (tournament_id, sort_order)
     )
     """,
     """
     CREATE TABLE IF NOT EXISTS point_values (
-        competition_id INTEGER NOT NULL REFERENCES competitions(id) ON DELETE CASCADE,
+        tournament_id INTEGER NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
         place INTEGER NOT NULL CHECK (place >= 1),
         points INTEGER NOT NULL CHECK (points >= 0),
-        PRIMARY KEY (competition_id, place)
+        PRIMARY KEY (tournament_id, place)
     )
     """,
     """
     CREATE TABLE IF NOT EXISTS heats (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        competition_id INTEGER NOT NULL REFERENCES competitions(id) ON DELETE CASCADE,
+        tournament_id INTEGER NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
         day INTEGER NOT NULL,
         heat_number INTEGER NOT NULL,
         global_number INTEGER NOT NULL,
-        UNIQUE (competition_id, day, heat_number),
-        UNIQUE (competition_id, global_number)
+        UNIQUE (tournament_id, day, heat_number),
+        UNIQUE (tournament_id, global_number)
     )
     """,
     """
     CREATE TABLE IF NOT EXISTS heat_entries (
         heat_id INTEGER NOT NULL REFERENCES heats(id) ON DELETE CASCADE,
         lane INTEGER NOT NULL,
-        contestant_id INTEGER NOT NULL REFERENCES contestants(id) ON DELETE CASCADE,
+        racer_id INTEGER NOT NULL REFERENCES racers(id) ON DELETE CASCADE,
         marble_number INTEGER NOT NULL CHECK (marble_number >= 1),
         finish INTEGER,
         points INTEGER,
         PRIMARY KEY (heat_id, lane, marble_number),
-        UNIQUE (heat_id, contestant_id, marble_number)
+        UNIQUE (heat_id, racer_id, marble_number)
     )
     """,
     """
-    CREATE TABLE IF NOT EXISTS championship_entries (
-        competition_id INTEGER NOT NULL REFERENCES competitions(id) ON DELETE CASCADE,
+    CREATE TABLE IF NOT EXISTS final_entries (
+        tournament_id INTEGER NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
         seed INTEGER NOT NULL,
-        contestant_id INTEGER NOT NULL REFERENCES contestants(id) ON DELETE CASCADE,
+        racer_id INTEGER NOT NULL REFERENCES racers(id) ON DELETE CASCADE,
         finish INTEGER,
-        PRIMARY KEY (competition_id, seed),
-        UNIQUE (competition_id, contestant_id)
+        PRIMARY KEY (tournament_id, seed),
+        UNIQUE (tournament_id, racer_id)
     )
     """,
-    "CREATE INDEX IF NOT EXISTS idx_heats_day ON heats (competition_id, day, heat_number)",
-    "CREATE INDEX IF NOT EXISTS idx_heat_entries_contestant ON heat_entries (contestant_id)",
-    "CREATE UNIQUE INDEX IF NOT EXISTS idx_competitions_name_nocase ON competitions (name COLLATE NOCASE)",
+    "CREATE INDEX IF NOT EXISTS idx_heats_day ON heats (tournament_id, day, heat_number)",
+    "CREATE INDEX IF NOT EXISTS idx_heat_entries_racer ON heat_entries (racer_id)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_tournaments_name_nocase ON tournaments (name COLLATE NOCASE)",
 ]
-
-
-def _upgrade_singleton_competitions(connection: sqlite3.Connection) -> None:
-    """Remove the legacy id=1 constraint without changing related row ids."""
-    table = connection.execute(
-        "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'competitions'"
-    ).fetchone()
-    if not table or "CHECK (id = 1)" not in (table["sql"] or ""):
-        return
-    old_columns = {
-        row["name"] for row in connection.execute("PRAGMA table_info(competitions)")
-    }
-    connection.execute("PRAGMA legacy_alter_table = ON")
-    connection.execute("ALTER TABLE competitions RENAME TO competitions_singleton")
-    connection.execute(COMPETITION_TABLE_SQL)
-    heats_per_racer = (
-        "heats_per_racer_per_day" if "heats_per_racer_per_day" in old_columns else "3"
-    )
-    marbles_per_racer = "marbles_per_racer" if "marbles_per_racer" in old_columns else "1"
-    created_at = "created_at" if "created_at" in old_columns else "CURRENT_TIMESTAMP"
-    connection.execute(
-        f"""
-        INSERT INTO competitions
-            (id, name, days, heats_per_day, heats_per_racer_per_day,
-             racers_per_heat, marbles_per_racer, championship_racers, seed, created_at, updated_at)
-        SELECT id, name, days, heats_per_day, {heats_per_racer},
-               racers_per_heat, {marbles_per_racer}, championship_racers, seed, {created_at}, updated_at
-        FROM competitions_singleton
-        """
-    )
-    connection.execute("DROP TABLE competitions_singleton")
-    connection.execute("PRAGMA legacy_alter_table = OFF")
 
 
 def create_tournament(connection: sqlite3.Connection, name: str) -> int:
     cursor = connection.execute(
         """
-        INSERT INTO competitions
+        INSERT INTO tournaments
             (name, days, heats_per_day, heats_per_racer_per_day,
              racers_per_heat, max_marbles_per_heat, marbles_per_racer,
-             championship_racers, seed)
+             final_racers, seed)
         VALUES (?, 3, 4, 3, 6, 6, 1, 6, 7)
         """,
         (name,),
@@ -177,7 +142,7 @@ def create_tournament(connection: sqlite3.Connection, name: str) -> int:
     tournament_id = int(cursor.lastrowid)
     connection.executemany(
         """
-        INSERT INTO contestants (competition_id, name, color, sort_order)
+        INSERT INTO racers (tournament_id, name, color, sort_order)
         VALUES (?, ?, ?, ?)
         """,
         [
@@ -186,7 +151,7 @@ def create_tournament(connection: sqlite3.Connection, name: str) -> int:
         ],
     )
     connection.executemany(
-        "INSERT INTO point_values (competition_id, place, points) VALUES (?, ?, ?)",
+        "INSERT INTO point_values (tournament_id, place, points) VALUES (?, ?, ?)",
         [
             (tournament_id, index, value)
             for index, value in enumerate(DEFAULT_POINTS, start=1)
@@ -201,7 +166,6 @@ def init_db() -> None:
     try:
         connection.execute("PRAGMA foreign_keys = OFF")
         connection.execute("BEGIN IMMEDIATE")
-        _upgrade_singleton_competitions(connection)
         for statement in SCHEMA:
             connection.execute(statement)
         foreign_key_errors = connection.execute("PRAGMA foreign_key_check").fetchall()
@@ -388,36 +352,36 @@ def improve_pair_balance(
 
 
 def rebuild_schedule(connection: sqlite3.Connection, tournament_id: int) -> None:
-    competition = connection.execute(
-        "SELECT * FROM competitions WHERE id = ?", (tournament_id,)
+    tournament = connection.execute(
+        "SELECT * FROM tournaments WHERE id = ?", (tournament_id,)
     ).fetchone()
-    contestant_ids = [
+    racer_ids = [
         row["id"]
         for row in connection.execute(
-            "SELECT id FROM contestants WHERE competition_id = ? ORDER BY sort_order",
+            "SELECT id FROM racers WHERE tournament_id = ? ORDER BY sort_order",
             (tournament_id,),
         )
     ]
-    if not competition or len(contestant_ids) < competition["racers_per_heat"]:
+    if not tournament or len(racer_ids) < tournament["racers_per_heat"]:
         raise ValueError("Not enough racers to build the heat schedule.")
     connection.execute(
-        "DELETE FROM championship_entries WHERE competition_id = ?", (tournament_id,)
+        "DELETE FROM final_entries WHERE tournament_id = ?", (tournament_id,)
     )
-    connection.execute("DELETE FROM heats WHERE competition_id = ?", (tournament_id,))
-    total_slots_per_day = len(contestant_ids) * competition["heats_per_racer_per_day"]
-    if total_slots_per_day % competition["racers_per_heat"]:
+    connection.execute("DELETE FROM heats WHERE tournament_id = ?", (tournament_id,))
+    total_slots_per_day = len(racer_ids) * tournament["heats_per_racer_per_day"]
+    if total_slots_per_day % tournament["racers_per_heat"]:
         raise ValueError("The racer appearances do not divide into complete heats.")
-    heats_per_day = total_slots_per_day // competition["racers_per_heat"]
+    heats_per_day = total_slots_per_day // tournament["racers_per_heat"]
     connection.execute(
-        "UPDATE competitions SET heats_per_day = ? WHERE id = ?",
+        "UPDATE tournaments SET heats_per_day = ? WHERE id = ?",
         (heats_per_day, tournament_id),
     )
     schedule = balanced_schedule(
-        contestant_ids,
-        competition["racers_per_heat"],
-        competition["heats_per_racer_per_day"],
-        competition["days"],
-        competition["seed"],
+        racer_ids,
+        tournament["racers_per_heat"],
+        tournament["heats_per_racer_per_day"],
+        tournament["days"],
+        tournament["seed"],
     )
     global_index = 0
     for day, day_schedule in enumerate(schedule, start=1):
@@ -425,7 +389,7 @@ def rebuild_schedule(connection: sqlite3.Connection, tournament_id: int) -> None
             global_index += 1
             cursor = connection.execute(
                 """
-                INSERT INTO heats (competition_id, day, heat_number, global_number)
+                INSERT INTO heats (tournament_id, day, heat_number, global_number)
                 VALUES (?, ?, ?, ?)
                 """,
                 (tournament_id, day, heat_number, global_index),
@@ -434,13 +398,13 @@ def rebuild_schedule(connection: sqlite3.Connection, tournament_id: int) -> None
             connection.executemany(
                 """
                 INSERT INTO heat_entries
-                    (heat_id, lane, contestant_id, marble_number)
+                    (heat_id, lane, racer_id, marble_number)
                 VALUES (?, ?, ?, ?)
                 """,
                 [
-                    (heat_id, lane, contestant_id, marble_number)
-                    for lane, contestant_id in enumerate(participants, start=1)
-                    for marble_number in range(1, competition["marbles_per_racer"] + 1)
+                    (heat_id, lane, racer_id, marble_number)
+                    for lane, racer_id in enumerate(participants, start=1)
+                    for marble_number in range(1, tournament["marbles_per_racer"] + 1)
                 ],
             )
 
@@ -448,33 +412,33 @@ def rebuild_schedule(connection: sqlite3.Connection, tournament_id: int) -> None
 def standings(
     connection: sqlite3.Connection, tournament_id: int
 ) -> list[dict[str, Any]]:
-    competition = connection.execute(
-        "SELECT days FROM competitions WHERE id = ?", (tournament_id,)
+    tournament = connection.execute(
+        "SELECT days FROM tournaments WHERE id = ?", (tournament_id,)
     ).fetchone()
     rows = connection.execute(
         """
-        SELECT c.id, c.name, c.color, c.sort_order,
+        SELECT r.id, r.name, r.color, r.sort_order,
                COALESCE(SUM(he.points), 0) AS total_points,
                COALESCE(SUM(CASE WHEN he.finish = 1 THEN 1 ELSE 0 END), 0) AS wins
-        FROM contestants c
-        LEFT JOIN heat_entries he ON he.contestant_id = c.id
-        WHERE c.competition_id = ?
-        GROUP BY c.id
-        ORDER BY total_points DESC, wins DESC, c.sort_order ASC
+        FROM racers r
+        LEFT JOIN heat_entries he ON he.racer_id = r.id
+        WHERE r.tournament_id = ?
+        GROUP BY r.id
+        ORDER BY total_points DESC, wins DESC, r.sort_order ASC
         """,
         (tournament_id,),
     ).fetchall()
     day_rows = connection.execute(
         """
-        SELECT he.contestant_id, h.day, COALESCE(SUM(he.points), 0) AS points
+        SELECT he.racer_id, h.day, COALESCE(SUM(he.points), 0) AS points
         FROM heat_entries he
         JOIN heats h ON h.id = he.heat_id
-        WHERE h.competition_id = ?
-        GROUP BY he.contestant_id, h.day
+        WHERE h.tournament_id = ?
+        GROUP BY he.racer_id, h.day
         """,
         (tournament_id,),
     ).fetchall()
-    day_points = {(row["contestant_id"], row["day"]): row["points"] for row in day_rows}
+    day_points = {(row["racer_id"], row["day"]): row["points"] for row in day_rows}
     result = []
     for rank, row in enumerate(rows, start=1):
         result.append(
@@ -485,7 +449,7 @@ def standings(
                 "color": row["color"],
                 "totalPoints": row["total_points"],
                 "wins": row["wins"],
-                "dayPoints": [day_points.get((row["id"], day), 0) for day in range(1, competition["days"] + 1)],
+                "dayPoints": [day_points.get((row["id"], day), 0) for day in range(1, tournament["days"] + 1)],
             }
         )
     return result
@@ -499,7 +463,7 @@ def completed_heat_count(connection: sqlite3.Connection, tournament_id: int) -> 
             SELECT h.id
             FROM heats h
             JOIN heat_entries he ON he.heat_id = h.id
-            WHERE h.competition_id = ?
+            WHERE h.tournament_id = ?
             GROUP BY h.id
             HAVING COUNT(*) = SUM(CASE WHEN he.finish IS NOT NULL THEN 1 ELSE 0 END)
         )
@@ -509,23 +473,23 @@ def completed_heat_count(connection: sqlite3.Connection, tournament_id: int) -> 
     return row["completed"]
 
 
-def sync_championship(connection: sqlite3.Connection, tournament_id: int) -> None:
-    competition = connection.execute(
-        "SELECT * FROM competitions WHERE id = ?", (tournament_id,)
+def sync_final(connection: sqlite3.Connection, tournament_id: int) -> None:
+    tournament = connection.execute(
+        "SELECT * FROM tournaments WHERE id = ?", (tournament_id,)
     ).fetchone()
-    total_heats = competition["days"] * competition["heats_per_day"]
+    total_heats = tournament["days"] * tournament["heats_per_day"]
     if completed_heat_count(connection, tournament_id) != total_heats:
         connection.execute(
-            "DELETE FROM championship_entries WHERE competition_id = ?", (tournament_id,)
+            "DELETE FROM final_entries WHERE tournament_id = ?", (tournament_id,)
         )
         return
-    qualifiers = standings(connection, tournament_id)[: competition["championship_racers"]]
+    qualifiers = standings(connection, tournament_id)[: tournament["final_racers"]]
     connection.execute(
-        "DELETE FROM championship_entries WHERE competition_id = ?", (tournament_id,)
+        "DELETE FROM final_entries WHERE tournament_id = ?", (tournament_id,)
     )
     connection.executemany(
         """
-        INSERT INTO championship_entries (competition_id, seed, contestant_id)
+        INSERT INTO final_entries (tournament_id, seed, racer_id)
         VALUES (?, ?, ?)
         """,
         [(tournament_id, item["rank"], item["id"]) for item in qualifiers],

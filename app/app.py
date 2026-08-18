@@ -13,7 +13,7 @@ from db import (
     init_db,
     rebuild_schedule,
     standings,
-    sync_championship,
+    sync_final,
     transaction,
 )
 from report import build_report
@@ -66,7 +66,7 @@ def health():
 def resolve_tournament_id(connection, value: Any = None) -> int:
     candidate = value if value is not None else request.args.get("tournamentId")
     if candidate in (None, ""):
-        row = connection.execute("SELECT id FROM competitions ORDER BY id LIMIT 1").fetchone()
+        row = connection.execute("SELECT id FROM tournaments ORDER BY id LIMIT 1").fetchone()
         if not row:
             raise ApiError("No tournaments are available.", status=404)
         return int(row["id"])
@@ -75,7 +75,7 @@ def resolve_tournament_id(connection, value: Any = None) -> int:
     except (TypeError, ValueError) as exc:
         raise ApiError("Tournament id must be a whole number.") from exc
     if not connection.execute(
-        "SELECT 1 FROM competitions WHERE id = ?", (tournament_id,)
+        "SELECT 1 FROM tournaments WHERE id = ?", (tournament_id,)
     ).fetchone():
         raise ApiError("Tournament not found.", status=404)
     return tournament_id
@@ -86,7 +86,7 @@ def tournament_summaries(connection) -> list[dict[str, Any]]:
     for row in connection.execute(
         """
         SELECT id, name, days, heats_per_day, updated_at
-        FROM competitions
+        FROM tournaments
         ORDER BY created_at, id
         """
     ):
@@ -97,8 +97,8 @@ def tournament_summaries(connection) -> list[dict[str, Any]]:
             """
             SELECT COUNT(*) AS racers,
                    SUM(CASE WHEN finish IS NOT NULL THEN 1 ELSE 0 END) AS finished
-            FROM championship_entries
-            WHERE competition_id = ?
+            FROM final_entries
+            WHERE tournament_id = ?
             """,
             (tournament_id,),
         ).fetchone()
@@ -128,19 +128,19 @@ def tournament_summaries(connection) -> list[dict[str, Any]]:
 
 
 def build_state(connection, tournament_id: int) -> dict[str, Any]:
-    competition_row = connection.execute(
-        "SELECT * FROM competitions WHERE id = ?", (tournament_id,)
+    tournament_row = connection.execute(
+        "SELECT * FROM tournaments WHERE id = ?", (tournament_id,)
     ).fetchone()
-    if not competition_row:
+    if not tournament_row:
         raise ApiError("Tournament not found.", status=404)
-    competition = dict(competition_row)
+    tournament = dict(tournament_row)
     contestants = [
         dict(row)
         for row in connection.execute(
             """
             SELECT id, name, color, sort_order
-            FROM contestants
-            WHERE competition_id = ?
+            FROM racers
+            WHERE tournament_id = ?
             ORDER BY sort_order
             """,
             (tournament_id,),
@@ -151,7 +151,7 @@ def build_state(connection, tournament_id: int) -> dict[str, Any]:
         for row in connection.execute(
             """
             SELECT points FROM point_values
-            WHERE competition_id = ?
+            WHERE tournament_id = ?
             ORDER BY place
             """,
             (tournament_id,),
@@ -161,11 +161,11 @@ def build_state(connection, tournament_id: int) -> dict[str, Any]:
         """
         SELECT h.id, h.day, h.heat_number, h.global_number,
                he.lane, he.marble_number, he.finish, he.points,
-               c.id AS contestant_id, c.name, c.color
+               r.id AS racer_id, r.name, r.color
         FROM heats h
         JOIN heat_entries he ON he.heat_id = h.id
-        JOIN contestants c ON c.id = he.contestant_id
-        WHERE h.competition_id = ?
+        JOIN racers r ON r.id = he.racer_id
+        WHERE h.tournament_id = ?
         ORDER BY h.day, h.heat_number, he.lane, he.marble_number
         """,
         (tournament_id,),
@@ -188,7 +188,7 @@ def build_state(connection, tournament_id: int) -> dict[str, Any]:
         if entry is None:
             entry = {
                 "lane": row["lane"],
-                "contestantId": row["contestant_id"],
+                "contestantId": row["racer_id"],
                 "name": row["name"],
                 "color": row["color"],
                 "marbles": [],
@@ -203,7 +203,7 @@ def build_state(connection, tournament_id: int) -> dict[str, Any]:
             }
         )
     days = []
-    for day in range(1, competition["days"] + 1):
+    for day in range(1, tournament["days"] + 1):
         day_heats = [heat for heat in heat_map.values() if heat["day"] == day]
         for heat in day_heats:
             for entry in heat["entries"]:
@@ -224,26 +224,26 @@ def build_state(connection, tournament_id: int) -> dict[str, Any]:
         days.append({"day": day, "heats": day_heats})
 
     table = standings(connection, tournament_id)
-    total_heats = competition["days"] * competition["heats_per_day"]
+    total_heats = tournament["days"] * tournament["heats_per_day"]
     completed_heats = completed_heat_count(connection, tournament_id)
     final_rows = connection.execute(
         """
-        SELECT ce.seed, ce.finish, c.id AS contestant_id, c.name, c.color
-        FROM championship_entries ce
-        JOIN contestants c ON c.id = ce.contestant_id
-        WHERE ce.competition_id = ?
-        ORDER BY ce.seed
+        SELECT fe.seed, fe.finish, r.id AS racer_id, r.name, r.color
+        FROM final_entries fe
+        JOIN racers r ON r.id = fe.racer_id
+        WHERE fe.tournament_id = ?
+        ORDER BY fe.seed
         """,
         (tournament_id,),
     ).fetchall()
     final_racers = []
     standings_by_id = {row["id"]: row for row in table}
     for row in final_rows:
-        standing = standings_by_id[row["contestant_id"]]
+        standing = standings_by_id[row["racer_id"]]
         final_racers.append(
             {
                 "seed": row["seed"],
-                "contestantId": row["contestant_id"],
+                "contestantId": row["racer_id"],
                 "name": row["name"],
                 "color": row["color"],
                 "totalPoints": standing["totalPoints"],
@@ -254,16 +254,16 @@ def build_state(connection, tournament_id: int) -> dict[str, Any]:
     return {
         "competition": {
             "id": tournament_id,
-            "name": competition["name"],
-            "days": competition["days"],
-            "heatsPerDay": competition["heats_per_day"],
-            "heatsPerRacerPerDay": competition["heats_per_racer_per_day"],
-            "racersPerHeat": competition["racers_per_heat"],
-            "maxMarblesPerHeat": competition["max_marbles_per_heat"],
-            "marblesPerHeat": competition["racers_per_heat"]
-            * competition["marbles_per_racer"],
-            "marblesPerRacer": competition["marbles_per_racer"],
-            "championshipRacers": competition["championship_racers"],
+            "name": tournament["name"],
+            "days": tournament["days"],
+            "heatsPerDay": tournament["heats_per_day"],
+            "heatsPerRacerPerDay": tournament["heats_per_racer_per_day"],
+            "racersPerHeat": tournament["racers_per_heat"],
+            "maxMarblesPerHeat": tournament["max_marbles_per_heat"],
+            "marblesPerHeat": tournament["racers_per_heat"]
+            * tournament["marbles_per_racer"],
+            "marblesPerRacer": tournament["marbles_per_racer"],
+            "championshipRacers": tournament["final_racers"],
             "totalHeats": total_heats,
             "completedHeats": completed_heats,
         },
@@ -426,7 +426,7 @@ def add_tournament():
     name = validated_tournament_name(payload.get("name"))
     with transaction() as connection:
         if connection.execute(
-            "SELECT 1 FROM competitions WHERE name = ? COLLATE NOCASE", (name,)
+            "SELECT 1 FROM tournaments WHERE name = ? COLLATE NOCASE", (name,)
         ).fetchone():
             raise ApiError("A tournament with that name already exists.", status=409)
         tournament_id = create_tournament(connection, name)
@@ -439,7 +439,7 @@ def update_tournament(tournament_id: int):
         tournament_id = resolve_tournament_id(connection, tournament_id)
         duplicate_name = connection.execute(
             """
-            SELECT 1 FROM competitions
+            SELECT 1 FROM tournaments
             WHERE name = ? COLLATE NOCASE AND id != ?
             """,
             (data["name"], tournament_id),
@@ -447,12 +447,12 @@ def update_tournament(tournament_id: int):
         if duplicate_name:
             raise ApiError("A tournament with that name already exists.", status=409)
         current = connection.execute(
-            "SELECT * FROM competitions WHERE id = ?", (tournament_id,)
+            "SELECT * FROM tournaments WHERE id = ?", (tournament_id,)
         ).fetchone()
-        current_contestants = connection.execute(
+        current_racers = connection.execute(
             """
-            SELECT * FROM contestants
-            WHERE competition_id = ?
+            SELECT * FROM racers
+            WHERE tournament_id = ?
             ORDER BY sort_order
             """,
             (tournament_id,),
@@ -462,7 +462,7 @@ def update_tournament(tournament_id: int):
             for row in connection.execute(
                 """
                 SELECT points FROM point_values
-                WHERE competition_id = ?
+                WHERE tournament_id = ?
                 ORDER BY place
                 """,
                 (tournament_id,),
@@ -473,8 +473,8 @@ def update_tournament(tournament_id: int):
             or current["heats_per_racer_per_day"] != data["heatsPerRacerPerDay"]
             or current["racers_per_heat"] != data["racersPerHeat"]
             or current["marbles_per_racer"] != data["marblesPerRacer"]
-            or current["championship_racers"] != data["championshipRacers"]
-            or len(current_contestants) != len(data["contestants"])
+            or current["final_racers"] != data["championshipRacers"]
+            or len(current_racers) != len(data["contestants"])
             or current_points != data["points"]
         )
         has_results = connection.execute(
@@ -482,7 +482,7 @@ def update_tournament(tournament_id: int):
             SELECT 1
             FROM heat_entries he
             JOIN heats h ON h.id = he.heat_id
-            WHERE h.competition_id = ? AND he.finish IS NOT NULL
+            WHERE h.tournament_id = ? AND he.finish IS NOT NULL
             LIMIT 1
             """,
             (tournament_id,),
@@ -496,10 +496,10 @@ def update_tournament(tournament_id: int):
 
         connection.execute(
             """
-            UPDATE competitions
+            UPDATE tournaments
             SET name = ?, days = ?, heats_per_day = ?, heats_per_racer_per_day = ?,
                 racers_per_heat = ?, max_marbles_per_heat = ?, marbles_per_racer = ?,
-                championship_racers = ?,
+                final_racers = ?,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
             """,
@@ -516,29 +516,29 @@ def update_tournament(tournament_id: int):
             ),
         )
 
-        if len(current_contestants) == len(data["contestants"]):
-            for row in current_contestants:
+        if len(current_racers) == len(data["contestants"]):
+            for row in current_racers:
                 connection.execute(
-                    "UPDATE contestants SET name = ? WHERE id = ?",
+                    "UPDATE racers SET name = ? WHERE id = ?",
                     (f"__temporary_racer_{row['id']}__", row["id"]),
                 )
-            for row, racer in zip(current_contestants, data["contestants"]):
+            for row, racer in zip(current_racers, data["contestants"]):
                 connection.execute(
-                    "UPDATE contestants SET name = ?, color = ? WHERE id = ?",
+                    "UPDATE racers SET name = ?, color = ? WHERE id = ?",
                     (racer["name"], racer["color"], row["id"]),
                 )
         else:
             connection.execute(
-                "DELETE FROM championship_entries WHERE competition_id = ?",
+                "DELETE FROM final_entries WHERE tournament_id = ?",
                 (tournament_id,),
             )
-            connection.execute("DELETE FROM heats WHERE competition_id = ?", (tournament_id,))
+            connection.execute("DELETE FROM heats WHERE tournament_id = ?", (tournament_id,))
             connection.execute(
-                "DELETE FROM contestants WHERE competition_id = ?", (tournament_id,)
+                "DELETE FROM racers WHERE tournament_id = ?", (tournament_id,)
             )
             connection.executemany(
                 """
-                INSERT INTO contestants (competition_id, name, color, sort_order)
+                INSERT INTO racers (tournament_id, name, color, sort_order)
                 VALUES (?, ?, ?, ?)
                 """,
                 [
@@ -548,10 +548,10 @@ def update_tournament(tournament_id: int):
             )
 
         connection.execute(
-            "DELETE FROM point_values WHERE competition_id = ?", (tournament_id,)
+            "DELETE FROM point_values WHERE tournament_id = ?", (tournament_id,)
         )
         connection.executemany(
-            "INSERT INTO point_values (competition_id, place, points) VALUES (?, ?, ?)",
+            "INSERT INTO point_values (tournament_id, place, points) VALUES (?, ?, ?)",
             [
                 (tournament_id, place, value)
                 for place, value in enumerate(data["points"], start=1)
@@ -581,9 +581,9 @@ def update_competition_compatibility():
 def delete_tournament(tournament_id: int):
     with transaction() as connection:
         tournament_id = resolve_tournament_id(connection, tournament_id)
-        connection.execute("DELETE FROM competitions WHERE id = ?", (tournament_id,))
+        connection.execute("DELETE FROM tournaments WHERE id = ?", (tournament_id,))
         next_row = connection.execute(
-            "SELECT id FROM competitions ORDER BY created_at, id LIMIT 1"
+            "SELECT id FROM tournaments ORDER BY created_at, id LIMIT 1"
         ).fetchone()
         next_id = next_row["id"] if next_row else None
         return jsonify({"deletedId": tournament_id, "nextTournamentId": next_id})
@@ -598,7 +598,7 @@ def save_heat_results(heat_id: int):
     with transaction() as connection:
         entries = connection.execute(
             """
-            SELECT h.competition_id, he.contestant_id, he.marble_number
+            SELECT h.tournament_id, he.racer_id, he.marble_number
             FROM heat_entries he
             JOIN heats h ON h.id = he.heat_id
             WHERE he.heat_id = ?
@@ -608,23 +608,23 @@ def save_heat_results(heat_id: int):
         ).fetchall()
         if not entries:
             raise ApiError("Heat not found.", status=404)
-        tournament_id = int(entries[0]["competition_id"])
+        tournament_id = int(entries[0]["tournament_id"])
         expected_keys = {
-            (row["contestant_id"], row["marble_number"]) for row in entries
+            (row["racer_id"], row["marble_number"]) for row in entries
         }
         if len(results) != len(entries):
             raise ApiError("Enter a finishing position for every marble in the heat.")
         parsed: dict[tuple[int, int], int] = {}
         for result in results:
             try:
-                contestant_id = int(result.get("contestantId"))
+                racer_id = int(result.get("contestantId"))
                 marble_number = int(result.get("marbleNumber", 1))
                 finish = int(result.get("finish"))
             except (AttributeError, TypeError, ValueError) as exc:
                 raise ApiError(
                     "Every result needs a racer, marble number, and finishing position."
                 ) from exc
-            parsed[(contestant_id, marble_number)] = finish
+            parsed[(racer_id, marble_number)] = finish
         if set(parsed) != expected_keys:
             raise ApiError("The submitted racer marbles do not match this heat.")
         finishes = list(parsed.values())
@@ -639,26 +639,26 @@ def save_heat_results(heat_id: int):
             for row in connection.execute(
                 """
                 SELECT place, points FROM point_values
-                WHERE competition_id = ?
+                WHERE tournament_id = ?
                 """,
                 (tournament_id,),
             )
         }
-        for (contestant_id, marble_number), finish in parsed.items():
+        for (racer_id, marble_number), finish in parsed.items():
             connection.execute(
                 """
                 UPDATE heat_entries SET finish = ?, points = ?
-                WHERE heat_id = ? AND contestant_id = ? AND marble_number = ?
+                WHERE heat_id = ? AND racer_id = ? AND marble_number = ?
                 """,
                 (
                     finish,
                     0 if finish == 0 else point_values.get(finish, 0),
                     heat_id,
-                    contestant_id,
+                    racer_id,
                     marble_number,
                 ),
             )
-        sync_championship(connection, tournament_id)
+        sync_final(connection, tournament_id)
         return jsonify(build_state(connection, tournament_id))
 
 
@@ -670,7 +670,7 @@ def save_final_results(tournament_id: int):
     with transaction() as connection:
         tournament_id = resolve_tournament_id(connection, tournament_id)
         tournament = connection.execute(
-            "SELECT * FROM competitions WHERE id = ?", (tournament_id,)
+            "SELECT * FROM tournaments WHERE id = ?", (tournament_id,)
         ).fetchone()
         if completed_heat_count(connection, tournament_id) != (
             tournament["days"] * tournament["heats_per_day"]
@@ -678,23 +678,23 @@ def save_final_results(tournament_id: int):
             raise ApiError("Complete every round heat before scoring the final.")
         qualifiers = connection.execute(
             """
-            SELECT contestant_id FROM championship_entries
-            WHERE competition_id = ?
+            SELECT racer_id FROM final_entries
+            WHERE tournament_id = ?
             ORDER BY seed
             """,
             (tournament_id,),
         ).fetchall()
-        expected_ids = {row["contestant_id"] for row in qualifiers}
+        expected_ids = {row["racer_id"] for row in qualifiers}
         if len(results) != len(qualifiers):
             raise ApiError("Enter a finishing position for every finalist.")
         parsed: dict[int, int] = {}
         for result in results:
             try:
-                contestant_id = int(result.get("contestantId"))
+                racer_id = int(result.get("contestantId"))
                 finish = int(result.get("finish"))
             except (AttributeError, TypeError, ValueError) as exc:
                 raise ApiError("Every final result needs a racer and position.") from exc
-            parsed[contestant_id] = finish
+            parsed[racer_id] = finish
         if set(parsed) != expected_ids:
             raise ApiError("The submitted racers do not match the final field.")
         finishes = list(parsed.values())
@@ -706,13 +706,13 @@ def save_final_results(tournament_id: int):
         expected_finishes = set(range(1, len(placed_finishes) + 1))
         if len(set(placed_finishes)) != len(placed_finishes) or set(placed_finishes) != expected_finishes:
             raise ApiError("Final positions must be unique and consecutive; DNF may be used more than once.")
-        for contestant_id, finish in parsed.items():
+        for racer_id, finish in parsed.items():
             connection.execute(
                 """
-                UPDATE championship_entries SET finish = ?
-                WHERE competition_id = ? AND contestant_id = ?
+                UPDATE final_entries SET finish = ?
+                WHERE tournament_id = ? AND racer_id = ?
                 """,
-                (finish, tournament_id, contestant_id),
+                (finish, tournament_id, racer_id),
             )
         return jsonify(build_state(connection, tournament_id))
 
