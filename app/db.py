@@ -112,6 +112,7 @@ SCHEMA = [
         day INTEGER,
         heat_number INTEGER NOT NULL,
         global_number INTEGER NOT NULL,
+        started_at TEXT,
         UNIQUE (tournament_id, stage, day, heat_number),
         UNIQUE (tournament_id, global_number)
     )
@@ -588,6 +589,22 @@ def stage_has_results(connection: sqlite3.Connection, tournament_id: int, stage:
         LIMIT 1
         """,
         (tournament_id, stage),
+    ).fetchone()
+    return row is not None
+
+
+def is_staging_heat_locked(connection: sqlite3.Connection, tournament_id: int, global_number: int) -> bool:
+    """A staging heat is locked while any earlier staging heat (by global_number,
+    the tournament's canonical heat order) still has unscored entries."""
+    row = connection.execute(
+        """
+        SELECT 1
+        FROM heats h
+        WHERE h.tournament_id = ? AND h.stage = 'staging' AND h.global_number < ?
+          AND EXISTS (SELECT 1 FROM heat_entries he WHERE he.heat_id = h.id AND he.finish IS NULL)
+        LIMIT 1
+        """,
+        (tournament_id, global_number),
     ).fetchone()
     return row is not None
 

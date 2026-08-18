@@ -13,6 +13,7 @@ from db import (
     create_tournament,
     final_field,
     init_db,
+    is_staging_heat_locked,
     is_stage_complete,
     preliminary_field,
     rebuild_schedule,
@@ -127,7 +128,7 @@ def tournament_summaries(connection) -> list[dict[str, Any]]:
 def fetch_heat_rows(connection, tournament_id: int, stage: str):
     return connection.execute(
         """
-        SELECT h.id, h.day, h.heat_number, h.global_number,
+        SELECT h.id, h.day, h.heat_number, h.global_number, h.stage, h.started_at,
                he.lane, he.marble_number, he.finish, he.points,
                he.origin_stage, he.origin_round, he.origin_heat_id,
                r.id AS racer_id, r.name, r.color
@@ -145,16 +146,19 @@ def shape_heats(heat_rows) -> list[dict[str, Any]]:
     heat_map: dict[int, dict[str, Any]] = {}
     entry_map: dict[tuple[int, int], dict[str, Any]] = {}
     for row in heat_rows:
-        heat = heat_map.setdefault(
-            row["id"],
-            {
+        heat = heat_map.get(row["id"])
+        if heat is None:
+            heat = {
                 "id": row["id"],
                 "day": row["day"],
                 "heatNumber": row["heat_number"],
                 "globalNumber": row["global_number"],
+                "stage": row["stage"],
                 "entries": [],
-            },
-        )
+            }
+            if row["stage"] == "staging":
+                heat["started"] = row["started_at"] is not None
+            heat_map[row["id"]] = heat
         entry_key = (row["id"], row["lane"])
         entry = entry_map.get(entry_key)
         if entry is None:
@@ -298,6 +302,13 @@ def build_state(connection, tournament_id: int) -> dict[str, Any]:
         )
     ]
     staging_heats = shape_heats(fetch_heat_rows(connection, tournament_id, "staging"))
+    blocked = False
+    for heat in sorted(staging_heats, key=lambda heat: heat["globalNumber"]):
+        if heat["complete"]:
+            heat["locked"] = False
+        else:
+            heat["locked"] = blocked
+            blocked = True
     days = []
     for day in range(1, tournament["days"] + 1):
         day_heats = sorted(
@@ -663,11 +674,11 @@ def save_heat_results(heat_id: int):
         raise ApiError("Results must be supplied as a list.")
     with transaction() as connection:
         heat_row = connection.execute(
-            "SELECT tournament_id, stage FROM heats WHERE id = ?", (heat_id,)
+            "SELECT tournament_id, stage, started_at FROM heats WHERE id = ?", (heat_id,)
         ).fetchone()
         entries = connection.execute(
             """
-            SELECT h.tournament_id, he.racer_id, he.marble_number
+            SELECT h.tournament_id, he.racer_id, he.marble_number, he.finish AS existing_finish
             FROM heat_entries he
             JOIN heats h ON h.id = he.heat_id
             WHERE he.heat_id = ?
@@ -679,6 +690,10 @@ def save_heat_results(heat_id: int):
             raise ApiError("Heat not found.", status=404)
         tournament_id = int(entries[0]["tournament_id"])
         stage = heat_row["stage"]
+        if stage == "staging" and heat_row["started_at"] is None:
+            already_scored = any(row["existing_finish"] is not None for row in entries)
+            if not already_scored:
+                raise ApiError("Start this heat before entering results.", status=409)
         expected_keys = {
             (row["racer_id"], row["marble_number"]) for row in entries
         }
@@ -740,6 +755,28 @@ def save_heat_results(heat_id: int):
                     requiresReset=True,
                 )
         sync_championship(connection, tournament_id)
+        return jsonify(build_state(connection, tournament_id))
+
+
+@app.put("/api/heats/<int:heat_id>/start")
+def start_heat(heat_id: int):
+    with transaction() as connection:
+        heat_row = connection.execute(
+            "SELECT tournament_id, stage, global_number, started_at FROM heats WHERE id = ?",
+            (heat_id,),
+        ).fetchone()
+        if not heat_row:
+            raise ApiError("Heat not found.", status=404)
+        tournament_id = int(heat_row["tournament_id"])
+        if heat_row["stage"] != "staging" or heat_row["started_at"] is not None:
+            return jsonify(build_state(connection, tournament_id))
+        if is_staging_heat_locked(connection, tournament_id, heat_row["global_number"]):
+            raise ApiError(
+                "Complete the earlier rounds before starting this heat.", status=409
+            )
+        connection.execute(
+            "UPDATE heats SET started_at = CURRENT_TIMESTAMP WHERE id = ?", (heat_id,)
+        )
         return jsonify(build_state(connection, tournament_id))
 
 

@@ -295,7 +295,7 @@ function renderDashboard() {
         ${nextHeat ? `<div class="next-heat">
           <div class="heat-flag"><small>Race</small><strong>#${nextHeat.globalNumber}</strong></div>
           <div class="racer-preview">${nextHeat.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>
-          <button class="primary-button compact" data-score-heat="${nextHeat.id}">Score heat</button>
+          ${nextHeat.started === false ? `<button class="primary-button compact" data-start-heat="${nextHeat.id}">Start heat</button>` : `<button class="primary-button compact" data-score-heat="${nextHeat.id}">Score heat</button>`}
         </div>` : `<div class="completion-callout"><div class="trophy">★</div><div><strong>Championship bracket underway</strong><p>Wildcard, preliminary, and final heats build automatically as each stage finishes.</p></div><button class="primary-button compact" data-view="heats" data-day="championship">Open bracket</button></div>`}
       </article>
       <article class="panel standings-preview">
@@ -429,7 +429,35 @@ function finalFinishLabel(finish, racers) {
   return Number(finish) === 0 ? `Tied ${ordinal(finalDnfPlace(racers))} · DNF` : `${ordinal(finish)} place`;
 }
 
+function heatRacerPreview(heat) {
+  return `<div class="racer-preview">${heat.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>`;
+}
+
+function lockedHeatCard(heat) {
+  return `<article class="heat-card locked" id="heat-${heat.id}">
+    <header class="heat-card-heading">
+      <div class="heat-title"><span>Heat</span><strong>${heat.heatNumber}</strong><small>Race #${heat.globalNumber}</small></div>
+      <div><span class="pending-chip">Locked</span></div>
+      <span class="heat-locked-note">Complete the earlier rounds first</span>
+    </header>
+    ${heatRacerPreview(heat)}
+  </article>`;
+}
+
+function readyToStartHeatCard(heat) {
+  return `<article class="heat-card ready" id="heat-${heat.id}">
+    <header class="heat-card-heading">
+      <div class="heat-title"><span>Heat</span><strong>${heat.heatNumber}</strong><small>Race #${heat.globalNumber}</small></div>
+      <div><span class="pending-chip">Ready to start</span></div>
+      <button class="primary-button compact" data-start-heat="${heat.id}">Start heat</button>
+    </header>
+    ${heatRacerPreview(heat)}
+  </article>`;
+}
+
 function heatEditor(heat) {
+  if (heat.locked) return lockedHeatCard(heat);
+  if (heat.started === false) return readyToStartHeatCard(heat);
   const finishCount = heat.entries.reduce((total, entry) => total + entry.marbles.length, 0);
   return `<article class="heat-card ${heat.complete ? "complete" : ""}" id="heat-${heat.id}">
     <header class="heat-card-heading">
@@ -582,6 +610,13 @@ function render() {
   if (!kioskMode) app.focus({preventScroll:true});
 }
 
+async function startHeat(heatId) {
+  try {
+    applyState(await api(`/api/heats/${heatId}/start`, {method:"PUT"}));
+    notify("Heat started.");
+  } catch (error) { notify(error.message, true); }
+}
+
 async function saveHeat(heatId, confirmReset = false) {
   const card = document.querySelector(`#heat-${heatId}`);
   const results = [...card.querySelectorAll("[data-result-for]")].map((select) => ({contestantId:Number(select.dataset.resultFor), marbleNumber:Number(select.dataset.marbleNumber), finish:select.value}));
@@ -706,6 +741,8 @@ document.addEventListener("click", (event) => {
   if (scoreButton) { const heat = state.days.flatMap((day) => day.heats).find((item) => item.id === Number(scoreButton.dataset.scoreHeat)); activeDay = heat.day; activeView = "heats"; render(); requestAnimationFrame(() => document.querySelector(`#heat-${heat.id}`)?.scrollIntoView({behavior:"smooth", block:"center"})); return; }
   const saveHeatButton = event.target.closest("[data-save-heat]");
   if (saveHeatButton) { saveHeat(Number(saveHeatButton.dataset.saveHeat)); return; }
+  const startHeatButton = event.target.closest("[data-start-heat]");
+  if (startHeatButton) { startHeat(Number(startHeatButton.dataset.startHeat)); return; }
   if (event.target.closest("[data-add-contestant]")) { document.querySelector("#contestant-list").insertAdjacentHTML("beforeend", contestantRow()); updateSchedulePreview(); return; }
   const removeButton = event.target.closest("[data-remove-contestant]");
   if (removeButton) { const list = document.querySelector("#contestant-list"); if (list.children.length <= 2) notify("A race needs at least two racers.", true); else { removeButton.closest(".contestant-config-row").remove(); updateSchedulePreview(); } return; }

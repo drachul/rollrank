@@ -15,7 +15,14 @@ from db import balanced_schedule, championship_field, connect  # noqa: E402
 from report import final_finish_label, heat_finish_label  # noqa: E402
 
 
+def start_heat(client, heat):
+    if heat.get("stage", "staging") != "staging":
+        return None
+    return client.put(f'/api/heats/{heat["id"]}/start')
+
+
 def score_heat_sequentially(client, heat):
+    start_heat(client, heat)
     results = []
     position = 0
     for entry in heat["entries"]:
@@ -149,6 +156,7 @@ class MarbleRaceApiTest(unittest.TestCase):
                         "finish": position,
                     }
                 )
+        start_heat(self.client, heat)
         response = self.client.put(f'/api/heats/{heat["id"]}/results', json={"results": results})
         self.assertEqual(response.status_code, 200)
         updated = response.get_json()
@@ -186,6 +194,7 @@ class MarbleRaceApiTest(unittest.TestCase):
                     }
                 )
 
+        start_heat(self.client, heat)
         response = self.client.put(
             f'/api/heats/{heat["id"]}/results', json={"results": results}
         )
@@ -435,6 +444,7 @@ class MarbleRaceApiTest(unittest.TestCase):
                             "finish": finish,
                         }
                     )
+            start_heat(self.client, heat)
             scored = self.client.put(
                 f'/api/heats/{heat["id"]}/results', json={"results": results}
             )
@@ -557,6 +567,7 @@ class MarbleRaceApiTest(unittest.TestCase):
             }
             for position, entry in enumerate(heat["entries"], start=1)
         ]
+        start_heat(self.client, heat)
         scored = self.client.put(
             f'/api/heats/{heat["id"]}/results', json={"results": results}
         ).get_json()
@@ -620,6 +631,7 @@ class MarbleRaceApiTest(unittest.TestCase):
                         "finish": finish,
                     }
                 )
+            start_heat(self.client, heat)
             saved = self.client.put(f'/api/heats/{heat["id"]}/results', json={"results": results})
             self.assertEqual(saved.status_code, 200)
             state = saved.get_json()
@@ -686,6 +698,7 @@ class MarbleRaceApiTest(unittest.TestCase):
                 }
                 for entry in heat["entries"]
             ]
+            start_heat(self.client, heat)
             saved = self.client.put(f'/api/heats/{heat["id"]}/results', json={"results": results})
             self.assertEqual(saved.status_code, 200)
             state = saved.get_json()
@@ -783,6 +796,7 @@ class MarbleRaceApiTest(unittest.TestCase):
                 }
                 for entry in heat["entries"]
             ]
+            start_heat(self.client, heat)
             saved = self.client.put(f'/api/heats/{heat["id"]}/results', json={"results": results})
             self.assertEqual(saved.status_code, 200)
             state = saved.get_json()
@@ -846,6 +860,7 @@ class MarbleRaceApiTest(unittest.TestCase):
                 }
                 for entry in heat["entries"]
             ]
+            start_heat(self.client, heat)
             saved = self.client.put(f'/api/heats/{heat["id"]}/results', json={"results": results})
             self.assertEqual(saved.status_code, 200)
             state = saved.get_json()
@@ -918,6 +933,101 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertEqual(state["competition"]["championshipMaxMarblesPerHeat"], 4)
         self.assertEqual(state["competition"]["maxByeMarblesPerRacer"], 2)
         self.assertEqual(state["competition"]["maxFinalRacers"], 5)
+
+    def test_scoring_unstarted_staging_heat_is_rejected(self) -> None:
+        created = self.client.post(
+            "/api/tournaments", json={"name": "Unstarted Heat Cup"}
+        ).get_json()
+        tournament_id = created["competition"]["id"]
+        self.addCleanup(
+            lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close()
+        )
+        heat = created["days"][0]["heats"][0]
+        results = [
+            {
+                "contestantId": entry["contestantId"],
+                "marbleNumber": entry["marbles"][0]["number"],
+                "finish": index + 1,
+            }
+            for index, entry in enumerate(heat["entries"])
+        ]
+        rejected = self.client.put(
+            f'/api/heats/{heat["id"]}/results', json={"results": results}
+        )
+        self.assertEqual(rejected.status_code, 409)
+        self.assertIn("Start this heat", rejected.get_json()["error"])
+
+        started = self.client.put(f'/api/heats/{heat["id"]}/start')
+        self.assertEqual(started.status_code, 200)
+        accepted = self.client.put(
+            f'/api/heats/{heat["id"]}/results', json={"results": results}
+        )
+        self.assertEqual(accepted.status_code, 200)
+
+    def test_staging_heats_lock_until_earlier_rounds_complete(self) -> None:
+        created = self.client.post(
+            "/api/tournaments", json={"name": "Lock Order Cup"}
+        ).get_json()
+        tournament_id = created["competition"]["id"]
+        self.addCleanup(
+            lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close()
+        )
+        heats = [heat for day in created["days"] for heat in day["heats"]]
+        heat1, heat2 = heats[0], heats[1]
+        self.assertFalse(heat1["locked"])
+        self.assertFalse(heat1["started"])
+        self.assertTrue(heat2["locked"])
+        self.assertFalse(heat2["started"])
+
+        blocked = self.client.put(f'/api/heats/{heat2["id"]}/start')
+        self.assertEqual(blocked.status_code, 409)
+        self.assertIn("Complete the earlier rounds", blocked.get_json()["error"])
+
+        state = score_heat_sequentially(self.client, heat1).get_json()
+        heat1_after = state["days"][0]["heats"][0]
+        heat2_after = state["days"][0]["heats"][1]
+        self.assertTrue(heat1_after["complete"])
+        self.assertFalse(heat1_after["locked"])
+        self.assertFalse(heat2_after["locked"])
+        self.assertFalse(heat2_after["started"])
+
+        unlocked_start = self.client.put(f'/api/heats/{heat2["id"]}/start')
+        self.assertEqual(unlocked_start.status_code, 200)
+
+    def test_championship_heats_are_never_locked_or_gated_on_start(self) -> None:
+        created = self.client.post(
+            "/api/tournaments", json={"name": "No Start Needed Cup"}
+        ).get_json()
+        tournament_id = created["competition"]["id"]
+        self.addCleanup(
+            lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close()
+        )
+        staging_heats = [heat for day in created["days"] for heat in day["heats"]]
+        state = score_all_heats_sequentially(self.client, staging_heats)
+        self.assertTrue(state["championship"]["wildcard"]["ready"])
+        wildcard_heats = state["championship"]["wildcard"]["heats"]
+        self.assertTrue(wildcard_heats)
+        for heat in wildcard_heats:
+            self.assertNotIn("locked", heat)
+            self.assertNotIn("started", heat)
+
+        heat = wildcard_heats[0]
+        results = []
+        position = 0
+        for entry in heat["entries"]:
+            for race_marble in entry["marbles"]:
+                position += 1
+                results.append(
+                    {
+                        "contestantId": entry["contestantId"],
+                        "marbleNumber": race_marble["number"],
+                        "finish": position,
+                    }
+                )
+        response = self.client.put(
+            f'/api/heats/{heat["id"]}/results', json={"results": results}
+        )
+        self.assertEqual(response.status_code, 200)
 
 
 if __name__ == "__main__":
