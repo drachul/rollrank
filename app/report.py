@@ -153,7 +153,7 @@ def overview_pages(c: canvas.Canvas, state: dict[str, Any], width: float, height
                     f'{competition["marblesPerHeat"]}/{competition["maxMarblesPerHeat"]} max',
                 ),
                 ("MARBLES / RACER", competition["marblesPerRacer"]),
-                ("FINALISTS", competition["championshipRacers"]),
+                ("MAX FINALISTS", competition["maxFinalRacers"]),
             ]
             metric_width = (usable - 8 * (len(metrics) - 1)) / len(metrics)
             for index, (label, value) in enumerate(metrics):
@@ -294,55 +294,127 @@ def day_pages(c: canvas.Canvas, state: dict[str, Any], width: float, height: flo
     return page
 
 
-def championship_page(c: canvas.Canvas, state: dict[str, Any], width: float, height: float, page: int) -> int:
+def origin_label(entry: dict[str, Any]) -> str:
+    origin = entry.get("originStage")
+    if origin == "bye":
+        return f'BYE - ROUND {entry.get("originRound")}'
+    if origin == "stage-skip":
+        return "ADVANCED (SMALL FIELD)"
+    if origin == "preliminary":
+        return "PRELIMINARY"
+    if origin == "wildcard":
+        return "WILDCARD"
+    if origin == "staging-round":
+        return f'ROUND {entry.get("originRound")} #2'
+    return "-"
+
+
+def stage_heats_page(
+    c: canvas.Canvas,
+    state: dict[str, Any],
+    heats: list[dict[str, Any]],
+    badge_prefix: str,
+    subtitle: str,
+    width: float,
+    height: float,
+    page: int,
+) -> int:
+    if not heats:
+        return page
     competition = state["competition"]
-    championship = state["championship"]
-    header(c, width, height, competition["name"], "Final qualification and race result", "FINAL")
+    max_entries = max(len(heat["entries"]) for heat in heats)
+    columns = min(4, max(1, max_entries))
+    rows = math.ceil(max_entries / columns)
+    item_height = max(58, 18 + rows * 25)
+    available = height - 80 - 52 - 48
+    per_page = max(1, int((available + 7) // (item_height + 7)))
+    chunks = [heats[start : start + per_page] for start in range(0, len(heats), per_page)]
+    for sheet_index, chunk in enumerate(chunks, start=1):
+        badge = badge_prefix
+        if len(chunks) > 1:
+            badge += f' - SHEET {sheet_index}/{len(chunks)}'
+        header(c, width, height, competition["name"], subtitle, badge)
+        legend_bottom = points_legend(c, 32, height - 92, width - 64, state["points"])
+        top = legend_bottom - 8
+        for index, heat in enumerate(chunk):
+            heat_item(c, heat, 32, top - index * (item_height + 7), width - 64, item_height)
+        footer(c, width, page)
+        c.showPage()
+        page += 1
+    return page
+
+
+def wildcard_page(c: canvas.Canvas, state: dict[str, Any], width: float, height: float, page: int) -> int:
+    heats = state["championship"]["wildcard"]["heats"]
+    return stage_heats_page(
+        c, state, heats, "WILDCARD", "Wildcard heats: 3rd/4th place finishers from each round", width, height, page
+    )
+
+
+def preliminary_page(c: canvas.Canvas, state: dict[str, Any], width: float, height: float, page: int) -> int:
+    heats = state["championship"]["preliminary"]["heats"]
+    return stage_heats_page(
+        c,
+        state,
+        heats,
+        "PRELIMINARY",
+        "Preliminary heats: wildcard advancers and round runners-up",
+        width,
+        height,
+        page,
+    )
+
+
+def final_page(c: canvas.Canvas, state: dict[str, Any], width: float, height: float, page: int) -> int:
+    competition = state["competition"]
+    final = state["championship"]["final"]
+    header(c, width, height, competition["name"], "Championship final qualification and result", "FINAL")
     x = 32
     usable = width - 64
     banner_top = height - 96
+    heat = final["heat"]
+    entries = heat["entries"] if heat else []
     c.setFillColor(NAVY)
     c.roundRect(x, banner_top - 47, usable, 47, 8, fill=1, stroke=0)
     c.setFillColor(YELLOW)
     c.setFont("Helvetica-Bold", 14)
-    c.drawString(x + 15, banner_top - 21, f'TOP {competition["championshipRacers"]} ADVANCE')
+    c.drawString(x + 15, banner_top - 21, f'{len(entries)} FINALISTS' if entries else "FINAL FIELD PENDING")
     c.setFillColor(white)
     c.setFont("Helvetica", 8)
-    status = "Final complete" if championship["complete"] else "Qualifiers locked" if championship["ready"] else "Qualifiers remain provisional until every round heat is complete"
+    status = (
+        "Final complete"
+        if final["complete"]
+        else "Final field locked"
+        if final["ready"]
+        else "The final field is provisional until the preliminary round is complete"
+    )
     c.drawString(x + 15, banner_top - 37, status)
     table_top = banner_top - 60
-    racers = championship["racers"] if championship["racers"] else state["standings"][: competition["championshipRacers"]]
-    dnf_place = sum(1 for racer in racers if (racer.get("finish") or 0) > 0) + 1
+    dnf_place = sum(1 for entry in entries if (entry.get("finish") or 0) > 0) + 1
     header_height = 24
     result_height = 68
-    row_height = min(36, (table_top - 35 - result_height - 12 - header_height) / len(racers))
+    row_height = min(36, (table_top - 35 - result_height - 12 - header_height) / max(1, len(entries)))
     c.setFillColor(NAVY)
     c.roundRect(x, table_top - header_height, usable, header_height, 6, fill=1, stroke=0)
     c.setFillColor(white)
     c.setFont("Helvetica-Bold", 7)
-    c.drawString(x + 12, table_top - 16, "SEED")
-    c.drawString(x + 80, table_top - 16, "FINAL RACER")
+    c.drawString(x + 12, table_top - 16, "QUALIFIED VIA")
+    c.drawString(x + 130, table_top - 16, "FINAL RACER")
     c.drawRightString(x + usable - 15, table_top - 16, "FINAL PLACE")
     y = table_top - header_height
-    for index, racer in enumerate(racers):
+    for index, entry in enumerate(entries):
         y -= row_height
-        seed = racer.get("seed", index + 1)
         c.setFillColor(PANEL if index % 2 == 0 else SOFT)
         c.setStrokeColor(LINE)
         c.rect(x, y, usable, row_height, fill=1, stroke=1)
-        c.setFillColor(BLUE)
-        c.circle(x + 25, y + row_height / 2, 8, fill=1, stroke=0)
-        c.setFillColor(white)
-        c.setFont("Helvetica-Bold", 7)
-        c.drawCentredString(x + 25, y + row_height / 2 - 2.5, str(seed))
-        marble(c, x + 65, y + row_height / 2, 5, racer["color"])
+        c.setFillColor(MUTED)
+        c.setFont("Helvetica-Bold", 6.5)
+        c.drawString(x + 12, y + row_height / 2 - 2.5, origin_label(entry))
+        marble(c, x + 118, y + row_height / 2, 5, entry["color"])
         c.setFillColor(INK)
         c.setFont("Helvetica-Bold", 8.5)
-        c.drawString(x + 78, y + row_height / 2 - 3, racer["name"])
-        c.setFillColor(MUTED)
-        c.setFont("Helvetica", 7)
-        c.drawString(x + usable * 0.58, y + row_height / 2 - 2.5, f'{racer["totalPoints"]} qualifying pts')
-        finish = racer.get("finish")
+        c.drawString(x + 130, y + row_height / 2 - 3, entry["name"])
+        finish = entry.get("finish")
         c.setFillColor(INK)
         c.setFont("Helvetica-Bold", 8)
         c.drawRightString(
@@ -353,7 +425,7 @@ def championship_page(c: canvas.Canvas, state: dict[str, Any], width: float, hei
     result_y = max(34, y - result_height - 12)
     c.setFillColor(NAVY)
     c.roundRect(x, result_y, usable, result_height, 8, fill=1, stroke=0)
-    champion = championship["champion"]
+    champion = final["champion"]
     c.setFillColor(YELLOW)
     c.setFont("Helvetica-Bold", 8)
     c.drawString(x + 15, result_y + 44, "CHAMPION")
@@ -376,6 +448,8 @@ def build_report(state: dict[str, Any]) -> bytes:
     pdf.setAuthor("RollRank")
     page = overview_pages(pdf, state, width, height, 1)
     page = day_pages(pdf, state, width, height, page)
-    championship_page(pdf, state, width, height, page)
+    page = wildcard_page(pdf, state, width, height, page)
+    page = preliminary_page(pdf, state, width, height, page)
+    final_page(pdf, state, width, height, page)
     pdf.save()
     return output.getvalue()

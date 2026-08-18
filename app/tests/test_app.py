@@ -5,15 +5,39 @@ import tempfile
 import unittest
 from collections import Counter
 from itertools import combinations
-from pathlib import Path
 
 
 TEST_DATA = tempfile.TemporaryDirectory()
 os.environ["APP_DATA_DIR"] = TEST_DATA.name
 
 from app import app  # noqa: E402
-from db import balanced_schedule  # noqa: E402
+from db import balanced_schedule, championship_field, connect  # noqa: E402
 from report import final_finish_label, heat_finish_label  # noqa: E402
+
+
+def score_heat_sequentially(client, heat):
+    results = []
+    position = 0
+    for entry in heat["entries"]:
+        for race_marble in entry["marbles"]:
+            position += 1
+            results.append(
+                {
+                    "contestantId": entry["contestantId"],
+                    "marbleNumber": race_marble["number"],
+                    "finish": position,
+                }
+            )
+    return client.put(f'/api/heats/{heat["id"]}/results', json={"results": results})
+
+
+def score_all_heats_sequentially(client, heats):
+    state = None
+    for heat in heats:
+        response = score_heat_sequentially(client, heat)
+        assert response.status_code == 200, response.get_json()
+        state = response.get_json()
+    return state
 
 
 class MarbleRaceApiTest(unittest.TestCase):
@@ -58,6 +82,11 @@ class MarbleRaceApiTest(unittest.TestCase):
             )
         )
         self.assertEqual(len(state["standings"]), 8)
+        for stage in ("wildcard", "preliminary"):
+            self.assertFalse(state["championship"][stage]["ready"])
+            self.assertEqual(state["championship"][stage]["heats"], [])
+        self.assertFalse(state["championship"]["final"]["ready"])
+        self.assertIsNone(state["championship"]["final"]["heat"])
 
     def test_new_database_starts_without_a_tournament(self) -> None:
         self.assertEqual(self.initial_tournaments, [])
@@ -198,7 +227,7 @@ class MarbleRaceApiTest(unittest.TestCase):
         index_response.close()
         frontend_response.close()
         styles_response.close()
-        self.assertIn('<button data-view="championship">Final</button>', index)
+        self.assertIn('<button data-view="championship">Championship</button>', index)
         self.assertIn('rel="icon" type="image/png" href="/static/marble-logo.png"', index)
         self.assertIn('class="brand-mark" src="/static/marble-logo.png"', index)
         self.assertIn('class="brand-wordmark"><strong>RollRank</strong>', index)
@@ -215,7 +244,9 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertIn("No tournaments yet", frontend)
         self.assertIn('class="new-tournament-label">New</span>', index)
         self.assertIn("Create a fresh tournament", index)
-        self.assertIn("Final racers", frontend)
+        self.assertIn("Max final racers", frontend)
+        self.assertIn("Max marbles per championship heat", frontend)
+        self.assertIn("Max bye marbles per racer", frontend)
         self.assertIn("Top 3 podium", frontend)
         self.assertIn("Gold trophy", frontend)
         self.assertIn("Silver trophy", frontend)
@@ -264,16 +295,14 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertIn(".status-chip.complete", styles)
         self.assertIn("function renderKioskFinalDashboard()", frontend)
         self.assertIn("function renderDashboardFinalSummary()", frontend)
-        self.assertIn("if (state.championship.complete) return renderDashboardFinalSummary();", frontend)
+        self.assertIn("if (state.championship.final.complete) return renderDashboardFinalSummary();", frontend)
         self.assertIn("function fireworksMarkup()", frontend)
-        self.assertIn("if (championship.ready) return renderKioskFinalDashboard();", frontend)
+        self.assertIn("if (championship.final.ready) return renderKioskFinalDashboard();", frontend)
         self.assertIn("dashboard-final-racers", frontend)
         self.assertIn("kiosk-final-racers", frontend)
         self.assertIn("kiosk-final-podium", frontend)
         self.assertIn("Awaiting result", frontend)
         self.assertIn("kiosk-fireworks", frontend)
-        self.assertIn("function finalResultOptions", frontend)
-        self.assertIn("ties at next place", frontend)
         self.assertIn("function finalDnfPlace", frontend)
         self.assertIn("Number(racer.finish) > 0).length + 1", frontend)
         self.assertIn("finalFinishLabel", frontend)
@@ -284,69 +313,79 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertIn("@keyframes kiosk-firework-burst", styles)
         self.assertIn(".kiosk-fireworks { display:none; }", styles)
         self.assertIn("no-cache", index_response.headers["Cache-Control"])
+        # Championship bracket rewrite: three-stage rendering, no leftover
+        # single-final editor.
+        self.assertIn("function originBadge(entry)", frontend)
+        self.assertIn(".origin-badge", styles)
+        self.assertIn("championship-stage", frontend)
+        self.assertNotIn("saveChampionship", frontend)
+        self.assertNotIn("data-champ-result", frontend)
+        self.assertNotIn("function finalResultOptions", frontend)
 
     def test_full_championship_workflow(self) -> None:
-        state = self.client.get("/api/state").get_json()
-        for day in state["days"]:
-            for heat in day["heats"]:
-                if heat["complete"]:
-                    continue
-                results = []
-                position = 0
-                for entry in heat["entries"]:
-                    for race_marble in entry["marbles"]:
-                        position += 1
-                        results.append(
-                            {
-                                "contestantId": entry["contestantId"],
-                                "marbleNumber": race_marble["number"],
-                                "finish": position,
-                            }
-                        )
-                response = self.client.put(
-                    f'/api/heats/{heat["id"]}/results', json={"results": results}
-                )
-                self.assertEqual(response.status_code, 200)
-                state = response.get_json()
-        self.assertTrue(state["championship"]["ready"])
-        finalists = state["championship"]["racers"]
-        self.assertGreaterEqual(len(finalists), 3)
-        finisher_count = len(finalists) - 2
+        created = self.client.post(
+            "/api/tournaments", json={"name": "Full Bracket Cup"}
+        ).get_json()
+        tournament_id = created["competition"]["id"]
+        self.addCleanup(
+            lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close()
+        )
+        staging_heats = [heat for day in created["days"] for heat in day["heats"]]
+        state = score_all_heats_sequentially(self.client, staging_heats)
+        self.assertTrue(state["championship"]["wildcard"]["ready"])
+
+        if state["championship"]["wildcard"]["heats"]:
+            state = score_all_heats_sequentially(self.client, state["championship"]["wildcard"]["heats"])
+        self.assertTrue(state["championship"]["preliminary"]["ready"])
+
+        if state["championship"]["preliminary"]["heats"]:
+            state = score_all_heats_sequentially(self.client, state["championship"]["preliminary"]["heats"])
+        self.assertTrue(state["championship"]["final"]["ready"])
+
+        final_heat = state["championship"]["final"]["heat"]
+        self.assertIsNotNone(final_heat)
+        entries = final_heat["entries"]
+        self.assertGreaterEqual(len(entries), 3)
+
+        no_winner_results = [
+            {
+                "contestantId": entry["contestantId"],
+                "marbleNumber": entry["marbles"][0]["number"],
+                "finish": 0,
+            }
+            for entry in entries
+        ]
+        rejected = self.client.put(
+            f'/api/heats/{final_heat["id"]}/results', json={"results": no_winner_results}
+        )
+        self.assertEqual(rejected.status_code, 400)
+        self.assertIn("first-place", rejected.get_json()["error"])
+
+        finisher_count = len(entries) - 2
         final_results = [
             {
-                "contestantId": racer["contestantId"],
+                "contestantId": entry["contestantId"],
+                "marbleNumber": entry["marbles"][0]["number"],
                 "finish": index + 1 if index < finisher_count else 0,
             }
-            for index, racer in enumerate(finalists)
+            for index, entry in enumerate(entries)
         ]
         response = self.client.put(
-            f'/api/tournaments/{state["competition"]["id"]}/final/results',
-            json={"results": final_results},
+            f'/api/heats/{final_heat["id"]}/results', json={"results": final_results}
         )
         self.assertEqual(response.status_code, 200)
         finished = response.get_json()
-        self.assertTrue(finished["championship"]["complete"])
-        self.assertEqual(finished["championship"]["champion"]["finish"], 1)
-        dnf_racers = [
-            racer for racer in finished["championship"]["racers"] if racer["finish"] == 0
+        self.assertTrue(finished["championship"]["final"]["complete"])
+        self.assertEqual(finished["championship"]["final"]["champion"]["finish"], 1)
+        dnf_entries = [
+            entry for entry in finished["championship"]["final"]["heat"]["entries"] if entry["finish"] == 0
         ]
-        self.assertEqual(len(dnf_racers), 2)
+        self.assertEqual(len(dnf_entries), 2)
         tied_last_place = finisher_count + 1
         tied_last_label = final_finish_label(0, tied_last_place)
         self.assertTrue(tied_last_label.startswith(f"T-{tied_last_place}"))
         self.assertTrue(tied_last_label.endswith(" DNF"))
         self.assertEqual(final_finish_label(0, 3), "T-3rd DNF")
-
-        no_winner = [
-            {"contestantId": racer["contestantId"], "finish": 0}
-            for racer in finalists
-        ]
-        rejected = self.client.put(
-            f'/api/tournaments/{state["competition"]["id"]}/final/results',
-            json={"results": no_winner},
-        )
-        self.assertEqual(rejected.status_code, 400)
-        self.assertIn("first-place", rejected.get_json()["error"])
 
     def test_multiple_marbles_per_racer_sum_heat_points(self) -> None:
         created = self.client.post(
@@ -365,7 +404,9 @@ class MarbleRaceApiTest(unittest.TestCase):
                 "heatsPerRacerPerDay": 1,
                 "maxMarblesPerHeat": 6,
                 "marblesPerRacer": 2,
-                "championshipRacers": 3,
+                "championshipMaxMarblesPerHeat": 6,
+                "maxByeMarblesPerRacer": 1,
+                "maxFinalRacers": 3,
                 "points": [10, 7, 5, 3, 2, 1],
                 "contestants": racers,
             },
@@ -403,13 +444,15 @@ class MarbleRaceApiTest(unittest.TestCase):
                 [17, 8, 3],
             )
 
-        self.assertTrue(state["championship"]["ready"])
+        self.assertTrue(state["championship"]["wildcard"]["ready"])
         self.assertEqual(
             sorted((racer["totalPoints"] for racer in state["standings"]), reverse=True),
             [17, 17, 8, 8, 3, 3],
         )
+        wildcard_heats = state["championship"]["wildcard"]["heats"]
+        self.assertTrue(wildcard_heats)
         self.assertTrue(
-            all("marbles" not in racer for racer in state["championship"]["racers"])
+            all(len(entry["marbles"]) == 2 for heat in wildcard_heats for entry in heat["entries"])
         )
         deleted = self.client.delete(f"/api/tournaments/{tournament_id}")
         self.assertEqual(deleted.status_code, 200)
@@ -431,7 +474,9 @@ class MarbleRaceApiTest(unittest.TestCase):
                 "heatsPerRacerPerDay": 3,
                 "maxMarblesPerHeat": 10,
                 "marblesPerRacer": 2,
-                "championshipRacers": 6,
+                "championshipMaxMarblesPerHeat": 6,
+                "maxByeMarblesPerRacer": 1,
+                "maxFinalRacers": 6,
                 "points": [10, 7, 5, 3, 2, 1, 0, 0],
                 "contestants": racers,
             },
@@ -475,7 +520,9 @@ class MarbleRaceApiTest(unittest.TestCase):
                 "heatsPerRacerPerDay": 1,
                 "maxMarblesPerHeat": 3,
                 "marblesPerRacer": 1,
-                "championshipRacers": 3,
+                "championshipMaxMarblesPerHeat": 6,
+                "maxByeMarblesPerRacer": 1,
+                "maxFinalRacers": 3,
                 "points": [5, 3, 1],
                 "contestants": racers,
             },
@@ -510,6 +557,350 @@ class MarbleRaceApiTest(unittest.TestCase):
             self.client.get(f"/api/state?tournamentId={second_id}").status_code,
             404,
         )
+
+    def test_round_scoped_standings_and_bye_cap_forfeits_excess_wins(self) -> None:
+        created = self.client.post(
+            "/api/tournaments", json={"name": "Round Standings Cup"}
+        ).get_json()
+        tournament_id = created["competition"]["id"]
+        self.addCleanup(
+            lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close()
+        )
+        contestant_ids = [racer["id"] for racer in created["contestants"]]
+        configured = self.client.put(
+            f"/api/tournaments/{tournament_id}",
+            json={
+                "name": "Round Standings Cup",
+                "days": 3,
+                "heatsPerRacerPerDay": 1,
+                "maxMarblesPerHeat": 8,
+                "marblesPerRacer": 1,
+                "championshipMaxMarblesPerHeat": 6,
+                "maxByeMarblesPerRacer": 1,
+                "maxFinalRacers": 6,
+                "points": [10, 7, 5, 3, 2, 1, 0, 0],
+                "contestants": [
+                    {"name": racer["name"], "color": racer["color"]}
+                    for racer in created["contestants"]
+                ],
+            },
+        ).get_json()
+        self.assertEqual(configured["competition"]["heatsPerDay"], 1)
+
+        # racer[0] wins every round; everyone else rotates through the
+        # remaining places so a different racer holds each other rank each day.
+        state = configured
+        for day_index, day in enumerate(state["days"]):
+            heat = day["heats"][0]
+            results = []
+            for entry in heat["entries"]:
+                index = contestant_ids.index(entry["contestantId"])
+                finish = 1 if index == 0 else 2 + ((index - 1 + day_index) % 7)
+                results.append(
+                    {
+                        "contestantId": entry["contestantId"],
+                        "marbleNumber": entry["marbles"][0]["number"],
+                        "finish": finish,
+                    }
+                )
+            saved = self.client.put(f'/api/heats/{heat["id"]}/results', json={"results": results})
+            self.assertEqual(saved.status_code, 200)
+            state = saved.get_json()
+
+        connection = connect()
+        try:
+            field = championship_field(connection, tournament_id)
+        finally:
+            connection.close()
+
+        winner_id = contestant_ids[0]
+        winner_byes = [item for item in field["byes"] if item["racerId"] == winner_id]
+        self.assertEqual(len(winner_byes), 1)
+        self.assertEqual(winner_byes[0]["originRound"], 1)
+        self.assertTrue(all(item["racerId"] != winner_id for item in field["preliminaryDirect"]))
+        self.assertTrue(all(item["racerId"] != winner_id for item in field["wildcardPool"]))
+
+    def test_wildcard_preliminary_interleaving_avoids_same_round_clustering(self) -> None:
+        created = self.client.post(
+            "/api/tournaments", json={"name": "Interleave Cup"}
+        ).get_json()
+        tournament_id = created["competition"]["id"]
+        self.addCleanup(
+            lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close()
+        )
+        contestant_ids = [racer["id"] for racer in created["contestants"]]
+        state = self.client.put(
+            f"/api/tournaments/{tournament_id}",
+            json={
+                "name": "Interleave Cup",
+                "days": 3,
+                "heatsPerRacerPerDay": 1,
+                "maxMarblesPerHeat": 8,
+                "marblesPerRacer": 1,
+                "championshipMaxMarblesPerHeat": 3,
+                "maxByeMarblesPerRacer": 1,
+                "maxFinalRacers": 6,
+                "points": [10, 7, 5, 3, 2, 1, 0, 0],
+                "contestants": [
+                    {"name": racer["name"], "color": racer["color"]}
+                    for racer in created["contestants"]
+                ],
+            },
+        ).get_json()
+
+        # racers[6]/[7] always take 1st/2nd; each round's 3rd/4th (the wildcard
+        # pool) are two racers no other round places in the wildcard zone.
+        finish_orders = [
+            [6, 7, 0, 1, 2, 3, 4, 5],
+            [6, 7, 2, 3, 0, 1, 4, 5],
+            [6, 7, 4, 5, 0, 1, 2, 3],
+        ]
+        for day, order in zip(state["days"], finish_orders):
+            heat = day["heats"][0]
+            finishes = {
+                contestant_ids[racer_index]: place
+                for place, racer_index in enumerate(order, start=1)
+            }
+            results = [
+                {
+                    "contestantId": entry["contestantId"],
+                    "marbleNumber": entry["marbles"][0]["number"],
+                    "finish": finishes[entry["contestantId"]],
+                }
+                for entry in heat["entries"]
+            ]
+            saved = self.client.put(f'/api/heats/{heat["id"]}/results', json={"results": results})
+            self.assertEqual(saved.status_code, 200)
+            state = saved.get_json()
+
+        wildcard = state["championship"]["wildcard"]
+        self.assertTrue(wildcard["ready"])
+        self.assertGreaterEqual(len(wildcard["heats"]), 2)
+        for heat in wildcard["heats"]:
+            origin_rounds = [entry["originRound"] for entry in heat["entries"]]
+            self.assertEqual(len(origin_rounds), len(set(origin_rounds)))
+
+    def test_cascade_reset_confirmation_required_then_rebuilds(self) -> None:
+        created = self.client.post(
+            "/api/tournaments", json={"name": "Cascade Cup"}
+        ).get_json()
+        tournament_id = created["competition"]["id"]
+        self.addCleanup(
+            lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close()
+        )
+        first_heat_id = created["days"][0]["heats"][0]["id"]
+        staging_heats = [heat for day in created["days"] for heat in day["heats"]]
+        state = score_all_heats_sequentially(self.client, staging_heats)
+        self.assertTrue(state["championship"]["wildcard"]["ready"])
+        self.assertTrue(state["championship"]["wildcard"]["heats"])
+        state = score_all_heats_sequentially(self.client, state["championship"]["wildcard"]["heats"])
+        self.assertTrue(state["championship"]["wildcard"]["complete"])
+
+        # Reversing the first staging heat's results changes that round's
+        # standings, and therefore the wildcard field, which already has an
+        # entered result -- this must be gated behind confirmReset.
+        heat = next(h for day in state["days"] for h in day["heats"] if h["id"] == first_heat_id)
+        entry_count = sum(len(entry["marbles"]) for entry in heat["entries"])
+        position = entry_count
+        reversed_results = []
+        for entry in heat["entries"]:
+            for race_marble in entry["marbles"]:
+                reversed_results.append(
+                    {
+                        "contestantId": entry["contestantId"],
+                        "marbleNumber": race_marble["number"],
+                        "finish": position,
+                    }
+                )
+                position -= 1
+
+        blocked = self.client.put(
+            f'/api/heats/{first_heat_id}/results', json={"results": reversed_results}
+        )
+        self.assertEqual(blocked.status_code, 409)
+        self.assertTrue(blocked.get_json()["requiresReset"])
+
+        confirmed = self.client.put(
+            f'/api/heats/{first_heat_id}/results',
+            json={"results": reversed_results, "confirmReset": True},
+        )
+        self.assertEqual(confirmed.status_code, 200)
+
+    def test_small_tournament_auto_advances_without_racing(self) -> None:
+        created = self.client.post(
+            "/api/tournaments", json={"name": "Tiny Cup"}
+        ).get_json()
+        tournament_id = created["competition"]["id"]
+        self.addCleanup(
+            lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close()
+        )
+        racers = [
+            {"name": racer["name"], "color": racer["color"]}
+            for racer in created["contestants"][:2]
+        ]
+        configured = self.client.put(
+            f"/api/tournaments/{tournament_id}",
+            json={
+                "name": "Tiny Cup",
+                "days": 2,
+                "heatsPerRacerPerDay": 1,
+                "maxMarblesPerHeat": 2,
+                "marblesPerRacer": 1,
+                "championshipMaxMarblesPerHeat": 6,
+                "maxByeMarblesPerRacer": 1,
+                "maxFinalRacers": 2,
+                "points": [10, 7],
+                "contestants": racers,
+            },
+        ).get_json()
+        self.assertEqual(configured["competition"]["racersPerHeat"], 2)
+        racer_a, racer_b = (row["id"] for row in configured["contestants"])
+        state = configured
+        for day in state["days"]:
+            heat = day["heats"][0]
+            results = [
+                {
+                    "contestantId": entry["contestantId"],
+                    "marbleNumber": entry["marbles"][0]["number"],
+                    "finish": 1 if entry["contestantId"] == racer_a else 2,
+                }
+                for entry in heat["entries"]
+            ]
+            saved = self.client.put(f'/api/heats/{heat["id"]}/results', json={"results": results})
+            self.assertEqual(saved.status_code, 200)
+            state = saved.get_json()
+
+        champ = state["championship"]
+        self.assertTrue(champ["wildcard"]["ready"])
+        self.assertTrue(champ["wildcard"]["skipped"])
+        self.assertEqual(champ["wildcard"]["fieldSize"], 0)
+        self.assertTrue(champ["preliminary"]["ready"])
+        self.assertTrue(champ["preliminary"]["skipped"])
+        self.assertEqual(champ["preliminary"]["fieldSize"], 1)
+        self.assertTrue(champ["final"]["ready"])
+        final_entries = champ["final"]["heat"]["entries"]
+        origins = {entry["contestantId"]: entry["originStage"] for entry in final_entries}
+        self.assertEqual(origins[racer_a], "bye")
+        self.assertEqual(origins[racer_b], "stage-skip")
+
+    def test_final_field_trims_to_max_final_racers(self) -> None:
+        created = self.client.post(
+            "/api/tournaments", json={"name": "Trim Cup"}
+        ).get_json()
+        tournament_id = created["competition"]["id"]
+        self.addCleanup(
+            lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close()
+        )
+        contestant_ids = [racer["id"] for racer in created["contestants"]]
+        state = self.client.put(
+            f"/api/tournaments/{tournament_id}",
+            json={
+                "name": "Trim Cup",
+                "days": 4,
+                "heatsPerRacerPerDay": 1,
+                "maxMarblesPerHeat": 8,
+                "marblesPerRacer": 1,
+                "championshipMaxMarblesPerHeat": 6,
+                "maxByeMarblesPerRacer": 1,
+                "maxFinalRacers": 3,
+                "points": [10, 7, 5, 3, 2, 1, 0, 0],
+                "contestants": [
+                    {"name": racer["name"], "color": racer["color"]}
+                    for racer in created["contestants"]
+                ],
+            },
+        ).get_json()
+
+        # Each round has its own distinct 1st/2nd place pair, so four rounds
+        # bank four distinct bye winners -- more than maxFinalRacers=3 allows.
+        pairs = [(0, 1), (2, 3), (4, 5), (6, 7)]
+        for day_index, day in enumerate(state["days"]):
+            heat = day["heats"][0]
+            winner_index, second_index = pairs[day_index]
+            remaining = [index for index in range(8) if index not in (winner_index, second_index)]
+            finish_by_index = {winner_index: 1, second_index: 2}
+            for rank, racer_index in enumerate(remaining, start=3):
+                finish_by_index[racer_index] = rank
+            results = [
+                {
+                    "contestantId": entry["contestantId"],
+                    "marbleNumber": entry["marbles"][0]["number"],
+                    "finish": finish_by_index[contestant_ids.index(entry["contestantId"])],
+                }
+                for entry in heat["entries"]
+            ]
+            saved = self.client.put(f'/api/heats/{heat["id"]}/results', json={"results": results})
+            self.assertEqual(saved.status_code, 200)
+            state = saved.get_json()
+
+        self.assertTrue(state["championship"]["wildcard"]["ready"])
+        if state["championship"]["wildcard"]["heats"]:
+            state = score_all_heats_sequentially(self.client, state["championship"]["wildcard"]["heats"])
+        self.assertTrue(state["championship"]["preliminary"]["ready"])
+        if state["championship"]["preliminary"]["heats"]:
+            state = score_all_heats_sequentially(self.client, state["championship"]["preliminary"]["heats"])
+
+        final_stage = state["championship"]["final"]
+        self.assertTrue(final_stage["ready"])
+        # Four rounds each bank a distinct bye winner, so the pre-trim field
+        # (at least 4 byes) exceeds maxFinalRacers=3 and must be trimmed down.
+        self.assertGreater(final_stage["trimmedCount"], 0)
+        self.assertEqual(len(final_stage["heat"]["entries"]), 3)
+        self.assertLessEqual(final_stage["byeCount"], 3)
+
+    def test_championship_config_validation(self) -> None:
+        created = self.client.post(
+            "/api/tournaments", json={"name": "Config Validation Cup"}
+        ).get_json()
+        tournament_id = created["competition"]["id"]
+        self.addCleanup(
+            lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close()
+        )
+        racers = [
+            {"name": racer["name"], "color": racer["color"]}
+            for racer in created["contestants"]
+        ]
+        base_payload = {
+            "name": "Config Validation Cup",
+            "days": 3,
+            "heatsPerRacerPerDay": 3,
+            "maxMarblesPerHeat": 6,
+            "marblesPerRacer": 1,
+            "points": [10, 7, 5, 3, 2, 1],
+            "contestants": racers,
+        }
+
+        missing_field = self.client.put(
+            f"/api/tournaments/{tournament_id}",
+            json={**base_payload, "maxByeMarblesPerRacer": 1, "maxFinalRacers": 6},
+        )
+        self.assertEqual(missing_field.status_code, 400)
+
+        out_of_range = self.client.put(
+            f"/api/tournaments/{tournament_id}",
+            json={
+                **base_payload,
+                "championshipMaxMarblesPerHeat": 6,
+                "maxByeMarblesPerRacer": -1,
+                "maxFinalRacers": 6,
+            },
+        )
+        self.assertEqual(out_of_range.status_code, 400)
+
+        valid = self.client.put(
+            f"/api/tournaments/{tournament_id}",
+            json={
+                **base_payload,
+                "championshipMaxMarblesPerHeat": 4,
+                "maxByeMarblesPerRacer": 2,
+                "maxFinalRacers": 5,
+            },
+        )
+        self.assertEqual(valid.status_code, 200)
+        state = valid.get_json()
+        self.assertEqual(state["competition"]["championshipMaxMarblesPerHeat"], 4)
+        self.assertEqual(state["competition"]["maxByeMarblesPerRacer"], 2)
+        self.assertEqual(state["competition"]["maxFinalRacers"], 5)
 
 
 if __name__ == "__main__":

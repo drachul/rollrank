@@ -189,11 +189,8 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible { 
 .dashboard-champion-card>span:last-child { margin-top:6px; color:#bcd2e4; font-size:10px; font-weight:750; text-transform:uppercase; }
 .dashboard-final-lineup { margin-bottom:26px; }
 .dashboard-final-racers { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:10px; }
-.dashboard-final-racers article { display:grid; min-width:0; min-height:76px; grid-template-columns:40px 34px minmax(0,1fr) auto; align-items:center; gap:10px; padding:11px 13px; border:1px solid var(--line); border-radius:11px; background:#f8fbfd; }
+.dashboard-final-racers article { display:grid; min-width:0; min-height:76px; grid-template-columns:40px minmax(0,1fr) auto; align-items:center; gap:10px; padding:11px 13px; border:1px solid var(--line); border-radius:11px; background:#f8fbfd; }
 .dashboard-final-racers article.dnf { border-color:#ead9a2; background:#fff9e6; }
-.dashboard-final-seed { display:flex; width:35px; height:48px; align-items:center; flex-direction:column; justify-content:center; border-radius:8px; background:var(--blue); color:#fff; }
-.dashboard-final-seed small { color:#d9ebff; font-size:6px; font-weight:850; text-transform:uppercase; }
-.dashboard-final-seed b { margin-top:2px; font-size:15px; }
 .dashboard-final-racers article>div { display:flex; min-width:0; flex-direction:column; }
 .dashboard-final-racers article>div strong { overflow:hidden; font-size:12px; text-overflow:ellipsis; white-space:nowrap; }
 .dashboard-final-racers article>div span { margin-top:4px; color:var(--muted); font-size:8px; text-transform:uppercase; }
@@ -252,6 +249,8 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible { 
 .heat-entry:nth-child(even) { border-right:0; }
 .heat-entry .lane { display:grid; width:22px; height:22px; place-items:center; border-radius:50%; background:var(--navy); color:#fff; font-size:9px; font-weight:850; }
 .heat-entry strong { overflow:hidden; font-size:11px; text-overflow:ellipsis; white-space:nowrap; }
+.heat-entry-name { display:flex; flex-direction:column; gap:2px; min-width:0; }
+.origin-badge { color:var(--muted); font-size:8px; font-weight:750; text-transform:uppercase; }
 .heat-entry select,.championship-row select { width:100%; padding:7px 8px; border:1px solid #bdcbd9; border-radius:7px; background:#fff; color:var(--ink); font-size:10px; }
 .marble-results { display:grid; gap:5px; }
 .marble-result { display:grid; grid-template-columns:43px minmax(0,1fr); align-items:center; gap:5px; }
@@ -270,7 +269,10 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible { 
 .standings-table tr.qualifying td:first-child { border-left:3px solid var(--blue); }
 .rank-badge,.seed-number { display:inline-grid; width:25px; height:25px; place-items:center; border-radius:50%; background:#e9f2fd; color:var(--blue); font-size:10px; font-weight:850; }
 .racer-cell { display:flex; align-items:center; gap:9px; color:var(--ink); }
+.championship-stage { margin-bottom:28px; }
+.championship-stage:last-child { margin-bottom:0; }
 .championship-lock { display:flex; align-items:center; gap:22px; padding:27px; }
+.championship-lock.skipped .lock-icon { background:var(--blue); color:#fff; }
 .lock-icon { display:grid; width:72px; height:72px; flex:0 0 auto; place-items:center; border-radius:50%; background:var(--navy); color:var(--yellow); font-size:19px; font-weight:900; }
 .championship-lock h2 { margin:5px 0; font-size:24px; }
 .championship-lock p:last-child { margin:0; color:var(--muted); font-size:12px; }
@@ -443,11 +445,8 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible { 
 .kiosk-final-lineup>header h2,.kiosk-final-results>header h2 { margin:4px 0 0; font-size:clamp(19px,2.2vw,27px); letter-spacing:-.035em; }
 .kiosk-final-lineup>header>span,.kiosk-final-results>header>span { padding:8px 11px; border-radius:999px; background:rgba(244,197,66,.13); color:var(--yellow); font-size:9px; font-weight:900; text-transform:uppercase; }
 .kiosk-final-racers { display:grid; grid-template-columns:repeat(auto-fit,minmax(165px,1fr)); gap:1px; background:rgba(255,255,255,.1); }
-.kiosk-final-racers article { display:grid; min-width:0; min-height:84px; grid-template-columns:42px 43px minmax(0,1fr); align-items:center; gap:9px; padding:12px 15px; background:rgba(8,32,51,.92); }
+.kiosk-final-racers article { display:grid; min-width:0; min-height:84px; grid-template-columns:43px minmax(0,1fr); align-items:center; gap:9px; padding:12px 15px; background:rgba(8,32,51,.92); }
 .kiosk-final-racers article>.marble { width:39px; height:39px; }
-.kiosk-final-seed { display:flex; width:34px; height:48px; align-items:center; flex-direction:column; justify-content:center; border-radius:8px; background:var(--blue); color:#fff; }
-.kiosk-final-seed small { color:#cfe3f8; font-size:6px; font-weight:850; text-transform:uppercase; }
-.kiosk-final-seed b { margin-top:2px; font-size:16px; }
 .kiosk-final-racers article>div { display:flex; min-width:0; flex-direction:column; }
 .kiosk-final-racers article>div strong { overflow:hidden; font-size:13px; text-overflow:ellipsis; white-space:nowrap; }
 .kiosk-final-racers article>div span { margin-top:4px; color:#9ebbd1; font-size:8px; text-transform:uppercase; }
@@ -617,8 +616,8 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible { 
   .hero-copy h1 { margin-top:16px; font-size:clamp(32px,11vw,40px); }
   .hero-copy>p { font-size:13px; }
   .dashboard-final-hero-copy>.eyebrow { margin-top:30px; }
-  .dashboard-final-racers article { grid-template-columns:36px 29px minmax(0,1fr); padding:10px; }
-  .dashboard-final-finish { grid-column:3; text-align:left; }
+  .dashboard-final-racers article { grid-template-columns:36px minmax(0,1fr); padding:10px; }
+  .dashboard-final-finish { grid-column:2; text-align:left; }
   .dashboard-final-lineup .panel-heading { align-items:stretch; flex-direction:column; }
   .dashboard-final-lineup .panel-heading button { align-self:flex-start; }
   .summary-lead strong { font-size:64px; }
@@ -716,8 +715,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible { 
   .kiosk-standings-panel>footer span:first-child { display:none; }
   .kiosk-final-lineup>header,.kiosk-final-results>header { align-items:flex-start; flex-direction:column; gap:8px; padding:13px 15px; }
   .kiosk-final-racers { grid-template-columns:repeat(2,minmax(0,1fr)); }
-  .kiosk-final-racers article { min-height:74px; grid-template-columns:34px 34px minmax(0,1fr); padding:9px; }
-  .kiosk-final-seed { width:29px; height:42px; }
+  .kiosk-final-racers article { min-height:74px; grid-template-columns:34px minmax(0,1fr); padding:9px; }
   .kiosk-final-racers article>.marble { width:31px; height:31px; }
   .kiosk-final-racers article>div strong { font-size:10px; }
   .kiosk-final-podium { grid-template-columns:repeat(3,minmax(0,1fr)); gap:5px; padding:13px 10px 10px; }
