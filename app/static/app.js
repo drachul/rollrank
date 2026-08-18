@@ -1,6 +1,6 @@
 let state = null;
 const initialParams = new URLSearchParams(window.location.search);
-const supportedViews = ["dashboard", "heats", "standings", "championship", "setup"];
+const supportedViews = ["dashboard", "heats", "standings", "setup"];
 let activeView = supportedViews.includes(initialParams.get("view")) ? initialParams.get("view") : "dashboard";
 let activeDay = 1;
 let activeTournamentId = Number(initialParams.get("tournament")) || null;
@@ -69,7 +69,7 @@ function syncTournamentChrome() {
 function applyState(nextState) {
   state = nextState;
   activeTournamentId = state.competition.id;
-  activeDay = Math.min(activeDay, state.competition.days);
+  if (activeDay !== "championship") activeDay = Math.min(activeDay, state.competition.days);
   kioskRefreshFailed = false;
   kioskLastUpdated = new Date();
   syncTournamentChrome();
@@ -254,7 +254,7 @@ function renderDashboardFinalSummary() {
       </aside>
     </section>
     <section class="panel dashboard-final-lineup">
-      <div class="panel-heading"><div><p class="eyebrow">The final</p><h2>Final race lineup</h2></div><button class="text-button" data-view="championship">View championship details →</button></div>
+      <div class="panel-heading"><div><p class="eyebrow">The final</p><h2>Final race lineup</h2></div><button class="text-button" data-view="heats" data-day="championship">View championship details →</button></div>
       <div class="dashboard-final-racers">
         ${entries.map((entry) => `<article class="${entry.finish === 0 ? "dnf" : ""}">
           ${marble(entry.color)}
@@ -291,12 +291,12 @@ function renderDashboard() {
     </section>
     <section class="dashboard-grid">
       <article class="panel">
-        <div class="panel-heading"><div><p class="eyebrow">Race queue</p><h2>${nextHeat ? `Next: Round ${nextHeat.day}, Heat ${nextHeat.heatNumber}` : "All round heats complete"}</h2></div><button class="text-button" data-view="heats">View heats →</button></div>
+        <div class="panel-heading"><div><p class="eyebrow">Race queue</p><h2>${nextHeat ? `Next: Round ${nextHeat.day}, Heat ${nextHeat.heatNumber}` : "All round heats complete"}</h2></div><button class="text-button" data-view="heats">View rounds →</button></div>
         ${nextHeat ? `<div class="next-heat">
           <div class="heat-flag"><small>Race</small><strong>#${nextHeat.globalNumber}</strong></div>
           <div class="racer-preview">${nextHeat.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>
           <button class="primary-button compact" data-score-heat="${nextHeat.id}">Score heat</button>
-        </div>` : `<div class="completion-callout"><div class="trophy">★</div><div><strong>Championship bracket underway</strong><p>Wildcard, preliminary, and final heats build automatically as each stage finishes.</p></div><button class="primary-button compact" data-view="championship">Open bracket</button></div>`}
+        </div>` : `<div class="completion-callout"><div class="trophy">★</div><div><strong>Championship bracket underway</strong><p>Wildcard, preliminary, and final heats build automatically as each stage finishes.</p></div><button class="primary-button compact" data-view="heats" data-day="championship">Open bracket</button></div>`}
       </article>
       <article class="panel standings-preview">
         <div class="panel-heading"><div><p class="eyebrow">Live table</p><h2>Tournament standings</h2></div></div>
@@ -354,7 +354,7 @@ function renderKioskFinalDashboard() {
       <header><div><p class="kiosk-card-label">${finalStage.complete ? "Official result" : "Placement board"}</p><h2>${finalStage.complete ? "Final podium" : "Podium spots"}</h2></div><span>${finalStage.complete ? "🏆 Final complete" : "Results will appear here automatically"}</span></header>
       <div class="kiosk-final-podium">${podium}</div>
       ${remainingEntries.length ? `<div class="kiosk-remaining-heading"><strong>Remaining places</strong><span>${finalStage.complete ? (dnfs.length ? `${dnfs.length} DNF${dnfs.length === 1 ? "" : "s"} tied for ${ordinal(dnfPlace)}` : "Final order") : "Waiting to be filled"}</span></div><div class="kiosk-final-places">${remaining}</div>` : ""}
-      <footer><span>${finalStage.complete ? `${escapeHtml(finalStage.champion.name)} takes the RollRank title` : "Submit the final result from the Championship tab"}</span><span>Updates automatically every 5 seconds</span></footer>
+      <footer><span>${finalStage.complete ? `${escapeHtml(finalStage.champion.name)} takes the RollRank title` : "Submit the final result from the Rounds tab"}</span><span>Updates automatically every 5 seconds</span></footer>
     </section>
   </section>`;
 }
@@ -447,14 +447,22 @@ function heatEditor(heat) {
   </article>`;
 }
 
+function championshipTabStatus() {
+  const champ = state.championship;
+  if (champ.final.complete) return "Complete";
+  if (champ.wildcard.ready) return "In progress";
+  return "Locked";
+}
+
 function renderHeats() {
-  const selectedDay = state.days.find((day) => day.day === activeDay) || state.days[0];
-  return `${viewHeader("Results desk", "Round heats", "Choose a round, then record a unique finishing position for every marble.")}
+  const onChampionship = activeDay === "championship";
+  const selectedDay = onChampionship ? null : state.days.find((day) => day.day === activeDay) || state.days[0];
+  return `${viewHeader("Results desk", "Rounds", "Choose a round, then record a unique finishing position for every marble.")}
     <div class="day-tabs" role="tablist">${state.days.map((day) => {
       const complete = day.heats.filter((heat) => heat.complete).length;
       return `<button role="tab" aria-selected="${day.day === activeDay}" class="${day.day === activeDay ? "active" : ""}" data-day="${day.day}"><span>Round ${day.day}</span><small>${complete}/${day.heats.length} complete</small></button>`;
-    }).join("")}</div>
-    <section class="heat-list">${selectedDay.heats.map(heatEditor).join("")}</section>`;
+    }).join("")}<button role="tab" aria-selected="${onChampionship}" class="${onChampionship ? "active" : ""}" data-day="championship"><span>Championship</span><small>${championshipTabStatus()}</small></button></div>
+    ${onChampionship ? renderChampionshipStages() : `<section class="heat-list">${selectedDay.heats.map(heatEditor).join("")}</section>`}`;
 }
 
 function renderStandings() {
@@ -528,11 +536,10 @@ function championshipStageChip(stage) {
   return `<span class="${stage.complete ? "complete-chip" : "pending-chip"}">${stage.complete ? "Complete" : "In progress"}</span>`;
 }
 
-function renderChampionship() {
+function renderChampionshipStages() {
   const champ = state.championship;
   const c = state.competition;
-  return `${viewHeader("The bracket", "Championship", "Wildcard and preliminary heats seed the final. Every round win banks a bye straight into it.", `<a class="secondary-button link-button" href="${reportUrl()}" target="_blank">Print summary</a>`)}
-    <section class="championship-stage">
+  return `<section class="championship-stage">
       <div class="panel-heading"><div><p class="eyebrow">Stage 1</p><h2>Wildcard heats</h2></div>${championshipStageChip(champ.wildcard)}</div>
       ${renderChampionshipStageBody(champ.wildcard, `3rd and 4th place finishers from every round race here once all ${c.totalHeats} round heats are complete.`)}
     </section>
@@ -569,7 +576,7 @@ function renderSetup() {
 function render() {
   if (!state) return;
   document.querySelectorAll("[data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === activeView));
-  const views = {dashboard:kioskMode ? renderKioskDashboard : renderDashboard, heats:renderHeats, standings:renderStandings, championship:renderChampionship, setup:renderSetup};
+  const views = {dashboard:kioskMode ? renderKioskDashboard : renderDashboard, heats:renderHeats, standings:renderStandings, setup:renderSetup};
   app.innerHTML = (views[activeView] || renderDashboard)();
   if (activeView === "setup") requestAnimationFrame(updateSchedulePreview);
   if (!kioskMode) app.focus({preventScroll:true});
@@ -683,12 +690,18 @@ document.addEventListener("click", (event) => {
   if (event.target.closest("[data-enter-kiosk]")) { setKioskMode(true, true); return; }
   if (event.target.closest("[data-exit-kiosk]")) { setKioskMode(false); return; }
   const viewButton = event.target.closest("[data-view]");
-  if (viewButton) { activeView = viewButton.dataset.view; render(); window.scrollTo({top:0, behavior:"smooth"}); return; }
+  if (viewButton) {
+    activeView = viewButton.dataset.view;
+    if (viewButton.dataset.day) activeDay = viewButton.dataset.day === "championship" ? "championship" : Number(viewButton.dataset.day);
+    render();
+    window.scrollTo({top:0, behavior:"smooth"});
+    return;
+  }
   if (event.target.closest("[data-new-tournament]")) { tournamentDialog.showModal(); requestAnimationFrame(() => tournamentDialog.querySelector('input[name="name"]').focus()); return; }
   if (event.target.closest("[data-close-tournament-dialog]")) { tournamentDialog.close(); return; }
   if (event.target.closest("[data-delete-tournament]")) { deleteCurrentTournament(); return; }
   const dayButton = event.target.closest("[data-day]");
-  if (dayButton) { activeDay = Number(dayButton.dataset.day); render(); return; }
+  if (dayButton) { activeDay = dayButton.dataset.day === "championship" ? "championship" : Number(dayButton.dataset.day); render(); return; }
   const scoreButton = event.target.closest("[data-score-heat]");
   if (scoreButton) { const heat = state.days.flatMap((day) => day.heats).find((item) => item.id === Number(scoreButton.dataset.scoreHeat)); activeDay = heat.day; activeView = "heats"; render(); requestAnimationFrame(() => document.querySelector(`#heat-${heat.id}`)?.scrollIntoView({behavior:"smooth", block:"center"})); return; }
   const saveHeatButton = event.target.closest("[data-save-heat]");
