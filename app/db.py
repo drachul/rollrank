@@ -935,9 +935,11 @@ def build_final_heat(connection: sqlite3.Connection, tournament_id: int) -> None
     global_number = _next_global_number(connection, tournament_id)
     ordered = list(candidates)
     random.Random(tournament["seed"] + 202).shuffle(ordered)
-    _insert_championship_heat(
-        connection, tournament_id, "final", 1, global_number + 1, ordered, tournament["marbles_per_racer"]
-    )
+    # The final always races one marble per racer, regardless of the
+    # tournament's marbles_per_racer setting -- champion/podium/DNF logic
+    # (both server and frontend) all key off a single finish per racer, which
+    # only holds when each finalist has exactly one marble.
+    _insert_championship_heat(connection, tournament_id, "final", 1, global_number + 1, ordered, 1)
 
 
 def delete_championship_stages(connection: sqlite3.Connection, tournament_id: int, from_stage: str) -> None:

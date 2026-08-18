@@ -454,6 +454,21 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertTrue(
             all(len(entry["marbles"]) == 2 for heat in wildcard_heats for entry in heat["entries"])
         )
+
+        # The final always races one marble per racer regardless of
+        # marblesPerRacer, since champion/podium/DNF all key off a single
+        # finish per racer.
+        state = score_all_heats_sequentially(self.client, wildcard_heats)
+        if state["championship"]["preliminary"]["heats"]:
+            state = score_all_heats_sequentially(self.client, state["championship"]["preliminary"]["heats"])
+        self.assertTrue(state["championship"]["final"]["ready"])
+        final_heat = state["championship"]["final"]["heat"]
+        self.assertTrue(all(len(entry["marbles"]) == 1 for entry in final_heat["entries"]))
+        finished = score_heat_sequentially(self.client, final_heat).get_json()
+        self.assertTrue(finished["championship"]["final"]["complete"])
+        self.assertIsNotNone(finished["championship"]["final"]["champion"])
+        self.assertEqual(finished["championship"]["final"]["champion"]["finish"], 1)
+
         deleted = self.client.delete(f"/api/tournaments/{tournament_id}")
         self.assertEqual(deleted.status_code, 200)
 
