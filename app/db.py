@@ -24,7 +24,6 @@ DEFAULT_POINTS = [10, 7, 5, 3, 2, 1]
 
 MAX_RACERS_PER_HEAT = 24
 
-CHAMPIONSHIP_STAGES = ("wildcard", "preliminary", "final")
 STAGE_CASCADE = {
     "wildcard": ("wildcard", "preliminary", "final"),
     "preliminary": ("preliminary", "final"),
@@ -493,10 +492,10 @@ def standings(
     day_tiers: dict[int, list[str | None]] = {row["id"]: [] for row in racers}
     for day in range(1, tournament["days"] + 1):
         ranking = round_standings(connection, tournament_id, day)
-        day_raced = any(row["totalPoints"] > 0 for row in ranking)
+        day_complete = is_staging_day_complete(connection, tournament_id, day)
         for row in ranking:
-            day_placements[row["id"]].append(row["rank"] if day_raced else None)
-            day_tiers[row["id"]].append(day_tier.get((day, row["id"])) if day_raced else None)
+            day_placements[row["id"]].append(row["rank"] if day_complete else None)
+            day_tiers[row["id"]].append(day_tier.get((day, row["id"])) if day_complete else None)
 
     summaries = []
     for row in racers:
@@ -604,6 +603,23 @@ def is_stage_complete(connection: sqlite3.Connection, tournament_id: int, stage:
     return bool(row["total"]) and row["finished"] == row["total"]
 
 
+def is_staging_day_complete(connection: sqlite3.Connection, tournament_id: int, day: int) -> bool:
+    """A staging day is complete once every heat scheduled for it has every
+    entry scored -- a round with heats still pending isn't done racing, so
+    its standings shouldn't be treated as final yet."""
+    row = connection.execute(
+        """
+        SELECT COUNT(*) AS total,
+               SUM(CASE WHEN he.finish IS NOT NULL THEN 1 ELSE 0 END) AS finished
+        FROM heats h
+        JOIN heat_entries he ON he.heat_id = h.id
+        WHERE h.tournament_id = ? AND h.stage = 'staging' AND h.day = ?
+        """,
+        (tournament_id, day),
+    ).fetchone()
+    return bool(row["total"]) and row["finished"] == row["total"]
+
+
 def stage_has_results(connection: sqlite3.Connection, tournament_id: int, stage: str) -> bool:
     row = connection.execute(
         """
@@ -617,15 +633,32 @@ def stage_has_results(connection: sqlite3.Connection, tournament_id: int, stage:
     return row is not None
 
 
-def is_staging_heat_locked(connection: sqlite3.Connection, tournament_id: int, global_number: int) -> bool:
-    """A staging heat is locked while any earlier staging heat (by global_number,
-    the tournament's canonical heat order) still has unscored entries."""
+def is_heat_locked(connection: sqlite3.Connection, tournament_id: int, global_number: int) -> bool:
+    """A heat is locked while any earlier heat in the tournament (by
+    global_number, the canonical race order spanning every stage) still has
+    unscored entries."""
     row = connection.execute(
         """
         SELECT 1
         FROM heats h
-        WHERE h.tournament_id = ? AND h.stage = 'staging' AND h.global_number < ?
+        WHERE h.tournament_id = ? AND h.global_number < ?
           AND EXISTS (SELECT 1 FROM heat_entries he WHERE he.heat_id = h.id AND he.finish IS NULL)
+        LIMIT 1
+        """,
+        (tournament_id, global_number),
+    ).fetchone()
+    return row is not None
+
+
+def is_heat_edit_locked(connection: sqlite3.Connection, tournament_id: int, global_number: int) -> bool:
+    """A heat's results are locked for editing once any later heat in the
+    tournament (by global_number, spanning every stage) has been started."""
+    row = connection.execute(
+        """
+        SELECT 1
+        FROM heats h
+        WHERE h.tournament_id = ? AND h.global_number > ?
+          AND h.started_at IS NOT NULL
         LIMIT 1
         """,
         (tournament_id, global_number),
@@ -716,10 +749,15 @@ def championship_field(connection: sqlite3.Connection, tournament_id: int) -> di
     rankings: dict[int, list[dict[str, Any]]] = {}
     bye_wins: dict[int, list[int]] = {}
     for day in range(1, tournament["days"] + 1):
+        # A day isn't done racing until every one of its heats is scored --
+        # round_standings() for a day still in progress (or untouched, where
+        # it falls back to sort_order) isn't a final result and shouldn't
+        # claim bye/preliminary/wildcard seats yet.
+        if not is_staging_day_complete(connection, tournament_id, day):
+            continue
         ranking = round_standings(connection, tournament_id, day)
         rankings[day] = ranking
-        if ranking:
-            bye_wins.setdefault(ranking[0]["id"], []).append(day)
+        bye_wins.setdefault(ranking[0]["id"], []).append(day)
 
     byes: list[dict[str, Any]] = []
     for racer_id, days_won in bye_wins.items():
@@ -1221,49 +1259,3 @@ def sync_championship(connection: sqlite3.Connection, tournament_id: int) -> Non
         delete_championship_stages(connection, tournament_id, "final")
         if final_ids:
             build_final_heat(connection, tournament_id)
-
-
-def stages_pending_cascade_reset(connection: sqlite3.Connection, tournament_id: int) -> list[str]:
-    """Which championship stages currently hold entered results but would be
-    rebuilt (their field changed) if sync_championship() ran right now. Used to
-    gate a heat-result save behind confirmReset before it silently wipes
-    already-scored downstream work.
-    """
-    tournament = connection.execute(
-        "SELECT * FROM tournaments WHERE id = ?", (tournament_id,)
-    ).fetchone()
-    staging_total = tournament["days"] * tournament["heats_per_day"]
-    staging_complete = (
-        staging_total > 0 and completed_heat_count(connection, tournament_id, stage="staging") == staging_total
-    )
-    if not staging_complete:
-        return [stage for stage in CHAMPIONSHIP_STAGES if stage_has_results(connection, tournament_id, stage)]
-
-    wildcard_entries = wildcard_field(connection, tournament_id)
-    wildcard_marbles = _field_marble_signature(wildcard_entries, "marbleSlots")
-    current_wildcard_marbles = stage_racer_marbles(connection, tournament_id, "wildcard")
-    if wildcard_marbles != (current_wildcard_marbles or []):
-        return [stage for stage in CHAMPIONSHIP_STAGES if stage_has_results(connection, tournament_id, stage)]
-    total_wildcard_marbles = sum(entry["marbleSlots"] for entry in wildcard_entries)
-    if not _stage_ready_to_advance(connection, tournament_id, "wildcard", total_wildcard_marbles, tournament):
-        return []
-
-    preliminary_entries = preliminary_field(connection, tournament_id)
-    preliminary_marbles = _field_marble_signature(preliminary_entries, "marbleSlots")
-    current_preliminary_marbles = stage_racer_marbles(connection, tournament_id, "preliminary")
-    if preliminary_marbles != (current_preliminary_marbles or []):
-        return [
-            stage
-            for stage in ("preliminary", "final")
-            if stage_has_results(connection, tournament_id, stage)
-        ]
-    total_preliminary_marbles = sum(entry["marbleSlots"] for entry in preliminary_entries)
-    if not _stage_ready_to_advance(connection, tournament_id, "preliminary", total_preliminary_marbles, tournament):
-        return []
-
-    final_candidates, _trimmed = final_field(connection, tournament_id)
-    final_ids = _field_marble_signature(final_candidates)
-    current_final_ids = stage_racer_marbles(connection, tournament_id, "final")
-    if final_ids != (current_final_ids or []) and stage_has_results(connection, tournament_id, "final"):
-        return ["final"]
-    return []

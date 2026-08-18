@@ -31,7 +31,7 @@ const ordinal = (value) => {
   return `${number}${({1:"st",2:"nd",3:"rd"})[number % 10] || "th"}`;
 };
 
-const placeLabel = (place) => place == null ? "–" : ordinal(place);
+const placeLabel = (place) => place == null ? "Pending" : ordinal(place);
 const placeClass = (place) => place == null ? "" : ({1:"place-1st",2:"place-2nd",3:"place-3rd",4:"place-4th"})[place] || "";
 const tierLabel = {bye: "Bye", preliminary: "Preliminary", wildcard: "Wildcard"};
 const tierClass = (tier) => tier ? `tier-${tier}` : "";
@@ -460,9 +460,27 @@ function readyToStartHeatCard(heat) {
   </article>`;
 }
 
+function editLockedHeatCard(heat) {
+  return `<article class="heat-card complete locked" id="heat-${heat.id}">
+    <header class="heat-card-heading">
+      <div class="heat-title"><span>Heat</span><strong>${heat.heatNumber}</strong><small>Race #${heat.globalNumber}</small></div>
+      <div><span class="complete-chip">Complete</span></div>
+      <span class="heat-locked-note">Locked · a later heat has started</span>
+    </header>
+    <div class="heat-entry-list">
+      ${heat.entries.map((entry) => `<div class="heat-entry">
+        <span class="lane">${entry.lane}</span>${marble(entry.color, "small")}<span class="heat-entry-name"><strong>${escapeHtml(entry.name)}</strong>${originBadge(entry)}</span>
+        <div class="marble-results">${entry.marbles.map((raceMarble) => `<div class="marble-result"><span>M${raceMarble.number}<small>${raceMarble.points == null ? "-" : `${raceMarble.points} pts`}</small></span><b>${raceMarble.finish == null ? "-" : raceMarble.finish === 0 ? "DNF" : ordinal(raceMarble.finish)}</b></div>`).join("")}</div>
+        <span class="points-result">${entry.points == null ? "-" : `${entry.points} total`}</span>
+      </div>`).join("")}
+    </div>
+  </article>`;
+}
+
 function heatEditor(heat) {
   if (heat.locked) return lockedHeatCard(heat);
   if (heat.started === false) return readyToStartHeatCard(heat);
+  if (heat.editLocked) return editLockedHeatCard(heat);
   const finishCount = heat.entries.reduce((total, entry) => total + entry.marbles.length, 0);
   return `<article class="heat-card ${heat.complete ? "complete" : ""}" id="heat-${heat.id}">
     <header class="heat-card-heading">
@@ -730,19 +748,14 @@ async function startHeat(heatId) {
   } catch (error) { notify(error.message, true); }
 }
 
-async function saveHeat(heatId, confirmReset = false) {
+async function saveHeat(heatId) {
   const card = document.querySelector(`#heat-${heatId}`);
   const results = [...card.querySelectorAll("[data-result-for]")].map((select) => ({contestantId:Number(select.dataset.resultFor), marbleNumber:Number(select.dataset.marbleNumber), finish:select.value}));
   if (results.some((result) => !result.finish)) return notify("Choose a finishing position for every marble.", true);
   try {
-    applyState(await api(`/api/heats/${heatId}/results`, {method:"PUT", body:JSON.stringify({results, confirmReset})}));
+    applyState(await api(`/api/heats/${heatId}/results`, {method:"PUT", body:JSON.stringify({results})}));
     notify("Heat results saved.");
-  } catch (error) {
-    if (error.requiresReset && window.confirm(`${error.message}\n\nContinue and rebuild the affected bracket stage(s)?`)) {
-      return saveHeat(heatId, true);
-    }
-    if (!error.requiresReset) notify(error.message, true);
-  }
+  } catch (error) { notify(error.message, true); }
 }
 
 function configPayload(confirmReset = false) {

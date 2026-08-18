@@ -23,13 +23,10 @@ from report import final_finish_label, heat_finish_label  # noqa: E402
 
 
 def start_heat(client, heat):
-    if heat.get("stage", "staging") != "staging":
-        return None
     return client.put(f'/api/heats/{heat["id"]}/start')
 
 
-def score_heat_sequentially(client, heat):
-    start_heat(client, heat)
+def build_sequential_results(heat):
     results = []
     position = 0
     for entry in heat["entries"]:
@@ -42,6 +39,12 @@ def score_heat_sequentially(client, heat):
                     "finish": position,
                 }
             )
+    return results
+
+
+def score_heat_sequentially(client, heat):
+    start_heat(client, heat)
+    results = build_sequential_results(heat)
     return client.put(f'/api/heats/{heat["id"]}/results', json={"results": results})
 
 
@@ -364,6 +367,7 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertIsNotNone(final_heat)
         entries = final_heat["entries"]
         self.assertGreaterEqual(len(entries), 3)
+        start_heat(self.client, final_heat)
 
         no_winner_results = [
             {
@@ -660,6 +664,92 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertEqual(winner_byes[0]["originRound"], 1)
         self.assertTrue(all(item["racerId"] != winner_id for item in field["preliminaryDirect"]))
         self.assertTrue(all(item["racerId"] != winner_id for item in field["wildcardPool"]))
+
+    def test_championship_field_ignores_unraced_days(self) -> None:
+        created = self.client.post(
+            "/api/tournaments", json={"name": "Partial Rounds Cup"}
+        ).get_json()
+        tournament_id = created["competition"]["id"]
+        self.addCleanup(
+            lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close()
+        )
+        configured = self.client.put(
+            f"/api/tournaments/{tournament_id}",
+            json={
+                "name": "Partial Rounds Cup",
+                "days": 3,
+                "heatsPerRacerPerDay": 1,
+                "maxMarblesPerHeat": 8,
+                "marblesPerRacer": 1,
+                "championshipMaxMarblesPerHeat": 6,
+                "maxByeMarblesPerRacer": 1,
+                "maxFinalRacers": 6,
+                "points": [10, 7, 5, 3, 2, 1, 0, 0],
+                "contestants": [
+                    {"name": racer["name"], "color": racer["color"]}
+                    for racer in created["contestants"]
+                ],
+            },
+        ).get_json()
+        self.assertEqual(configured["competition"]["heatsPerDay"], 1)
+
+        # Only day 1 gets raced; days 2 and 3 are untouched, so round_standings()
+        # would rank them purely by sort_order if championship_field() didn't
+        # skip them -- that phantom ranking must not claim bye/preliminary/
+        # wildcard seats that belong to day 1's real result.
+        day1_heat = configured["days"][0]["heats"][0]
+        results = [
+            {
+                "contestantId": entry["contestantId"],
+                "marbleNumber": entry["marbles"][0]["number"],
+                "finish": index + 1,
+            }
+            for index, entry in enumerate(day1_heat["entries"])
+        ]
+        start_heat(self.client, day1_heat)
+        saved = self.client.put(
+            f'/api/heats/{day1_heat["id"]}/results', json={"results": results}
+        )
+        self.assertEqual(saved.status_code, 200)
+
+        connection = connect()
+        try:
+            field = championship_field(connection, tournament_id)
+        finally:
+            connection.close()
+
+        self.assertTrue(all(item["originRound"] == 1 for item in field["byes"]))
+        self.assertTrue(all(item["originRound"] == 1 for item in field["preliminaryDirect"]))
+        self.assertTrue(all(item["originRound"] == 1 for item in field["wildcardPool"]))
+
+        third_place_id = day1_heat["entries"][2]["contestantId"]
+        fourth_place_id = day1_heat["entries"][3]["contestantId"]
+        wildcard_ids = {item["racerId"] for item in field["wildcardPool"]}
+        self.assertEqual(wildcard_ids, {third_place_id, fourth_place_id})
+
+    def test_standings_show_pending_until_the_round_fully_completes(self) -> None:
+        created = self.client.post(
+            "/api/tournaments", json={"name": "Pending Round Cup"}
+        ).get_json()
+        tournament_id = created["competition"]["id"]
+        self.addCleanup(
+            lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close()
+        )
+        day1_heats = created["days"][0]["heats"]
+        self.assertEqual(len(day1_heats), 4)
+
+        # Scoring just the first of day 1's four heats shouldn't produce a
+        # real-looking placement for anyone -- the round isn't done racing.
+        partial = score_heat_sequentially(self.client, day1_heats[0]).get_json()
+        self.assertTrue(all(racer["dayPlacements"][0] is None for racer in partial["standings"]))
+        self.assertTrue(
+            all(racer["dayChampionshipTiers"][0] is None for racer in partial["standings"])
+        )
+
+        state = score_all_heats_sequentially(self.client, day1_heats[1:])
+        day1_placements = sorted(racer["dayPlacements"][0] for racer in state["standings"])
+        self.assertEqual(day1_placements, list(range(1, 9)))
+        self.assertTrue(any(racer["dayChampionshipTiers"][0] == "bye" for racer in state["standings"]))
 
     def test_wildcard_seats_reach_past_excluded_finishers_and_stay_uncapped(self) -> None:
         created = self.client.post(
@@ -1142,7 +1232,7 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertEqual(len(still_pending), 1)
         self.assertEqual(still_pending[0]["originHeatId"], second_heat_id)
 
-    def test_cascade_reset_confirmation_required_then_rebuilds(self) -> None:
+    def test_editing_an_earlier_staging_heat_is_blocked_once_later_heats_have_run(self) -> None:
         created = self.client.post(
             "/api/tournaments", json={"name": "Cascade Cup"}
         ).get_json()
@@ -1158,10 +1248,11 @@ class MarbleRaceApiTest(unittest.TestCase):
         state = score_all_heats_sequentially(self.client, state["championship"]["wildcard"]["heats"])
         self.assertTrue(state["championship"]["wildcard"]["complete"])
 
-        # Reversing the first staging heat's results changes that round's
-        # standings, and therefore the wildcard field, which already has an
-        # entered result -- this must be gated behind confirmReset.
+        # Every staging heat after the first one has since started, so the
+        # first heat is permanently locked -- reversing its results is
+        # rejected outright rather than offered as a confirmable cascade reset.
         heat = next(h for day in state["days"] for h in day["heats"] if h["id"] == first_heat_id)
+        self.assertTrue(heat["editLocked"])
         entry_count = sum(len(entry["marbles"]) for entry in heat["entries"])
         position = entry_count
         reversed_results = []
@@ -1180,13 +1271,13 @@ class MarbleRaceApiTest(unittest.TestCase):
             f'/api/heats/{first_heat_id}/results', json={"results": reversed_results}
         )
         self.assertEqual(blocked.status_code, 409)
-        self.assertTrue(blocked.get_json()["requiresReset"])
+        self.assertIn("later heat has already started", blocked.get_json()["error"])
 
-        confirmed = self.client.put(
+        still_blocked = self.client.put(
             f'/api/heats/{first_heat_id}/results',
             json={"results": reversed_results, "confirmReset": True},
         )
-        self.assertEqual(confirmed.status_code, 200)
+        self.assertEqual(still_blocked.status_code, 409)
 
     def test_small_tournament_auto_advances_without_racing(self) -> None:
         created = self.client.post(
@@ -1426,9 +1517,43 @@ class MarbleRaceApiTest(unittest.TestCase):
         unlocked_start = self.client.put(f'/api/heats/{heat2["id"]}/start')
         self.assertEqual(unlocked_start.status_code, 200)
 
-    def test_championship_heats_are_never_locked_or_gated_on_start(self) -> None:
+    def test_starting_a_heat_locks_the_previous_heat_from_edits(self) -> None:
         created = self.client.post(
-            "/api/tournaments", json={"name": "No Start Needed Cup"}
+            "/api/tournaments", json={"name": "Edit Lock Cup"}
+        ).get_json()
+        tournament_id = created["competition"]["id"]
+        self.addCleanup(
+            lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close()
+        )
+        heats = [heat for day in created["days"] for heat in day["heats"]]
+        heat1, heat2 = heats[0], heats[1]
+
+        state = score_heat_sequentially(self.client, heat1).get_json()
+        heat1_after = state["days"][0]["heats"][0]
+        self.assertFalse(heat1_after["editLocked"])
+
+        rescored_before_next_start = self.client.put(
+            f'/api/heats/{heat1["id"]}/results',
+            json={"results": build_sequential_results(heat1_after)},
+        )
+        self.assertEqual(rescored_before_next_start.status_code, 200)
+
+        started = self.client.put(f'/api/heats/{heat2["id"]}/start')
+        self.assertEqual(started.status_code, 200)
+        state_after_start = started.get_json()
+        heat1_locked = state_after_start["days"][0]["heats"][0]
+        self.assertTrue(heat1_locked["editLocked"])
+
+        blocked = self.client.put(
+            f'/api/heats/{heat1["id"]}/results',
+            json={"results": build_sequential_results(heat1_locked)},
+        )
+        self.assertEqual(blocked.status_code, 409)
+        self.assertIn("later heat has already started", blocked.get_json()["error"])
+
+    def test_championship_heats_require_start_before_scoring(self) -> None:
+        created = self.client.post(
+            "/api/tournaments", json={"name": "Bracket Sequencing Cup"}
         ).get_json()
         tournament_id = created["competition"]["id"]
         self.addCleanup(
@@ -1439,27 +1564,59 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertTrue(state["championship"]["wildcard"]["ready"])
         wildcard_heats = state["championship"]["wildcard"]["heats"]
         self.assertTrue(wildcard_heats)
-        for heat in wildcard_heats:
-            self.assertNotIn("locked", heat)
-            self.assertNotIn("started", heat)
 
         heat = wildcard_heats[0]
-        results = []
-        position = 0
-        for entry in heat["entries"]:
-            for race_marble in entry["marbles"]:
-                position += 1
-                results.append(
-                    {
-                        "contestantId": entry["contestantId"],
-                        "marbleNumber": race_marble["number"],
-                        "finish": position,
-                    }
-                )
-        response = self.client.put(
+        self.assertFalse(heat["started"])
+        self.assertFalse(heat["locked"])
+        results = build_sequential_results(heat)
+
+        rejected = self.client.put(
             f'/api/heats/{heat["id"]}/results', json={"results": results}
         )
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(rejected.status_code, 409)
+        self.assertIn("Start this heat", rejected.get_json()["error"])
+
+        started = self.client.put(f'/api/heats/{heat["id"]}/start')
+        self.assertEqual(started.status_code, 200)
+        accepted = self.client.put(
+            f'/api/heats/{heat["id"]}/results', json={"results": results}
+        )
+        self.assertEqual(accepted.status_code, 200)
+
+    def test_starting_the_next_stage_locks_the_previous_stage_from_edits(self) -> None:
+        created = self.client.post(
+            "/api/tournaments", json={"name": "Cross Stage Lock Cup"}
+        ).get_json()
+        tournament_id = created["competition"]["id"]
+        self.addCleanup(
+            lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close()
+        )
+        staging_heats = [heat for day in created["days"] for heat in day["heats"]]
+        state = score_all_heats_sequentially(self.client, staging_heats)
+        self.assertTrue(state["championship"]["wildcard"]["ready"])
+        wildcard_heats = state["championship"]["wildcard"]["heats"]
+        self.assertTrue(wildcard_heats)
+        state = score_all_heats_sequentially(self.client, wildcard_heats)
+        self.assertTrue(state["championship"]["wildcard"]["complete"])
+        self.assertTrue(state["championship"]["preliminary"]["ready"])
+        preliminary_heats = state["championship"]["preliminary"]["heats"]
+        self.assertTrue(preliminary_heats)
+
+        last_wildcard_heat = state["championship"]["wildcard"]["heats"][-1]
+        self.assertFalse(last_wildcard_heat["editLocked"])
+
+        started = self.client.put(f'/api/heats/{preliminary_heats[0]["id"]}/start')
+        self.assertEqual(started.status_code, 200)
+        state_after_start = started.get_json()
+        locked_wildcard_heat = state_after_start["championship"]["wildcard"]["heats"][-1]
+        self.assertTrue(locked_wildcard_heat["editLocked"])
+
+        blocked = self.client.put(
+            f'/api/heats/{last_wildcard_heat["id"]}/results',
+            json={"results": build_sequential_results(last_wildcard_heat)},
+        )
+        self.assertEqual(blocked.status_code, 409)
+        self.assertIn("later heat has already started", blocked.get_json()["error"])
 
 
 if __name__ == "__main__":

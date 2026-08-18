@@ -16,12 +16,12 @@ from db import (
     final_field,
     heat_top_n,
     init_db,
-    is_staging_heat_locked,
+    is_heat_edit_locked,
+    is_heat_locked,
     is_stage_complete,
     preliminary_field,
     rebuild_schedule,
     stage_has_results,
-    stages_pending_cascade_reset,
     standings,
     sync_championship,
     transaction,
@@ -157,10 +157,9 @@ def shape_heats(heat_rows) -> list[dict[str, Any]]:
                 "heatNumber": row["heat_number"],
                 "globalNumber": row["global_number"],
                 "stage": row["stage"],
+                "started": row["started_at"] is not None,
                 "entries": [],
             }
-            if row["stage"] == "staging":
-                heat["started"] = row["started_at"] is not None
             heat_map[row["id"]] = heat
         entry_key = (row["id"], row["lane"])
         entry = entry_map.get(entry_key)
@@ -206,6 +205,27 @@ def shape_heats(heat_rows) -> list[dict[str, Any]]:
             )
         heat["complete"] = all(entry["complete"] for entry in heat["entries"])
     return heats
+
+
+def apply_heat_locks(heats: list[dict[str, Any]]) -> None:
+    """Sets `locked` (blocked from starting until earlier heats are scored)
+    and `editLocked` (blocked from re-scoring once a later heat has started)
+    on every heat, using the tournament-wide global_number order that spans
+    staging and every championship stage.
+    """
+    ordered = sorted(heats, key=lambda heat: heat["globalNumber"])
+    started_globals = [heat["globalNumber"] for heat in ordered if heat["started"]]
+    latest_started_global = max(started_globals) if started_globals else None
+    blocked = False
+    for heat in ordered:
+        if heat["complete"]:
+            heat["locked"] = False
+        else:
+            heat["locked"] = blocked
+            blocked = True
+        heat["editLocked"] = (
+            latest_started_global is not None and heat["globalNumber"] < latest_started_global
+        )
 
 
 def _resolve_seed_rounds(
@@ -450,13 +470,17 @@ def build_state(connection, tournament_id: int) -> dict[str, Any]:
         )
     ]
     staging_heats = shape_heats(fetch_heat_rows(connection, tournament_id, "staging"))
-    blocked = False
-    for heat in sorted(staging_heats, key=lambda heat: heat["globalNumber"]):
-        if heat["complete"]:
-            heat["locked"] = False
-        else:
-            heat["locked"] = blocked
-            blocked = True
+    table = standings(connection, tournament_id)
+    total_heats = tournament["days"] * tournament["heats_per_day"]
+    completed_heats = completed_heat_count(connection, tournament_id, stage="staging")
+    staging_ready = total_heats > 0 and completed_heats == total_heats
+    championship = build_championship_state(connection, tournament_id, staging_ready)
+
+    all_heats = list(staging_heats) + championship["wildcard"]["heats"] + championship["preliminary"]["heats"]
+    if championship["final"]["heat"] is not None:
+        all_heats.append(championship["final"]["heat"])
+    apply_heat_locks(all_heats)
+
     days = []
     for day in range(1, tournament["days"] + 1):
         day_heats = sorted(
@@ -464,12 +488,6 @@ def build_state(connection, tournament_id: int) -> dict[str, Any]:
             key=lambda heat: heat["heatNumber"],
         )
         days.append({"day": day, "heats": day_heats})
-
-    table = standings(connection, tournament_id)
-    total_heats = tournament["days"] * tournament["heats_per_day"]
-    completed_heats = completed_heat_count(connection, tournament_id, stage="staging")
-    staging_ready = total_heats > 0 and completed_heats == total_heats
-    championship = build_championship_state(connection, tournament_id, staging_ready)
 
     return {
         "competition": {
@@ -817,12 +835,12 @@ def delete_tournament(tournament_id: int):
 def save_heat_results(heat_id: int):
     payload = request.get_json(silent=True) or {}
     results = payload.get("results")
-    confirm_reset = payload.get("confirmReset") is True
     if not isinstance(results, list):
         raise ApiError("Results must be supplied as a list.")
     with transaction() as connection:
         heat_row = connection.execute(
-            "SELECT tournament_id, stage, started_at FROM heats WHERE id = ?", (heat_id,)
+            "SELECT tournament_id, stage, started_at, global_number FROM heats WHERE id = ?",
+            (heat_id,),
         ).fetchone()
         entries = connection.execute(
             """
@@ -838,10 +856,15 @@ def save_heat_results(heat_id: int):
             raise ApiError("Heat not found.", status=404)
         tournament_id = int(entries[0]["tournament_id"])
         stage = heat_row["stage"]
-        if stage == "staging" and heat_row["started_at"] is None:
+        if heat_row["started_at"] is None:
             already_scored = any(row["existing_finish"] is not None for row in entries)
             if not already_scored:
                 raise ApiError("Start this heat before entering results.", status=409)
+        if is_heat_edit_locked(connection, tournament_id, heat_row["global_number"]):
+            raise ApiError(
+                "This heat is locked because a later heat has already started.",
+                status=409,
+            )
         expected_keys = {
             (row["racer_id"], row["marble_number"]) for row in entries
         }
@@ -893,15 +916,6 @@ def save_heat_results(heat_id: int):
                     marble_number,
                 ),
             )
-        if stage != "final":
-            pending = stages_pending_cascade_reset(connection, tournament_id)
-            if pending and not confirm_reset:
-                raise ApiError(
-                    "This result changes the championship field. Confirm to rebuild the "
-                    "affected bracket stage(s) and clear their entered results.",
-                    status=409,
-                    requiresReset=True,
-                )
         sync_championship(connection, tournament_id)
         return jsonify(build_state(connection, tournament_id))
 
@@ -916,9 +930,9 @@ def start_heat(heat_id: int):
         if not heat_row:
             raise ApiError("Heat not found.", status=404)
         tournament_id = int(heat_row["tournament_id"])
-        if heat_row["stage"] != "staging" or heat_row["started_at"] is not None:
+        if heat_row["started_at"] is not None:
             return jsonify(build_state(connection, tournament_id))
-        if is_staging_heat_locked(connection, tournament_id, heat_row["global_number"]):
+        if is_heat_locked(connection, tournament_id, heat_row["global_number"]):
             raise ApiError(
                 "Complete the earlier rounds before starting this heat.", status=409
             )
