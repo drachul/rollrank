@@ -8,7 +8,7 @@ services:
     image: rollrank:latest
     container_name: rollrank
     ports:
-      - "8080:8080"
+      - "7272:7272"
     user: "${ROLLRANK_UID:-1000}:${ROLLRANK_GID:-1000}"
     environment:
       APP_DATA_DIR: /data
