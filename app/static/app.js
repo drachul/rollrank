@@ -1,12 +1,15 @@
 let state = null;
 const initialParams = new URLSearchParams(window.location.search);
-const supportedViews = ["dashboard", "heats", "standings", "championship", "setup"];
+const supportedViews = ["dashboard", "heats", "standings", "setup"];
 let activeView = supportedViews.includes(initialParams.get("view")) ? initialParams.get("view") : "dashboard";
 let activeDay = 1;
 let activeTournamentId = Number(initialParams.get("tournament")) || null;
 let kioskMode = initialParams.get("display") === "kiosk";
-let kioskRefreshTimer = null;
-let kioskRefreshInFlight = false;
+let liveEventSource = null;
+let liveEventTournamentId = null;
+let kioskIntroTimer = null;
+let kioskResultsTimer = null;
+let kioskCupTimer = null;
 let kioskRefreshFailed = false;
 let kioskLastUpdated = null;
 let kioskUsesBrowserFullscreen = false;
@@ -19,7 +22,6 @@ const app = document.querySelector("#app");
 const toast = document.querySelector("#toast");
 const tournamentSwitcher = document.querySelector("#tournament-switcher");
 const tournamentDialog = document.querySelector("#new-tournament-dialog");
-const printReport = document.querySelector("#print-report");
 
 const escapeHtml = (value) => String(value ?? "")
   .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
@@ -30,6 +32,10 @@ const ordinal = (value) => {
   if (number % 100 >= 11 && number % 100 <= 13) return `${number}th`;
   return `${number}${({1:"st",2:"nd",3:"rd"})[number % 10] || "th"}`;
 };
+
+const placeLabel = (place, live = false) => place == null ? "Pending" : `${ordinal(place)}${live ? "*" : ""}`;
+const tierLabel = {bye: "Final", preliminary: "Preliminary", wildcard: "Wildcard"};
+const tierClass = (tier) => tier ? `tier-${tier}` : "";
 
 function notify(message, isError = false) {
   toast.textContent = message;
@@ -59,7 +65,6 @@ function reportUrl() {
 function syncTournamentChrome() {
   activeTournamentId = state.competition.id;
   tournamentSwitcher.innerHTML = state.tournaments.map((tournament) => `<option value="${tournament.id}" ${tournament.id === activeTournamentId ? "selected" : ""}>${escapeHtml(tournament.name)} · ${tournament.completedHeats}/${tournament.totalHeats}</option>`).join("");
-  printReport.href = reportUrl();
   document.title = `${state.competition.name} · RollRank`;
   const url = new URL(window.location.href);
   url.searchParams.set("tournament", activeTournamentId);
@@ -67,13 +72,19 @@ function syncTournamentChrome() {
 }
 
 function applyState(nextState) {
+  const introductionHeat = kioskMode ? newlyStartedHeat(state, nextState) : null;
+  const completedHeat = kioskMode ? newlyCompletedHeat(state, nextState) : null;
+  if (state && state.competition.id !== nextState.competition.id) stopKioskRaceAnimations();
   state = nextState;
   activeTournamentId = state.competition.id;
-  activeDay = Math.min(activeDay, state.competition.days);
+  if (activeDay !== "championship") activeDay = Math.min(activeDay, state.competition.days);
   kioskRefreshFailed = false;
   kioskLastUpdated = new Date();
   syncTournamentChrome();
   render();
+  if (completedHeat?.stage === "final") startKioskCupPresentation(completedHeat, state.competition.name);
+  else if (completedHeat) startKioskRaceResults(completedHeat);
+  else if (introductionHeat) startKioskRaceIntroduction(introductionHeat);
 }
 
 function kioskTimestamp() {
@@ -81,35 +92,260 @@ function kioskTimestamp() {
   return `Updated ${kioskLastUpdated.toLocaleTimeString([], {hour:"numeric", minute:"2-digit", second:"2-digit"})}`;
 }
 
-async function refreshKioskState() {
-  if (!kioskMode || kioskRefreshInFlight || !activeTournamentId) return;
-  kioskRefreshInFlight = true;
-  try {
-    const nextState = await api(`/api/state?tournamentId=${activeTournamentId}`);
-    applyState(nextState);
-  } catch (_error) {
-    kioskRefreshFailed = true;
-    const liveStatus = document.querySelector(".kiosk-live-status");
-    if (liveStatus) {
-      liveStatus.classList.add("stale");
-      liveStatus.innerHTML = "<i></i> Reconnecting…";
-    }
-  } finally {
-    kioskRefreshInFlight = false;
+function activeViewIsLive() {
+  return kioskMode || activeView === "dashboard" || activeView === "standings";
+}
+
+function markLiveDisconnected() {
+  kioskRefreshFailed = true;
+  const liveStatus = document.querySelector(".kiosk-live-status");
+  if (liveStatus) {
+    liveStatus.classList.add("stale");
+    liveStatus.innerHTML = "<i></i> Reconnecting…";
   }
 }
 
-function startKioskRefresh() {
-  if (kioskRefreshTimer) window.clearInterval(kioskRefreshTimer);
-  kioskRefreshTimer = window.setInterval(refreshKioskState, 5000);
+function startLiveUpdates() {
+  if (!activeViewIsLive() || !activeTournamentId || document.visibilityState === "hidden") {
+    stopLiveUpdates();
+    return;
+  }
+  if (liveEventSource && liveEventTournamentId === activeTournamentId) return;
+  stopLiveUpdates();
+  const tournamentId = activeTournamentId;
+  const source = new EventSource(`/api/tournaments/${tournamentId}/events`);
+  liveEventSource = source;
+  liveEventTournamentId = tournamentId;
+  source.addEventListener("state", (event) => {
+    if (source !== liveEventSource) return;
+    try { applyState(JSON.parse(event.data)); }
+    catch (_error) { markLiveDisconnected(); }
+  });
+  source.addEventListener("tournament-deleted", () => {
+    if (source !== liveEventSource) return;
+    stopLiveUpdates();
+    loadState(null);
+  });
+  source.onerror = () => {
+    if (source === liveEventSource) markLiveDisconnected();
+  };
 }
 
-function stopKioskRefresh() {
-  if (kioskRefreshTimer) window.clearInterval(kioskRefreshTimer);
-  kioskRefreshTimer = null;
+function stopLiveUpdates() {
+  if (liveEventSource) liveEventSource.close();
+  liveEventSource = null;
+  liveEventTournamentId = null;
+}
+
+function tournamentHeats(snapshot) {
+  if (!snapshot) return [];
+  const championship = snapshot.championship;
+  const heats = snapshot.days.flatMap((day) => day.heats)
+    .concat(championship.wildcard.heats, championship.preliminary.heats);
+  if (championship.final.heat) heats.push(championship.final.heat);
+  return heats;
+}
+
+function newlyStartedHeat(previousState, nextState) {
+  if (!previousState || previousState.competition.id !== nextState.competition.id) return null;
+  const previousHeats = new Map(tournamentHeats(previousState).map((heat) => [heat.id, heat]));
+  return tournamentHeats(nextState)
+    .filter((heat) => heat.started && !previousHeats.get(heat.id)?.started)
+    .sort((first, second) => first.globalNumber - second.globalNumber)[0] || null;
+}
+
+function newlyCompletedHeat(previousState, nextState) {
+  if (!previousState || previousState.competition.id !== nextState.competition.id) return null;
+  const previousHeats = new Map(tournamentHeats(previousState).map((heat) => [heat.id, heat]));
+  return tournamentHeats(nextState)
+    .filter((heat) => previousHeats.has(heat.id) && heat.complete && !previousHeats.get(heat.id).complete)
+    .sort((first, second) => first.globalNumber - second.globalNumber)[0] || null;
+}
+
+function kioskIntroductionHeatName(heat) {
+  if (heat.stage === "wildcard") return `Championship: Wildcard Heat ${heat.heatNumber}`;
+  if (heat.stage === "preliminary") return `Championship: Preliminary Heat ${heat.heatNumber}`;
+  if (heat.stage === "final") return "Championship: Final";
+  return `Round ${heat.day} · Heat ${heat.heatNumber}`;
+}
+
+function stopKioskRaceIntroduction() {
+  if (kioskIntroTimer) window.clearTimeout(kioskIntroTimer);
+  kioskIntroTimer = null;
+  document.querySelector(".kiosk-race-intro")?.remove();
+}
+
+function stopKioskRaceResults() {
+  if (kioskResultsTimer) window.clearTimeout(kioskResultsTimer);
+  kioskResultsTimer = null;
+  document.querySelector(".kiosk-race-results")?.remove();
+}
+
+function stopKioskCupPresentation() {
+  if (kioskCupTimer) window.clearTimeout(kioskCupTimer);
+  kioskCupTimer = null;
+  document.querySelector(".kiosk-cup-presentation")?.remove();
+}
+
+function stopKioskRaceAnimations() {
+  stopKioskRaceIntroduction();
+  stopKioskRaceResults();
+  stopKioskCupPresentation();
+}
+
+function startKioskRaceIntroduction(heat) {
+  if (!kioskMode || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  stopKioskRaceResults();
+  stopKioskCupPresentation();
+  stopKioskRaceIntroduction();
+  const overlay = document.createElement("section");
+  overlay.className = "kiosk-race-intro";
+  overlay.setAttribute("aria-label", `Race introduction for ${kioskIntroductionHeatName(heat)}`);
+  overlay.innerHTML = `
+    <div class="kiosk-intro-stage kiosk-intro-title">
+      <p>Now racing</p>
+      <h2>${escapeHtml(kioskIntroductionHeatName(heat))}</h2>
+    </div>
+    <div class="kiosk-intro-stage kiosk-intro-lineup">
+      <p>Racers to the line</p>
+      <div class="kiosk-intro-racers">
+        ${heat.entries.map((entry, index) => `<article style="--intro-index:${index}">${marble(entry.color)}<strong>${escapeHtml(entry.name)}</strong></article>`).join("")}
+      </div>
+      <i class="kiosk-intro-start-line" aria-hidden="true"></i>
+    </div>
+    <div class="kiosk-intro-stage kiosk-intro-marks">
+      <h2>On your marks!</h2>
+    </div>
+    <div class="kiosk-intro-stage kiosk-intro-go">
+      <div class="kiosk-intro-flag" aria-hidden="true"><i></i><span></span></div>
+      <h2>Go!</h2>
+    </div>`;
+  document.body.appendChild(overlay);
+  kioskIntroTimer = window.setTimeout(stopKioskRaceIntroduction, 9400);
+}
+
+function heatMarblesInFinishOrder(heat) {
+  const racers = heat.entries.flatMap((entry) => entry.marbles.map((result) => ({
+    name: entry.name,
+    color: entry.color,
+    marbleNumber: result.number,
+    showMarbleNumber: entry.marbles.length > 1,
+    finish: Number(result.finish),
+    lane: entry.lane,
+  })));
+  return racers.sort((first, second) => {
+    if (first.finish === 0 && second.finish !== 0) return 1;
+    if (first.finish !== 0 && second.finish === 0) return -1;
+    if (first.finish !== second.finish) return first.finish - second.finish;
+    return first.lane - second.lane || first.marbleNumber - second.marbleNumber;
+  });
+}
+
+function randomKioskDnfEffect() {
+  const effects = ["crash", "fire", "explode"];
+  return effects[Math.floor(Math.random() * effects.length)];
+}
+
+function startKioskRaceResults(heat) {
+  if (!kioskMode || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  stopKioskRaceIntroduction();
+  stopKioskCupPresentation();
+  stopKioskRaceResults();
+  const results = heatMarblesInFinishOrder(heat).map((result, index) => ({
+    ...result,
+    dnfEffect: result.finish === 0 ? randomKioskDnfEffect() : null,
+    dnfExitY: index % 2 ? "78vh" : "-78vh",
+    dnfSpin: index % 2 ? "820deg" : "-820deg",
+  }));
+  const densityClass = results.length > 18 ? " crowded" : results.length > 10 ? " compact" : "";
+  const resultDelayStep = Math.min(170, Math.floor(3500 / Math.max(1, results.length - 1)));
+  const overlay = document.createElement("section");
+  overlay.className = `kiosk-race-results${densityClass}`;
+  overlay.setAttribute("aria-label", `Race results for ${kioskIntroductionHeatName(heat)}`);
+  overlay.innerHTML = `
+    <header>
+      <p>Official result</p>
+      <h2>${escapeHtml(kioskIntroductionHeatName(heat))}</h2>
+    </header>
+    <div class="kiosk-results-track">
+      <i class="kiosk-results-finish-line" aria-hidden="true"><span>Finish</span></i>
+      ${results.map((result, index) => `<article class="kiosk-result-racer${result.finish === 0 ? ` dnf dnf-${result.dnfEffect}` : ""}" style="--result-y:${((index + .5) / results.length * 100).toFixed(3)}%;--result-delay:${index * resultDelayStep}ms;--dnf-exit-y:${result.dnfExitY};--dnf-spin:${result.dnfSpin}">
+        ${marble(result.color)}
+        <strong>${escapeHtml(result.name)}${result.showMarbleNumber ? ` <small>· Marble ${result.marbleNumber}</small>` : ""}</strong>
+        <b>${result.finish === 0 ? "DNF" : ordinal(result.finish)}</b>
+        ${result.finish === 0 ? `<i class="kiosk-result-dnf-effect" aria-hidden="true"></i>` : ""}
+      </article>`).join("")}
+    </div>`;
+  document.body.appendChild(overlay);
+  kioskResultsTimer = window.setTimeout(stopKioskRaceResults, 10000);
+}
+
+function kioskCupTiming(position) {
+  const base = {3: 0, 2: 8, 1: 16}[position];
+  return {
+    announcement: `${base + .55}s`,
+    racer: `${base + 2.65}s`,
+    presenter: `${base + 4.45}s`,
+    trophy: `${base + 6.25}s`,
+  };
+}
+
+function kioskCupAnnouncement(racer, position, tournamentName) {
+  const timing = kioskCupTiming(position);
+  const introduction = position === 1
+    ? `And your ${escapeHtml(tournamentName)} Champion`
+    : `In ${ordinal(position)} place`;
+  return `<div class="kiosk-cup-announcement${position === 1 ? " champion" : ""}" style="--announcement-delay:${timing.announcement}">
+    <p>${introduction}</p>
+    <h2>${escapeHtml(racer.name)}!</h2>
+  </div>`;
+}
+
+function kioskCupPodiumPlace(racer, position) {
+  const placeMeta = {
+    1: {className: "gold", label: "Champion", trophy: "🏆", racerIn: "50vw", racerMid: "12vw", presenterIn: "-55vw", presenterOut: "52vw"},
+    2: {className: "silver", label: "Second place", trophy: "🥈", racerIn: "-52vw", racerMid: "-13vw", presenterIn: "50vw", presenterOut: "-50vw"},
+    3: {className: "bronze", label: "Third place", trophy: "🥉", racerIn: "52vw", racerMid: "13vw", presenterIn: "-50vw", presenterOut: "48vw"},
+  }[position];
+  if (!racer) return `<article class="kiosk-cup-place ${placeMeta.className} empty"><div class="kiosk-cup-step"><b>${position}</b><span>${placeMeta.label}</span></div></article>`;
+  const timing = kioskCupTiming(position);
+  return `<article class="kiosk-cup-place ${placeMeta.className}" style="--racer-delay:${timing.racer};--presenter-delay:${timing.presenter};--trophy-delay:${timing.trophy};--racer-in:${placeMeta.racerIn};--racer-mid:${placeMeta.racerMid};--presenter-in:${placeMeta.presenterIn};--presenter-out:${placeMeta.presenterOut}">
+    <div class="kiosk-cup-racer">
+      ${marble(racer.color)}
+      <strong>${escapeHtml(racer.name)}</strong>
+      <span class="kiosk-cup-winner-trophy" role="img" aria-label="${placeMeta.label} trophy">${placeMeta.trophy}</span>
+    </div>
+    <div class="kiosk-cup-presenter" aria-hidden="true">
+      <div class="kiosk-cup-host">${marble("#172D52")}<i class="kiosk-cup-top-hat"></i></div>
+      <span class="kiosk-cup-presenter-trophy">${placeMeta.trophy}</span>
+    </div>
+    <div class="kiosk-cup-step"><b>${position}</b><span>${placeMeta.label}</span></div>
+  </article>`;
+}
+
+function startKioskCupPresentation(finalHeat, tournamentName) {
+  if (!kioskMode || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  stopKioskRaceAnimations();
+  const placedRacers = new Map(finalHeat.entries.filter((entry) => entry.finish > 0 && entry.finish <= 3).map((entry) => [Number(entry.finish), entry]));
+  const sequence = [3, 2, 1].filter((position) => placedRacers.has(position));
+  const overlay = document.createElement("section");
+  overlay.className = "kiosk-cup-presentation";
+  overlay.setAttribute("aria-label", `${tournamentName} cup presentation`);
+  overlay.innerHTML = `
+    ${fireworksMarkup("kiosk-cup-fireworks")}
+    <header><p>Official cup presentation</p><strong>${escapeHtml(tournamentName)}</strong></header>
+    ${sequence.map((position) => kioskCupAnnouncement(placedRacers.get(position), position, tournamentName)).join("")}
+    <div class="kiosk-cup-stage">
+      <div class="kiosk-cup-podium">
+        ${[2, 1, 3].map((position) => kioskCupPodiumPlace(placedRacers.get(position), position)).join("")}
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  kioskCupTimer = window.setTimeout(stopKioskCupPresentation, 32000);
 }
 
 async function setKioskMode(enabled, requestBrowserFullscreen = false) {
+  if (!enabled) stopKioskRaceAnimations();
   kioskMode = enabled;
   activeView = "dashboard";
   document.body.classList.toggle("kiosk-mode", enabled);
@@ -119,17 +355,14 @@ async function setKioskMode(enabled, requestBrowserFullscreen = false) {
   else url.searchParams.delete("display");
   window.history.replaceState({}, "", url);
 
+  render();
   if (enabled) {
-    startKioskRefresh();
-    render();
     if (requestBrowserFullscreen && document.documentElement.requestFullscreen && !document.fullscreenElement) {
       kioskUsesBrowserFullscreen = true;
       try { await document.documentElement.requestFullscreen(); }
       catch (_error) { kioskUsesBrowserFullscreen = false; }
     }
   } else {
-    stopKioskRefresh();
-    render();
     if (document.fullscreenElement && document.exitFullscreen) {
       try { await document.exitFullscreen(); } catch (_error) { /* The page view still exits kiosk mode. */ }
     }
@@ -166,7 +399,20 @@ function tournamentStatus(tournament) {
 }
 
 function currentTournamentStatus() {
-  return tournamentStatus({...state.competition, finalComplete:state.championship.complete});
+  return tournamentStatus({...state.competition, finalComplete:state.championship.final.complete});
+}
+
+function originBadge(entry) {
+  const stage = entry.originStage;
+  if (!stage) return "";
+  const labels = {
+    "bye": `Bye · Round ${entry.originRound}`,
+    "stage-skip": "Advanced · small field",
+    "staging-round": `From Round ${entry.originRound}`,
+    "wildcard": "From Wildcard",
+    "preliminary": "From Preliminary",
+  };
+  return `<span class="origin-badge">${escapeHtml(labels[stage] || "Advanced")}</span>`;
 }
 
 function renderTournamentIndex(tournaments) {
@@ -178,7 +424,7 @@ function renderTournamentIndex(tournaments) {
     const status = tournamentStatus(tournament);
     const progress = tournament.totalHeats ? Math.round(tournament.completedHeats / tournament.totalHeats * 100) : 0;
     const leader = tournament.leader
-      ? `<div class="index-leader">${marble(tournament.leader.color, "small")}<div><small>Live leader</small><strong>${escapeHtml(tournament.leader.name)}</strong></div><b>${tournament.leader.totalPoints} pts</b></div>`
+      ? `<div class="index-leader">${marble(tournament.leader.color, "small")}<div><small>Live leader</small><strong>${escapeHtml(tournament.leader.name)}</strong></div><b>${tournament.leader.wins} win${tournament.leader.wins === 1 ? "" : "s"}</b></div>`
       : `<div class="index-leader empty">No results entered yet</div>`;
     return `<article class="tournament-index-card">
       <div class="index-card-top"><span class="index-status ${status.className}">${status.label}</span><span class="index-progress-count">${tournament.completedHeats}/${tournament.totalHeats} heats</span></div>
@@ -210,18 +456,20 @@ function viewHeader(eyebrow, title, description, action = "") {
 }
 
 function fireworksMarkup() {
-  return `<div class="kiosk-fireworks" aria-hidden="true">
+  const extraClass = arguments[0] || "";
+  return `<div class="kiosk-fireworks${extraClass ? ` ${extraClass}` : ""}" aria-hidden="true">
     <i style="--x:12%;--y:17%;--delay:0s;--color:#f4c542"></i><i style="--x:31%;--y:9%;--delay:.75s;--color:#5ba1ff"></i><i style="--x:52%;--y:18%;--delay:1.35s;--color:#ff6b8a"></i><i style="--x:72%;--y:8%;--delay:.35s;--color:#6ee7b7"></i><i style="--x:89%;--y:21%;--delay:1.05s;--color:#c4a7ff"></i><i style="--x:22%;--y:53%;--delay:1.7s;--color:#ff8f5b"></i><i style="--x:82%;--y:58%;--delay:2s;--color:#f4c542"></i>
   </div>`;
 }
 
 function renderDashboardFinalSummary() {
   const c = state.competition;
-  const championship = state.championship;
-  const champion = championship.champion;
+  const finalStage = state.championship.final;
+  const champion = finalStage.champion;
+  const entries = finalStage.heat.entries;
   const status = currentTournamentStatus();
-  const dnfCount = championship.racers.filter((racer) => racer.finish === 0).length;
-  const dnfPlace = finalDnfPlace(championship.racers);
+  const dnfCount = entries.filter((entry) => entry.finish === 0).length;
+  const dnfPlace = finalDnfPlace(entries);
 
   return `<section class="dashboard-final-summary" aria-label="Completed tournament summary">
     ${fireworksMarkup()}
@@ -237,27 +485,25 @@ function renderDashboardFinalSummary() {
         ${marble(champion.color)}
         <small>RollRank champion</small>
         <strong>${escapeHtml(champion.name)}</strong>
-        <span>${champion.totalPoints} qualifying pts</span>
       </aside>
     </section>
     <section class="panel dashboard-final-lineup">
-      <div class="panel-heading"><div><p class="eyebrow">The final</p><h2>Final race lineup</h2></div><button class="text-button" data-view="championship">View final details →</button></div>
+      <div class="panel-heading"><div><p class="eyebrow">The final</p><h2>Final race lineup</h2></div><button class="text-button" data-view="heats" data-day="championship">View championship details →</button></div>
       <div class="dashboard-final-racers">
-        ${championship.racers.map((racer) => `<article class="${racer.finish === 0 ? "dnf" : ""}">
-          <span class="dashboard-final-seed"><small>Seed</small><b>${racer.seed}</b></span>
-          ${marble(racer.color)}
-          <div><strong>${escapeHtml(racer.name)}</strong><span>${racer.totalPoints} qualifying pts</span></div>
-          <b class="dashboard-final-finish">${finalFinishLabel(racer.finish, championship.racers)}</b>
+        ${entries.map((entry) => `<article class="${entry.finish === 0 ? "dnf" : ""}">
+          ${marble(entry.color)}
+          <div><strong>${escapeHtml(entry.name)}</strong>${originBadge(entry)}</div>
+          <b class="dashboard-final-finish">${finalFinishLabel(entry.finish, entries)}</b>
         </article>`).join("")}
       </div>
       ${dnfCount ? `<p class="dashboard-final-note">${dnfCount} DNF${dnfCount === 1 ? "" : "s"} tied for ${ordinal(dnfPlace)} place.</p>` : ""}
     </section>
-    ${renderFinalCelebration(championship)}
+    ${renderFinalCelebration(finalStage)}
   </section>`;
 }
 
 function renderDashboard() {
-  if (state.championship.complete) return renderDashboardFinalSummary();
+  if (state.championship.final.complete) return renderDashboardFinalSummary();
   const c = state.competition;
   const status = currentTournamentStatus();
   const nextHeat = state.days.flatMap((day) => day.heats).find((heat) => !heat.complete);
@@ -267,28 +513,28 @@ function renderDashboard() {
       <div class="hero-copy">
         <div class="dashboard-status-row"><span class="status-chip ${status.className}"><i></i>${status.label}</span><button type="button" class="kiosk-launch-button" data-enter-kiosk><span aria-hidden="true">⛶</span> Fullscreen display</button></div>
         <h1>Every heat. Every point.<br><em>One champion.</em></h1>
-        <p>Run the schedule, enter finishing positions, and watch the final field take shape in real time.</p>
+        <p>Run the schedule, enter finishing positions, and watch the championship bracket take shape in real time.</p>
       </div>
       <aside class="summary-card">
         <p class="eyebrow light">Tournament snapshot</p>
         <div class="summary-lead"><strong>${c.days}</strong><span>race<br>rounds</span></div>
-        <div class="summary-pills"><span><b>${c.heatsPerRacerPerDay}</b> heats / racer / round</span><span><b>${c.heatsPerDay}</b> total heats / round</span><span><b>${c.racersPerHeat}</b> racers / heat</span><span><b>${c.marblesPerHeat}/${c.maxMarblesPerHeat}</b> marbles / heat</span><span><b>${c.championshipRacers}</b> finalists</span></div>
+        <div class="summary-pills"><span><b>${c.heatsPerRacerPerDay}</b> heats / racer / round</span><span><b>${c.heatsPerDay}</b> total heats / round</span><span><b>${c.racersPerHeat}</b> racers / heat</span><span><b>${c.marblesPerHeat}/${c.maxMarblesPerHeat}</b> marbles / heat</span><span><b>${c.maxFinalRacers}</b> max finalists</span></div>
         <div class="progress-label"><span>Results entered</span><b>${c.completedHeats} of ${c.totalHeats}</b></div>
         <div class="progress-track"><i style="width:${progressPercent()}%"></i></div>
       </aside>
     </section>
     <section class="dashboard-grid">
       <article class="panel">
-        <div class="panel-heading"><div><p class="eyebrow">Race queue</p><h2>${nextHeat ? `Next: Round ${nextHeat.day}, Heat ${nextHeat.heatNumber}` : "All round heats complete"}</h2></div><button class="text-button" data-view="heats">View heats →</button></div>
+        <div class="panel-heading"><div><p class="eyebrow">Race queue</p><h2>${nextHeat ? `${nextHeat.started ? "In Progress" : "Next"}: Round ${nextHeat.day}, Heat ${nextHeat.heatNumber}` : "All round heats complete"}</h2></div><button class="text-button" data-view="heats">View rounds →</button></div>
         ${nextHeat ? `<div class="next-heat">
           <div class="heat-flag"><small>Race</small><strong>#${nextHeat.globalNumber}</strong></div>
           <div class="racer-preview">${nextHeat.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>
-          <button class="primary-button compact" data-score-heat="${nextHeat.id}">Score heat</button>
-        </div>` : `<div class="completion-callout"><div class="trophy">★</div><div><strong>Final field locked</strong><p>The top ${c.championshipRacers} racers are ready for the final.</p></div><button class="primary-button compact" data-view="championship">Open final</button></div>`}
+          ${nextHeat.started === false ? `<button class="primary-button compact" data-start-heat="${nextHeat.id}">Start heat</button>` : `<button class="primary-button compact" data-score-heat="${nextHeat.id}">Score heat</button>`}
+        </div>` : `<div class="completion-callout"><div class="trophy">★</div><div><strong>Championship bracket underway</strong><p>Wildcard, preliminary, and final heats build automatically as each stage finishes.</p></div><button class="primary-button compact" data-view="heats" data-day="championship">Open bracket</button></div>`}
       </article>
       <article class="panel standings-preview">
-        <div class="panel-heading"><div><p class="eyebrow">Live table</p><h2>Tournament standings</h2></div><span class="finals-chip">Top ${c.championshipRacers} advance</span></div>
-        ${topRacers.map((racer) => `<div class="standing-row"><span class="rank">${racer.rank}</span>${marble(racer.color, "small")}<strong>${escapeHtml(racer.name)}</strong><span>${racer.totalPoints} pts</span></div>`).join("")}
+        <div class="panel-heading"><div><p class="eyebrow">Live table</p><h2>Tournament standings</h2></div></div>
+        ${topRacers.map((racer) => `<div class="standing-row"><span class="rank">${racer.rank}</span>${marble(racer.color, "small")}<strong>${escapeHtml(racer.name)}</strong>${standingStatBadgesMarkup(racer)}</div>`).join("")}
         <button class="wide-link" data-view="standings">View full standings <span>→</span></button>
       </article>
     </section>`;
@@ -296,37 +542,38 @@ function renderDashboard() {
 
 function renderKioskFinalDashboard() {
   const c = state.competition;
-  const championship = state.championship;
+  const finalStage = state.championship.final;
   const status = currentTournamentStatus();
   const liveStatus = kioskRefreshFailed ? "Reconnecting…" : kioskTimestamp();
-  const finishers = championship.racers.filter((racer) => racer.finish > 0).sort((first, second) => first.finish - second.finish);
-  const dnfs = championship.racers.filter((racer) => racer.finish === 0);
-  const dnfPlace = finalDnfPlace(championship.racers);
-  const placedRacers = new Map(finishers.map((racer) => [racer.finish, racer]));
+  const entries = finalStage.heat.entries;
+  const finishers = entries.filter((entry) => entry.finish > 0).sort((first, second) => first.finish - second.finish);
+  const dnfs = entries.filter((entry) => entry.finish === 0);
+  const dnfPlace = finalDnfPlace(entries);
+  const placedRacers = new Map(finishers.map((entry) => [entry.finish, entry]));
   const podiumMeta = {
     1: {className:"gold", icon:"🏆", label:"Gold trophy"},
     2: {className:"silver", icon:"🥈", label:"Silver trophy"},
     3: {className:"bronze", icon:"🥉", label:"Bronze trophy"},
   };
-  const podiumOrder = [2, 1, 3].filter((position) => championship.complete ? placedRacers.has(position) : position <= championship.racers.length);
-  const remainingEntries = championship.complete
-    ? [...finishers.filter((racer) => racer.finish > 3).map((racer) => ({finish:racer.finish, racer, dnf:false})), ...dnfs.map((racer) => ({finish:0, racer, dnf:true}))]
-    : Array.from({length:Math.max(0, championship.racers.length - 3)}, (_, index) => ({finish:index + 4, racer:null, dnf:false}));
+  const podiumOrder = [2, 1, 3].filter((position) => finalStage.complete ? placedRacers.has(position) : position <= entries.length);
+  const remainingEntries = finalStage.complete
+    ? [...finishers.filter((entry) => entry.finish > 3).map((entry) => ({finish:entry.finish, racer:entry, dnf:false})), ...dnfs.map((entry) => ({finish:0, racer:entry, dnf:true}))]
+    : Array.from({length:Math.max(0, entries.length - 3)}, (_, index) => ({finish:index + 4, racer:null, dnf:false}));
   const podium = podiumOrder.map((position) => {
     const racer = placedRacers.get(position);
     const meta = podiumMeta[position];
     return `<article class="kiosk-podium-slot ${meta.className} ${racer ? "filled" : "pending"}">
       <div class="kiosk-podium-award"><span role="img" aria-label="${meta.label}">${meta.icon}</span><b>${ordinal(position)}</b></div>
-      <div class="kiosk-podium-person">${racer ? `${marble(racer.color)}<strong>${escapeHtml(racer.name)}</strong><small>${racer.totalPoints} qualifying pts</small>` : `<i aria-hidden="true">?</i><strong>Awaiting result</strong><small>${ordinal(position)} place</small>`}</div>
+      <div class="kiosk-podium-person">${racer ? `${marble(racer.color)}<strong>${escapeHtml(racer.name)}</strong>` : `<i aria-hidden="true">?</i><strong>Awaiting result</strong><small>${ordinal(position)} place</small>`}</div>
     </article>`;
   }).join("");
   const remaining = remainingEntries.map(({finish, racer, dnf}) => {
-    const label = racer ? finalFinishLabel(finish, championship.racers) : `${ordinal(finish)} place`;
+    const label = racer ? finalFinishLabel(finish, entries) : `${ordinal(finish)} place`;
     return `<article class="kiosk-final-place ${racer ? "filled" : "pending"}${dnf ? " dnf" : ""}"><span>${dnf ? `T${dnfPlace}` : finish}</span>${racer ? marble(racer.color, "small") : `<i aria-hidden="true">?</i>`}<strong>${racer ? escapeHtml(racer.name) : "Awaiting result"}</strong><small>${label}</small></article>`;
   }).join("");
-  const fireworks = championship.complete ? fireworksMarkup() : "";
+  const fireworks = finalStage.complete ? fireworksMarkup() : "";
 
-  return `<section class="kiosk-dashboard kiosk-final-dashboard${championship.complete ? " complete" : ""}" aria-label="Live tournament final dashboard">
+  return `<section class="kiosk-dashboard kiosk-final-dashboard${finalStage.complete ? " complete" : ""}" aria-label="Live tournament final dashboard">
     ${fireworks}
     <header class="kiosk-header">
       <a class="kiosk-brand" href="/" aria-label="RollRank home"><img src="/static/marble-logo.png" alt="" width="48" height="48"><span><strong>RollRank</strong><small>Live tournament final</small></span></a>
@@ -334,37 +581,69 @@ function renderKioskFinalDashboard() {
       <div class="kiosk-controls"><span class="kiosk-live-status${kioskRefreshFailed ? " stale" : ""}"><i></i>${liveStatus}</span><button type="button" data-exit-kiosk aria-label="Exit fullscreen display">Exit <span aria-hidden="true">×</span></button></div>
     </header>
     <section class="kiosk-final-lineup">
-      <header><div><p class="kiosk-card-label">The final</p><h2>${championship.complete ? `${escapeHtml(championship.champion.name)} is the champion` : "Final race lineup"}</h2></div><span>${championship.complete ? "Official result" : "Awaiting final result"}</span></header>
-      <div class="kiosk-final-racers">${championship.racers.map((racer) => `<article><span class="kiosk-final-seed"><small>Seed</small><b>${racer.seed}</b></span>${marble(racer.color)}<div><strong>${escapeHtml(racer.name)}</strong><span>${racer.totalPoints} qualifying pts</span></div></article>`).join("")}</div>
+      <header><div><p class="kiosk-card-label">${finalStage.complete ? "The final" : (finalStage.heat.started ? "In progress" : "Up next")}</p><h2>${finalStage.complete ? `${escapeHtml(finalStage.champion.name)} is the champion` : "Championship: Final"}</h2></div><span>${finalStage.complete ? "Official result" : "Awaiting final result"}</span></header>
+      <div class="kiosk-final-racers">${entries.map((entry) => `<article>${marble(entry.color)}<div><strong>${escapeHtml(entry.name)}</strong>${originBadge(entry)}</div></article>`).join("")}</div>
     </section>
     <section class="kiosk-final-results">
-      <header><div><p class="kiosk-card-label">${championship.complete ? "Official result" : "Placement board"}</p><h2>${championship.complete ? "Final podium" : "Podium spots"}</h2></div><span>${championship.complete ? "🏆 Final complete" : "Results will appear here automatically"}</span></header>
+      <header><div><p class="kiosk-card-label">${finalStage.complete ? "Official result" : "Placement board"}</p><h2>${finalStage.complete ? "Final podium" : "Podium spots"}</h2></div><span>${finalStage.complete ? "🏆 Final complete" : "Results will appear here automatically"}</span></header>
       <div class="kiosk-final-podium">${podium}</div>
-      ${remainingEntries.length ? `<div class="kiosk-remaining-heading"><strong>Remaining places</strong><span>${championship.complete ? (dnfs.length ? `${dnfs.length} DNF${dnfs.length === 1 ? "" : "s"} tied for ${ordinal(dnfPlace)}` : "Final order") : "Waiting to be filled"}</span></div><div class="kiosk-final-places">${remaining}</div>` : ""}
-      <footer><span>${championship.complete ? `${escapeHtml(championship.champion.name)} takes the RollRank title` : "Submit the final result from the Final tab"}</span><span>Updates automatically every 5 seconds</span></footer>
+      ${remainingEntries.length ? `<div class="kiosk-remaining-heading"><strong>Remaining places</strong><span>${finalStage.complete ? (dnfs.length ? `${dnfs.length} DNF${dnfs.length === 1 ? "" : "s"} tied for ${ordinal(dnfPlace)}` : "Final order") : "Waiting to be filled"}</span></div><div class="kiosk-final-places">${remaining}</div>` : ""}
+      <footer><span>${finalStage.complete ? `${escapeHtml(finalStage.champion.name)} takes the RollRank title` : "Submit the final result from the Rounds tab"}</span></footer>
     </section>
   </section>`;
+}
+
+function racerStatBadges(racer) {
+  const tiers = racer.dayChampionshipTiers || [];
+  const stats = [
+    {label: "W", title: "Wins", count: racer.wins, live: racer.liveRoundLeader, liveAlreadyCounted: false},
+    {label: "B", title: "Byes", count: tiers.filter((tier) => tier === "bye").length, live: racer.liveTier === "bye", liveAlreadyCounted: true},
+    {label: "P", title: "Preliminary", count: tiers.filter((tier) => tier === "preliminary").length, live: racer.liveTier === "preliminary", liveAlreadyCounted: true},
+    {label: "WC", title: "Wildcard", count: tiers.filter((tier) => tier === "wildcard").length, live: racer.liveTier === "wildcard", liveAlreadyCounted: true},
+  ];
+  // Wins exclude the live round in the API and need a provisional +1. Live
+  // championship tiers are already present in dayChampionshipTiers, so their
+  // count only needs the asterisk and must not be incremented again.
+  return stats
+    .map((stat) => ({...stat, displayCount: stat.live && !stat.liveAlreadyCounted ? stat.count + 1 : stat.count}))
+    .filter((stat) => stat.displayCount > 0);
+}
+
+function statBadgesMarkup(racer, wrapperClass, chipClass) {
+  return `<div class="${wrapperClass}">${racerStatBadges(racer).map((stat) => `<span class="${chipClass} stat-${stat.label.toLowerCase()}" title="${stat.title}${stat.live ? " · leading, not yet finalized" : ""}">${stat.displayCount}${stat.live ? "*" : ""}<small>${stat.label}</small></span>`).join("")}</div>`;
+}
+
+function kioskStatBadgesMarkup(racer) {
+  return statBadgesMarkup(racer, "kiosk-stat-badges", "kiosk-stat-chip");
+}
+
+function standingStatBadgesMarkup(racer) {
+  return statBadgesMarkup(racer, "standing-stat-badges", "standing-stat-chip");
 }
 
 function renderKioskDashboard() {
   const c = state.competition;
   const championship = state.championship;
-  if (championship.ready) return renderKioskFinalDashboard();
+  if (championship.final.ready) return renderKioskFinalDashboard();
   const status = currentTournamentStatus();
   const nextHeat = state.days.flatMap((day) => day.heats).find((heat) => !heat.complete);
-  const leader = championship.complete ? championship.champion : state.standings[0];
+  const nextWildcard = championship.wildcard.heats.find((heat) => !heat.complete);
+  const nextPreliminary = championship.preliminary.heats.find((heat) => !heat.complete);
+  const leader = state.standings[0];
   const visibleStandings = state.standings.slice(0, 8);
   const completedRounds = state.days.filter((day) => day.heats.every((heat) => heat.complete)).length;
   const progress = progressPercent();
   const liveStatus = kioskRefreshFailed ? "Reconnecting…" : kioskTimestamp();
   let nextContent = "";
 
-  if (championship.complete) {
-    nextContent = `<p class="kiosk-card-label">Tournament champion</p><div class="kiosk-champion">🏆 ${marble(leader.color)}<div><strong>${escapeHtml(leader.name)}</strong><span>Final winner</span></div></div>`;
-  } else if (nextHeat) {
-    nextContent = `<div class="kiosk-card-heading"><p class="kiosk-card-label">Up next</p><b>Race #${nextHeat.globalNumber}</b></div><h2>Round ${nextHeat.day} · Heat ${nextHeat.heatNumber}</h2><div class="kiosk-next-racers">${nextHeat.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>`;
+  if (nextHeat) {
+    nextContent = `<div class="kiosk-card-heading"><p class="kiosk-card-label">${nextHeat.started ? "In progress" : "Up next"}</p><b>Race #${nextHeat.globalNumber}</b></div><h2>Round ${nextHeat.day} · Heat ${nextHeat.heatNumber}</h2><div class="kiosk-next-racers">${nextHeat.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>`;
+  } else if (nextWildcard) {
+    nextContent = `<div class="kiosk-card-heading"><p class="kiosk-card-label">${nextWildcard.started ? "In progress" : "Up next"}</p><b>Championship</b></div><h2>Championship: Wildcard Heat ${nextWildcard.heatNumber}</h2><div class="kiosk-next-racers">${nextWildcard.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>`;
+  } else if (nextPreliminary) {
+    nextContent = `<div class="kiosk-card-heading"><p class="kiosk-card-label">${nextPreliminary.started ? "In progress" : "Up next"}</p><b>Championship</b></div><h2>Championship: Preliminary Heat ${nextPreliminary.heatNumber}</h2><div class="kiosk-next-racers">${nextPreliminary.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>`;
   } else {
-    nextContent = `<p class="kiosk-card-label">Up next</p><div class="kiosk-final-ready"><span>★</span><div><strong>Final ready</strong><p>The top ${c.championshipRacers} racers have qualified.</p></div></div>`;
+    nextContent = `<p class="kiosk-card-label">Up next</p><div class="kiosk-final-ready"><span>★</span><div><strong>Championship in progress</strong><p>Check the bracket for the current stage.</p></div></div>`;
   }
 
   return `<section class="kiosk-dashboard" aria-label="Live tournament dashboard">
@@ -375,8 +654,8 @@ function renderKioskDashboard() {
     </header>
     <div class="kiosk-overview">
       <article class="kiosk-leader-card">
-        <p class="kiosk-card-label">${championship.complete ? "Champion" : "Live leader"}</p>
-        <div class="kiosk-leader-racer">${marble(leader.color)}<div><strong>${escapeHtml(leader.name)}</strong><span>${championship.complete ? "Final winner" : `${leader.wins} heat win${leader.wins === 1 ? "" : "s"}`}</span></div><b>${leader.totalPoints}<small>pts</small></b></div>
+        <p class="kiosk-card-label">Live leader</p>
+        <div class="kiosk-leader-racer">${marble(leader.color)}<div><strong>${escapeHtml(leader.name)}</strong><span>Round leader</span></div><b>${leader.wins}<small> win${leader.wins === 1 ? "" : "s"}</small></b></div>
       </article>
       <article class="kiosk-progress-card">
         <div class="kiosk-card-heading"><p class="kiosk-card-label">Heat progress</p><b>${c.completedHeats}/${c.totalHeats}</b></div>
@@ -386,11 +665,11 @@ function renderKioskDashboard() {
       <article class="kiosk-next-card">${nextContent}</article>
     </div>
     <section class="kiosk-standings-panel">
-      <header><div><p class="kiosk-card-label">Current standings</p><h2>The race for the final</h2></div><span>Top ${c.championshipRacers} advance</span></header>
+      <header><div><p class="kiosk-card-label">Current standings</p><h2>Round-by-round leaderboard</h2></div></header>
       <div class="kiosk-standing-list">
-        ${visibleStandings.map((racer) => `<article class="${racer.rank <= c.championshipRacers ? "qualifying" : ""}"><span class="kiosk-rank">${racer.rank}</span>${marble(racer.color, "small")}<strong>${escapeHtml(racer.name)}</strong><span class="kiosk-wins">${racer.wins} win${racer.wins === 1 ? "" : "s"}</span><b>${racer.totalPoints}<small> pts</small></b></article>`).join("")}
+        ${visibleStandings.map((racer) => `<article><span class="kiosk-rank">${racer.rank}</span>${marble(racer.color, "small")}<strong>${escapeHtml(racer.name)}</strong>${kioskStatBadgesMarkup(racer)}</article>`).join("")}
       </div>
-      <footer><span>Showing ${visibleStandings.length} of ${state.standings.length} racers</span><span>Updates automatically every 5 seconds</span></footer>
+      <footer><span>Showing ${visibleStandings.length} of ${state.standings.length} racers</span></footer>
     </section>
   </section>`;
 }
@@ -412,16 +691,62 @@ function finalFinishLabel(finish, racers) {
   return Number(finish) === 0 ? `Tied ${ordinal(finalDnfPlace(racers))} · DNF` : `${ordinal(finish)} place`;
 }
 
-function finalResultOptions(count, selected, dnfPlace = null) {
-  let result = `<option value="">Place</option>`;
-  for (let position = 1; position <= count; position += 1) {
-    result += `<option value="${position}" ${Number(selected) === position ? "selected" : ""}>${ordinal(position)}</option>`;
-  }
-  result += `<option value="0" ${selected != null && Number(selected) === 0 ? "selected" : ""}>DNF · ${dnfPlace ? `tied ${ordinal(dnfPlace)}` : "ties at next place"}</option>`;
-  return result;
+function marblePlaceLabel(raceMarble) {
+  return raceMarble.finish == null ? "-" : raceMarble.finish === 0 ? "DNF" : ordinal(raceMarble.finish);
+}
+
+function entryPlaceSummary(entry) {
+  const labels = entry.marbles.map(marblePlaceLabel);
+  return labels.every((label) => label === "-") ? "-" : labels.join(", ");
+}
+
+function heatRacerPreview(heat) {
+  return `<div class="racer-preview">${heat.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>`;
+}
+
+function lockedHeatCard(heat) {
+  return `<article class="heat-card locked" id="heat-${heat.id}">
+    <header class="heat-card-heading">
+      <div class="heat-title"><span>Heat</span><strong>${heat.heatNumber}</strong><small>Race #${heat.globalNumber}</small></div>
+      <div><span class="pending-chip">Locked</span></div>
+      <span class="heat-locked-note">Complete the earlier rounds first</span>
+    </header>
+    ${heatRacerPreview(heat)}
+  </article>`;
+}
+
+function readyToStartHeatCard(heat) {
+  return `<article class="heat-card ready" id="heat-${heat.id}">
+    <header class="heat-card-heading">
+      <div class="heat-title"><span>Heat</span><strong>${heat.heatNumber}</strong><small>Race #${heat.globalNumber}</small></div>
+      <div><span class="pending-chip">Ready to start</span></div>
+      <button class="primary-button compact" data-start-heat="${heat.id}">Start heat</button>
+    </header>
+    ${heatRacerPreview(heat)}
+  </article>`;
+}
+
+function editLockedHeatCard(heat) {
+  return `<article class="heat-card complete locked" id="heat-${heat.id}">
+    <header class="heat-card-heading">
+      <div class="heat-title"><span>Heat</span><strong>${heat.heatNumber}</strong><small>Race #${heat.globalNumber}</small></div>
+      <div><span class="complete-chip">Complete</span></div>
+      <span class="heat-locked-note">Locked · a later heat has started</span>
+    </header>
+    <div class="heat-entry-list">
+      ${heat.entries.map((entry) => `<div class="heat-entry">
+        <span class="lane">${entry.lane}</span>${marble(entry.color, "small")}<span class="heat-entry-name"><strong>${escapeHtml(entry.name)}</strong>${originBadge(entry)}</span>
+        <div class="marble-results">${entry.marbles.map((raceMarble) => `<div class="marble-result"><span>M${raceMarble.number}<small>${heat.stage === "staging" ? (raceMarble.points == null ? "-" : `${raceMarble.points} pts`) : marblePlaceLabel(raceMarble)}</small></span><b>${raceMarble.finish == null ? "-" : raceMarble.finish === 0 ? "DNF" : ordinal(raceMarble.finish)}</b></div>`).join("")}</div>
+        <span class="points-result">${heat.stage === "staging" ? (entry.points == null ? "-" : `${entry.points} total`) : entryPlaceSummary(entry)}</span>
+      </div>`).join("")}
+    </div>
+  </article>`;
 }
 
 function heatEditor(heat) {
+  if (heat.locked) return lockedHeatCard(heat);
+  if (heat.started === false) return readyToStartHeatCard(heat);
+  if (heat.editLocked) return editLockedHeatCard(heat);
   const finishCount = heat.entries.reduce((total, entry) => total + entry.marbles.length, 0);
   return `<article class="heat-card ${heat.complete ? "complete" : ""}" id="heat-${heat.id}">
     <header class="heat-card-heading">
@@ -431,77 +756,243 @@ function heatEditor(heat) {
     </header>
     <div class="heat-entry-list">
       ${heat.entries.map((entry) => `<div class="heat-entry">
-        <span class="lane">${entry.lane}</span>${marble(entry.color, "small")}<strong>${escapeHtml(entry.name)}</strong>
-        <div class="marble-results">${entry.marbles.map((raceMarble) => `<label class="marble-result"><span>M${raceMarble.number}<small>${raceMarble.points == null ? "-" : `${raceMarble.points} pts`}</small></span><select aria-label="Finish for ${escapeHtml(entry.name)}, marble ${raceMarble.number}" data-result-for="${entry.contestantId}" data-marble-number="${raceMarble.number}">${resultOptions(finishCount, raceMarble.finish)}</select></label>`).join("")}</div>
-        <span class="points-result">${entry.points == null ? "-" : `${entry.points} total`}</span>
+        <span class="lane">${entry.lane}</span>${marble(entry.color, "small")}<span class="heat-entry-name"><strong>${escapeHtml(entry.name)}</strong>${originBadge(entry)}</span>
+        <div class="marble-results">${entry.marbles.map((raceMarble) => `<label class="marble-result"><span>M${raceMarble.number}<small>${heat.stage === "staging" ? (raceMarble.points == null ? "-" : `${raceMarble.points} pts`) : marblePlaceLabel(raceMarble)}</small></span><select aria-label="Finish for ${escapeHtml(entry.name)}, marble ${raceMarble.number}" data-result-for="${entry.contestantId}" data-marble-number="${raceMarble.number}">${resultOptions(finishCount, raceMarble.finish)}</select></label>`).join("")}</div>
+        <span class="points-result">${heat.stage === "staging" ? (entry.points == null ? "-" : `${entry.points} total`) : entryPlaceSummary(entry)}</span>
       </div>`).join("")}
     </div>
   </article>`;
 }
 
+function championshipTabStatus() {
+  const champ = state.championship;
+  if (champ.final.complete) return "Complete";
+  if (champ.wildcard.ready) return "In progress";
+  return "Locked";
+}
+
 function renderHeats() {
-  const selectedDay = state.days.find((day) => day.day === activeDay) || state.days[0];
-  return `${viewHeader("Results desk", "Round heats", "Choose a round, then record a unique finishing position for every marble.")}
+  const onChampionship = activeDay === "championship";
+  const selectedDay = onChampionship ? null : state.days.find((day) => day.day === activeDay) || state.days[0];
+  return `${viewHeader("Results desk", "Rounds", "Choose a round, then record a unique finishing position for every marble.")}
     <div class="day-tabs" role="tablist">${state.days.map((day) => {
       const complete = day.heats.filter((heat) => heat.complete).length;
       return `<button role="tab" aria-selected="${day.day === activeDay}" class="${day.day === activeDay ? "active" : ""}" data-day="${day.day}"><span>Round ${day.day}</span><small>${complete}/${day.heats.length} complete</small></button>`;
-    }).join("")}</div>
-    <section class="heat-list">${selectedDay.heats.map(heatEditor).join("")}</section>`;
+    }).join("")}<button role="tab" aria-selected="${onChampionship}" class="${onChampionship ? "active" : ""}" data-day="championship"><span>Championship</span><small>${championshipTabStatus()}</small></button></div>
+    ${onChampionship ? renderChampionshipStages() : `<section class="heat-list">${selectedDay.heats.map(heatEditor).join("")}</section>`}`;
+}
+
+function ladderLockedPlaceholder(label) {
+  return `<div class="ladder-placeholder"><span aria-hidden="true">🔒</span><p>${label}</p></div>`;
+}
+
+function seedRoundsTag(seedRounds) {
+  if (!seedRounds || !seedRounds.length) return "";
+  const label = seedRounds.length === 1 ? `Round ${seedRounds[0]}` : `Rounds ${seedRounds.join(", ")}`;
+  return `<small class="seed-tag">${label}</small>`;
+}
+
+function seedHeatTag(entry, sourceHeats, stageLabel) {
+  if (!sourceHeats || !sourceHeats.length) return "";
+  const heatIds = new Set((entry.marbles || []).map((raceMarble) => raceMarble.originHeatId).filter((id) => id != null));
+  if (!heatIds.size) return "";
+  const heatNumbers = sourceHeats
+    .filter((heat) => heatIds.has(heat.id))
+    .map((heat) => heat.heatNumber)
+    .sort((a, b) => a - b);
+  if (!heatNumbers.length) return "";
+  const label = heatNumbers.length === 1
+    ? `${stageLabel} Heat ${heatNumbers[0]}`
+    : `${stageLabel} Heats ${heatNumbers.join(", ")}`;
+  return `<small class="seed-tag">${escapeHtml(label)}</small>`;
+}
+
+function ladderEntryLabel(name, marbleCount, seedRounds, extraTag = "") {
+  // A direct wildcard/preliminary heat seed is a more specific answer to
+  // "where did this racer come from" than the original staging round(s)
+  // behind that heat win, so it takes over the tag slot entirely.
+  return `<div class="ladder-entry-info"><span>${escapeHtml(name)}${marbleCount > 1 ? ` <span class="marble-count">×${marbleCount}</span>` : ""}</span>${extraTag || seedRoundsTag(seedRounds)}</div>`;
+}
+
+function ladderProjectedRoster(entries, lockedLabel) {
+  return `<div class="ladder-heat projected">
+    <div class="ladder-heat-head"><span aria-hidden="true">🔒</span><span>Not yet locked in</span></div>
+    <ul class="ladder-entries">
+      ${entries.map((entry) => entry.decided
+        ? `<li class="ladder-entry ${tierClass(entry.originStage === "wildcard" ? "wildcard" : entry.originStage === "bye" ? "bye" : "preliminary")}">${marble(entry.color, "small")}${ladderEntryLabel(entry.name, entry.marbleSlots || 1, entry.seedRounds)}</li>`
+        : `<li class="ladder-entry pending"><span class="tbd-marble" aria-hidden="true">?</span><span>Heat ${entry.heatNumber}${entry.qualifyingPlace ? ` · ${ordinal(entry.qualifyingPlace)} racer` : " winner"}</span><b>TBD</b></li>`
+      ).join("")}
+    </ul>
+    <p class="ladder-projected-note">${lockedLabel}</p>
+  </div>`;
+}
+
+function ladderSkippedPlaceholder(stage) {
+  const note = stage.fieldSize
+    ? `${stage.fieldSize} racer${stage.fieldSize === 1 ? "" : "s"} advanced automatically.`
+    : "Nobody qualified for this stage.";
+  return `<div class="ladder-placeholder skip"><span aria-hidden="true">→</span><p>${note}</p></div>`;
+}
+
+function ladderPlaceLabel(entry) {
+  const label = entryPlaceSummary(entry);
+  return label === "-" ? "" : label;
+}
+
+function ladderHeatCard(heat, sourceHeats, sourceStageLabel) {
+  return `<article class="ladder-heat ${heat.complete ? "complete" : ""}">
+    <div class="ladder-heat-head"><span>Heat ${heat.heatNumber}</span><span class="${heat.complete ? "complete-chip" : "pending-chip"}">${heat.complete ? "Complete" : "In progress"}</span></div>
+    <ul class="ladder-entries">
+      ${heat.entries.map((entry) => `<li class="ladder-entry${entry.finish === 0 ? " dnf" : ""}">
+        ${marble(entry.color, "small")}${ladderEntryLabel(entry.name, entry.marbles.length, entry.seedRounds, seedHeatTag(entry, sourceHeats, sourceStageLabel))}<b>${ladderPlaceLabel(entry)}</b>
+      </li>`).join("")}
+    </ul>
+  </article>`;
+}
+
+function ladderStageColumn(stage, lockedLabel, sourceHeats, sourceStageLabel) {
+  if (!stage.ready) {
+    if (stage.projectedEntries && stage.projectedEntries.length) return ladderProjectedRoster(stage.projectedEntries, lockedLabel);
+    return ladderLockedPlaceholder(lockedLabel);
+  }
+  if (stage.skipped) return ladderSkippedPlaceholder(stage);
+  return `<div class="ladder-heats">${stage.heats.map((heat) => ladderHeatCard(heat, sourceHeats, sourceStageLabel)).join("")}</div>`;
+}
+
+function ladderFinalColumn(finalStage, sourceHeats) {
+  if (!finalStage.ready) {
+    if (finalStage.projectedEntries && finalStage.projectedEntries.length) {
+      return ladderProjectedRoster(finalStage.projectedEntries, "Preliminary results decide the final field.");
+    }
+    return ladderLockedPlaceholder("Preliminary results decide the final field.");
+  }
+  if (!finalStage.heat) return `<div class="ladder-placeholder"><span aria-hidden="true">—</span><p>No final field in this tournament.</p></div>`;
+  const entries = finalStage.heat.entries;
+  return `<article class="ladder-heat final ${finalStage.complete ? "complete" : ""}">
+    <div class="ladder-heat-head"><span>The Final</span><span class="${finalStage.complete ? "complete-chip" : "pending-chip"}">${finalStage.complete ? "Complete" : "In progress"}</span></div>
+    <ul class="ladder-entries">
+      ${entries.map((entry) => `<li class="ladder-entry${entry.finish === 0 ? " dnf" : ""}">
+        ${marble(entry.color, "small")}${ladderEntryLabel(entry.name, 1, entry.seedRounds, seedHeatTag(entry, sourceHeats, "Preliminary"))}<b>${entry.finish === 1 ? "🏆" : ladderPlaceLabel(entry)}</b>
+      </li>`).join("")}
+    </ul>
+  </article>`;
+}
+
+function renderChampionshipLadder() {
+  const champ = state.championship;
+  return `<section class="panel ladder-panel">
+    <div class="panel-heading"><div><p class="eyebrow">Championship bracket</p><h2>Championship ladder</h2></div></div>
+    <div class="ladder">
+      <div class="ladder-column">
+        <div class="ladder-column-heading"><span>Stage 1</span><h3>Wildcard</h3></div>
+        ${ladderStageColumn(champ.wildcard, "Runs once every round heat is scored.")}
+      </div>
+      <div class="ladder-connector" aria-hidden="true">→</div>
+      <div class="ladder-column">
+        <div class="ladder-column-heading"><span>Stage 2</span><h3>Preliminary</h3></div>
+        ${ladderStageColumn(champ.preliminary, "Runs once every wildcard heat is scored.", champ.wildcard.heats, "Wildcard")}
+      </div>
+      <div class="ladder-connector" aria-hidden="true">→</div>
+      <div class="ladder-column">
+        <div class="ladder-column-heading"><span>Stage 3</span><h3>Final</h3></div>
+        ${ladderFinalColumn(champ.final, champ.preliminary.heats)}
+      </div>
+    </div>
+  </section>`;
 }
 
 function renderStandings() {
   const c = state.competition;
-  return `${viewHeader("Live scoring", "Tournament standings", "Round totals update automatically whenever a heat result is saved.", `<span class="finals-chip large">Top ${c.championshipRacers} qualify</span>`)}
-    <section class="panel table-panel"><div class="table-scroll"><table class="standings-table"><thead><tr><th>Rank</th><th>Racer</th>${Array.from({length:c.days}, (_, i) => `<th>Round ${i + 1}</th>`).join("")}<th>Wins</th><th>Total</th></tr></thead><tbody>
-    ${state.standings.map((racer) => `<tr class="${racer.rank <= c.championshipRacers ? "qualifying" : ""}"><td><span class="rank-badge">${racer.rank}</span></td><td><span class="racer-cell">${marble(racer.color, "small")}<strong>${escapeHtml(racer.name)}</strong></span></td>${racer.dayPoints.map((points) => `<td>${points}</td>`).join("")}<td>${racer.wins}</td><td><strong>${racer.totalPoints}</strong></td></tr>`).join("")}
+  return `${viewHeader("Live scoring", "Tournament standings", "Round placings update automatically whenever a heat result is saved.")}
+    ${renderChampionshipLadder()}
+    <section class="panel table-panel"><div class="table-scroll"><table class="standings-table"><thead><tr><th>Racer</th>${Array.from({length:c.days}, (_, i) => `<th>Round ${i + 1}</th>`).join("")}</tr></thead><tbody>
+    ${state.standings.map((racer) => `<tr><td><span class="racer-cell">${marble(racer.color, "small")}<strong>${escapeHtml(racer.name)}</strong></span></td>${racer.dayPlacements.map((place, index) => `<td class="${tierClass(racer.dayChampionshipTiers[index])}">${placeLabel(place, index + 1 === c.liveRoundDay)}${racer.dayChampionshipTiers[index] ? `<small class="tier-tag">${tierLabel[racer.dayChampionshipTiers[index]]}</small>` : ""}</td>`).join("")}</tr>`).join("")}
     </tbody></table></div>
     <div class="mobile-standings" aria-label="Mobile standings">
-      ${state.standings.map((racer) => `<article class="mobile-standing-card ${racer.rank <= c.championshipRacers ? "qualifying" : ""}">
-        <div class="mobile-standing-lead"><span class="rank-badge">${racer.rank}</span>${marble(racer.color, "small")}<strong>${escapeHtml(racer.name)}</strong><span class="mobile-total"><b>${racer.totalPoints}</b> pts</span></div>
-        <div class="mobile-standing-stats">${racer.dayPoints.map((points, index) => `<span><small>Round ${index + 1}</small><b>${points}</b></span>`).join("")}<span><small>Wins</small><b>${racer.wins}</b></span></div>
+      ${state.standings.map((racer) => `<article class="mobile-standing-card">
+        <div class="mobile-standing-lead">${marble(racer.color, "small")}<strong>${escapeHtml(racer.name)}</strong></div>
+        <div class="mobile-standing-stats">${racer.dayPlacements.map((place, index) => `<span class="${tierClass(racer.dayChampionshipTiers[index])}"><small>Round ${index + 1}</small><b>${placeLabel(place, index + 1 === c.liveRoundDay)}</b>${racer.dayChampionshipTiers[index] ? `<small class="tier-tag">${tierLabel[racer.dayChampionshipTiers[index]]}</small>` : ""}</span>`).join("")}</div>
       </article>`).join("")}
     </div></section>`;
 }
 
-function renderFinalCelebration(champ) {
-  const finishers = champ.racers.filter((racer) => racer.finish > 0).sort((first, second) => first.finish - second.finish);
-  const dnfs = champ.racers.filter((racer) => racer.finish === 0);
+function renderFinalCelebration(finalStage) {
+  const entries = finalStage.heat.entries;
+  const finishers = entries.filter((entry) => entry.finish > 0).sort((first, second) => first.finish - second.finish);
+  const dnfs = entries.filter((entry) => entry.finish === 0);
   const podiumMeta = {
     1: {className:"gold", label:"Gold trophy"},
     2: {className:"silver", label:"Silver trophy"},
     3: {className:"bronze", label:"Bronze trophy"},
   };
-  const podium = finishers.filter((racer) => racer.finish <= 3);
-  const remaining = [...finishers.filter((racer) => racer.finish > 3), ...dnfs];
+  const podium = finishers.filter((entry) => entry.finish <= 3);
+  const remaining = [...finishers.filter((entry) => entry.finish > 3), ...dnfs];
   return `<section class="final-celebration" aria-labelledby="final-results-title">
-    <div class="final-results-heading"><div><p class="eyebrow">Final results</p><h2 id="final-results-title">${podium.length === 3 ? "Top 3 podium" : "Final podium"}</h2></div><p>${escapeHtml(champ.champion.name)} takes the title.</p></div>
+    <div class="final-results-heading"><div><p class="eyebrow">Final results</p><h2 id="final-results-title">${podium.length === 3 ? "Top 3 podium" : "Final podium"}</h2></div><p>${escapeHtml(finalStage.champion.name)} takes the title.</p></div>
     <div class="podium count-${podium.length}" aria-label="Final podium">
-      ${podium.map((racer) => {
-        const meta = podiumMeta[racer.finish];
+      ${podium.map((entry) => {
+        const meta = podiumMeta[entry.finish];
         return `<article class="podium-place ${meta.className}">
-          <div class="podium-racer"><span class="podium-trophy" role="img" aria-label="${meta.label}">🏆</span>${marble(racer.color)}<strong>${escapeHtml(racer.name)}</strong><small>${ordinal(racer.finish)} place</small></div>
-          <div class="podium-step"><b>${racer.finish}</b><span>${meta.className}</span></div>
+          <div class="podium-racer"><span class="podium-trophy" role="img" aria-label="${meta.label}">🏆</span>${marble(entry.color)}<strong>${escapeHtml(entry.name)}</strong><small>${ordinal(entry.finish)} place</small></div>
+          <div class="podium-step"><b>${entry.finish}</b><span>${meta.className}</span></div>
         </article>`;
       }).join("")}
     </div>
-    ${remaining.length ? `<div class="non-podium-list"><div class="non-podium-heading"><strong>Remaining finalists</strong><span>${dnfs.length ? `${dnfs.length} DNF${dnfs.length === 1 ? "" : "s"} tied for ${ordinal(finalDnfPlace(champ.racers))}` : "Final order"}</span></div>${remaining.map((racer) => `<article class="${racer.finish === 0 ? "dnf" : ""}"><span class="sad-face" role="img" aria-label="Sad face">😢</span>${marble(racer.color, "small")}<strong>${escapeHtml(racer.name)}</strong><span>${finalFinishLabel(racer.finish, champ.racers)}</span></article>`).join("")}</div>` : ""}
+    ${remaining.length ? `<div class="non-podium-list"><div class="non-podium-heading"><strong>Remaining finalists</strong><span>${dnfs.length ? `${dnfs.length} DNF${dnfs.length === 1 ? "" : "s"} tied for ${ordinal(finalDnfPlace(entries))}` : "Final order"}</span></div>${remaining.map((entry) => `<article class="${entry.finish === 0 ? "dnf" : ""}"><span class="sad-face" role="img" aria-label="Sad face">😢</span>${marble(entry.color, "small")}<strong>${escapeHtml(entry.name)}</strong><span>${finalFinishLabel(entry.finish, entries)}</span></article>`).join("")}</div>` : ""}
   </section>`;
 }
 
-function renderChampionship() {
+function championshipStatusCard(icon, eyebrow, title, description, extraClass = "") {
+  return `<section class="championship-lock panel ${extraClass}"><div class="lock-icon">${icon}</div><div><p class="eyebrow">${eyebrow}</p><h2>${title}</h2><p>${description}</p></div></section>`;
+}
+
+function renderChampionshipStageBody(stage, lockedDescription) {
+  if (!stage.ready) return championshipStatusCard("⏳", "Not ready", "Waiting on the previous stage", lockedDescription);
+  if (stage.skipped) {
+    const note = stage.fieldSize
+      ? `${stage.fieldSize} racer${stage.fieldSize === 1 ? "" : "s"} advanced automatically — the field was too small for a heat.`
+      : "Nobody qualified for this stage in this tournament.";
+    return championshipStatusCard("→", "No heats needed", "Advanced automatically", note, "skipped");
+  }
+  return `<section class="heat-list">${stage.heats.map(heatEditor).join("")}</section>`;
+}
+
+function renderFinalStageBody(finalStage) {
+  if (!finalStage.ready) {
+    const promoted = state.competition.preliminaryRacersPromotedPerHeat;
+    return championshipStatusCard("⏳", "Not ready", "Waiting on the preliminary round", `The top ${promoted} racer${promoted === 1 ? "" : "s"} from each preliminary heat and round-win byes race here once every preliminary heat is scored.`);
+  }
+  if (!finalStage.heat) {
+    return championshipStatusCard("→", "No final field", "Nobody qualified", "This tournament didn't produce any finalists.");
+  }
+  if (finalStage.complete) return renderFinalCelebration(finalStage);
+  return `<section class="heat-list">${heatEditor(finalStage.heat)}</section>`;
+}
+
+function championshipStageChip(stage) {
+  if (!stage.ready) return `<span class="pending-chip">Locked</span>`;
+  return `<span class="${stage.complete ? "complete-chip" : "pending-chip"}">${stage.complete ? "Complete" : "In progress"}</span>`;
+}
+
+function championshipReportLink() {
+  return `<a class="print-button compact" href="${reportUrl()}" target="_blank" rel="noopener"><span class="pdf-icon" aria-hidden="true"></span> Printable report</a>`;
+}
+
+function renderChampionshipStages() {
   const champ = state.championship;
   const c = state.competition;
-  if (!champ.ready) {
-    const provisional = state.standings.slice(0, c.championshipRacers);
-    return `${viewHeader("The final", "Final", `The top ${c.championshipRacers} racers qualify when every round heat is complete.`)}
-      <section class="championship-lock panel"><div class="lock-icon">${c.completedHeats}/${c.totalHeats}</div><div><p class="eyebrow">Provisional field</p><h2>${c.totalHeats - c.completedHeats} heats remain</h2><p>Complete the round results to lock the final seeds.</p></div></section>
-      <section class="qualifier-grid">${provisional.map((racer) => `<article><span class="seed-number">${racer.rank}</span>${marble(racer.color)}<div><small>${ordinal(racer.rank)} overall</small><strong>${escapeHtml(racer.name)}</strong><span>${racer.totalPoints} pts</span></div></article>`).join("")}</section>`;
-  }
-  return `${viewHeader("The final", champ.complete ? "Final results" : "Final field", champ.complete ? `${escapeHtml(champ.champion.name)} won the final.` : "Enter the final finishing order to crown the champion.", `<a class="secondary-button link-button" href="${reportUrl()}" target="_blank">Print summary</a>`)}
-    ${champ.complete ? renderFinalCelebration(champ) : ""}
-    <section class="panel championship-editor" id="championship-editor">
-      <div class="panel-heading"><div><p class="eyebrow">Seeded by total points</p><h2>Final race order</h2></div><button class="primary-button compact" data-save-championship>${champ.complete ? "Update final" : "Save final result"}</button></div>
-      ${champ.racers.map((racer) => `<div class="championship-row"><span class="seed-number">${racer.seed}</span>${marble(racer.color, "small")}<div><strong>${escapeHtml(racer.name)}</strong><small>${racer.totalPoints} qualifying pts</small></div><select aria-label="Final finish for ${escapeHtml(racer.name)}" data-champ-result="${racer.contestantId}">${finalResultOptions(champ.racers.length, racer.finish, champ.complete ? finalDnfPlace(champ.racers) : null)}</select></div>`).join("")}
+  const wildcardPromoted = c.wildcardRacersPromotedPerHeat;
+  return `<section class="championship-stage">
+      <div class="panel-heading"><div><p class="eyebrow">Stage 1</p><h2>Wildcard heats</h2></div>${championshipStageChip(champ.wildcard)}</div>
+      ${renderChampionshipStageBody(champ.wildcard, `3rd and 4th place finishers from every round race here once all ${c.totalHeats} round heats are complete.`)}
+    </section>
+    <section class="championship-stage">
+      <div class="panel-heading"><div><p class="eyebrow">Stage 2</p><h2>Preliminary heats</h2></div>${championshipStageChip(champ.preliminary)}</div>
+      ${renderChampionshipStageBody(champ.preliminary, `The top ${wildcardPromoted} racer${wildcardPromoted === 1 ? "" : "s"} from each wildcard heat and the round runners-up race here once every wildcard heat is scored.`)}
+    </section>
+    <section class="championship-stage">
+      <div class="panel-heading"><div><p class="eyebrow">Stage 3</p><h2>${champ.final.complete ? "Final results" : "The final"}</h2></div><div class="panel-heading-actions">${championshipStageChip(champ.final)}${champ.final.complete ? championshipReportLink() : ""}</div></div>
+      ${renderFinalStageBody(champ.final)}
     </section>`;
 }
 
@@ -515,9 +1006,22 @@ function renderSetup() {
     <form id="config-form" class="setup-grid">
       <section class="panel config-panel"><div class="section-title"><span>01</span><div><h2>Tournament format</h2><p>Name the event and define its schedule.</p></div></div>
         <label class="field wide"><span>Tournament name</span><input name="name" value="${escapeHtml(c.name)}" maxlength="80" required></label>
-        <div class="field-grid"><label class="field"><span>Race rounds</span><input name="days" type="number" min="1" max="30" value="${c.days}" required></label><label class="field"><span>Heats per racer / round</span><input name="heatsPerRacerPerDay" type="number" min="1" max="20" value="${c.heatsPerRacerPerDay}" required></label><label class="field"><span>Max marbles per heat</span><input name="maxMarblesPerHeat" type="number" min="2" max="480" value="${c.maxMarblesPerHeat}" required><small>The app automatically chooses the largest full heat under this limit.</small></label><label class="field"><span>Marbles per racer / heat</span><input name="marblesPerRacer" type="number" min="1" max="20" value="${c.marblesPerRacer}" required><small>Heat races only; the final always uses one marble per racer.</small></label><label class="field"><span>Final racers</span><input name="championshipRacers" type="number" min="2" max="24" value="${c.championshipRacers}" required></label></div>
-        <div class="schedule-preview" id="schedule-preview"><strong>${c.heatsPerDay} heats per round · ${c.racersPerHeat} racers per heat</strong><span>Every racer appears ${c.heatsPerRacerPerDay} times each round; each heat uses ${c.marblesPerHeat} of the ${c.maxMarblesPerHeat} allowed marbles.</span></div>
-        <label class="field wide"><span>Points by finishing place</span><input name="points" value="${state.points.join(", ")}" required><small>Comma-separated, starting with first place. Missing places receive zero points.</small></label>
+        <div class="config-group">
+          <h3 class="eyebrow">Staging rounds</h3>
+          <div class="field-grid"><label class="field"><span>Race rounds</span><input name="days" type="number" min="1" max="30" value="${c.days}" required></label><label class="field"><span>Heats per racer / round</span><input name="heatsPerRacerPerDay" type="number" min="1" max="20" value="${c.heatsPerRacerPerDay}" required></label><label class="field"><span>Max marbles per heat</span><input name="maxMarblesPerHeat" type="number" min="2" max="480" value="${c.maxMarblesPerHeat}" required><small>The app automatically chooses the largest full heat under this limit.</small></label><label class="field"><span>Marbles per racer / heat</span><input name="marblesPerRacer" type="number" min="1" max="20" value="${c.marblesPerRacer}" required><small>Applies to round heats only.</small></label></div>
+          <div class="schedule-preview" id="schedule-preview"><strong>${c.heatsPerDay} heats per round · ${c.racersPerHeat} racers per heat</strong><span>Every racer appears ${c.heatsPerRacerPerDay} times each round; each heat uses ${c.marblesPerHeat} of the ${c.maxMarblesPerHeat} allowed marbles.</span></div>
+          <label class="field wide"><span>Points by finishing place</span><input name="points" value="${state.points.join(", ")}" required><small>Comma-separated, starting with first place. Missing places receive zero points.</small></label>
+        </div>
+        <div class="config-group">
+          <h3 class="eyebrow">Championship round</h3>
+          <div class="field-grid">
+            <label class="field"><span>Max marbles in wildcard/prelim heats</span><input name="championshipMaxMarblesPerHeat" type="number" min="2" max="480" value="${c.championshipMaxMarblesPerHeat}" required><small>Sizes wildcard and preliminary heats automatically.</small></label>
+            <label class="field"><span>Max bye marbles per racer</span><input name="maxByeMarblesPerRacer" type="number" min="0" max="20" value="${c.maxByeMarblesPerRacer}" required><small>Caps how many round wins one racer can bank as byes, and how many marbles a racer can earn in the preliminary heat. Wildcard marbles are uncapped.</small></label>
+            <label class="field"><span>Wildcard racers promoted / heat</span><input name="wildcardRacersPromotedPerHeat" type="number" min="1" max="24" value="${c.wildcardRacersPromotedPerHeat}" required><small>Top racers from each wildcard heat who advance to the preliminary stage.</small></label>
+            <label class="field"><span>Preliminary racers promoted / heat</span><input name="preliminaryRacersPromotedPerHeat" type="number" min="1" max="24" value="${c.preliminaryRacersPromotedPerHeat}" required><small>Top racers from each preliminary heat who advance to the final.</small></label>
+            <label class="field"><span>Max Racers in Final</span><input name="maxFinalRacers" type="number" min="2" max="24" value="${c.maxFinalRacers}" required><small>Trims the final field if byes and preliminary qualifiers exceed this.</small></label>
+          </div>
+        </div>
       </section>
       <section class="panel config-panel"><div class="section-title"><span>02</span><div><h2>Racers</h2><p>Names and colors are used throughout the race sheets.</p></div></div><div id="contestant-list">${state.contestants.map(contestantRow).join("")}</div><button type="button" class="secondary-button full" data-add-contestant>+ Add racer</button></section>
       <section class="panel tournament-management"><div><p class="eyebrow">Tournament library</p><h2>Manage this tournament</h2><p>Create another tournament from the selector above, or permanently remove this one.</p></div><button type="button" class="danger-button" data-delete-tournament>Delete tournament</button></section>
@@ -528,10 +1032,18 @@ function renderSetup() {
 function render() {
   if (!state) return;
   document.querySelectorAll("[data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === activeView));
-  const views = {dashboard:kioskMode ? renderKioskDashboard : renderDashboard, heats:renderHeats, standings:renderStandings, championship:renderChampionship, setup:renderSetup};
+  const views = {dashboard:kioskMode ? renderKioskDashboard : renderDashboard, heats:renderHeats, standings:renderStandings, setup:renderSetup};
   app.innerHTML = (views[activeView] || renderDashboard)();
   if (activeView === "setup") requestAnimationFrame(updateSchedulePreview);
   if (!kioskMode) app.focus({preventScroll:true});
+  if (activeViewIsLive()) startLiveUpdates(); else stopLiveUpdates();
+}
+
+async function startHeat(heatId) {
+  try {
+    applyState(await api(`/api/heats/${heatId}/start`, {method:"PUT"}));
+    notify("Heat started.");
+  } catch (error) { notify(error.message, true); }
 }
 
 async function saveHeat(heatId) {
@@ -544,20 +1056,11 @@ async function saveHeat(heatId) {
   } catch (error) { notify(error.message, true); }
 }
 
-async function saveChampionship() {
-  const results = [...document.querySelectorAll("[data-champ-result]")].map((select) => ({contestantId:Number(select.dataset.champResult), finish:select.value}));
-  if (results.some((result) => !result.finish)) return notify("Choose a finishing position for every finalist.", true);
-  try {
-    applyState(await api(`/api/tournaments/${activeTournamentId}/final/results`, {method:"PUT", body:JSON.stringify({results})}));
-    notify("Final result saved.");
-  } catch (error) { notify(error.message, true); }
-}
-
 function configPayload(confirmReset = false) {
   const form = document.querySelector("#config-form");
   const formData = new FormData(form);
   const contestants = [...form.querySelectorAll(".contestant-config-row")].map((row) => ({color:row.querySelector('input[type="color"]').value, name:row.querySelector('input[type="text"]').value}));
-  return {name:formData.get("name"), days:formData.get("days"), heatsPerRacerPerDay:formData.get("heatsPerRacerPerDay"), maxMarblesPerHeat:formData.get("maxMarblesPerHeat"), marblesPerRacer:formData.get("marblesPerRacer"), championshipRacers:formData.get("championshipRacers"), points:String(formData.get("points")).split(",").map((value) => value.trim()), contestants, confirmReset};
+  return {name:formData.get("name"), days:formData.get("days"), heatsPerRacerPerDay:formData.get("heatsPerRacerPerDay"), maxMarblesPerHeat:formData.get("maxMarblesPerHeat"), marblesPerRacer:formData.get("marblesPerRacer"), championshipMaxMarblesPerHeat:formData.get("championshipMaxMarblesPerHeat"), maxByeMarblesPerRacer:formData.get("maxByeMarblesPerRacer"), wildcardRacersPromotedPerHeat:formData.get("wildcardRacersPromotedPerHeat"), preliminaryRacersPromotedPerHeat:formData.get("preliminaryRacersPromotedPerHeat"), maxFinalRacers:formData.get("maxFinalRacers"), points:String(formData.get("points")).split(",").map((value) => value.trim()), contestants, confirmReset};
 }
 
 function updateSchedulePreview() {
@@ -646,17 +1149,24 @@ document.addEventListener("click", (event) => {
   if (event.target.closest("[data-enter-kiosk]")) { setKioskMode(true, true); return; }
   if (event.target.closest("[data-exit-kiosk]")) { setKioskMode(false); return; }
   const viewButton = event.target.closest("[data-view]");
-  if (viewButton) { activeView = viewButton.dataset.view; render(); window.scrollTo({top:0, behavior:"smooth"}); return; }
+  if (viewButton) {
+    activeView = viewButton.dataset.view;
+    if (viewButton.dataset.day) activeDay = viewButton.dataset.day === "championship" ? "championship" : Number(viewButton.dataset.day);
+    render();
+    window.scrollTo({top:0, behavior:"smooth"});
+    return;
+  }
   if (event.target.closest("[data-new-tournament]")) { tournamentDialog.showModal(); requestAnimationFrame(() => tournamentDialog.querySelector('input[name="name"]').focus()); return; }
   if (event.target.closest("[data-close-tournament-dialog]")) { tournamentDialog.close(); return; }
   if (event.target.closest("[data-delete-tournament]")) { deleteCurrentTournament(); return; }
   const dayButton = event.target.closest("[data-day]");
-  if (dayButton) { activeDay = Number(dayButton.dataset.day); render(); return; }
+  if (dayButton) { activeDay = dayButton.dataset.day === "championship" ? "championship" : Number(dayButton.dataset.day); render(); return; }
   const scoreButton = event.target.closest("[data-score-heat]");
   if (scoreButton) { const heat = state.days.flatMap((day) => day.heats).find((item) => item.id === Number(scoreButton.dataset.scoreHeat)); activeDay = heat.day; activeView = "heats"; render(); requestAnimationFrame(() => document.querySelector(`#heat-${heat.id}`)?.scrollIntoView({behavior:"smooth", block:"center"})); return; }
   const saveHeatButton = event.target.closest("[data-save-heat]");
   if (saveHeatButton) { saveHeat(Number(saveHeatButton.dataset.saveHeat)); return; }
-  if (event.target.closest("[data-save-championship]")) { saveChampionship(); return; }
+  const startHeatButton = event.target.closest("[data-start-heat]");
+  if (startHeatButton) { startHeat(Number(startHeatButton.dataset.startHeat)); return; }
   if (event.target.closest("[data-add-contestant]")) { document.querySelector("#contestant-list").insertAdjacentHTML("beforeend", contestantRow()); updateSchedulePreview(); return; }
   const removeButton = event.target.closest("[data-remove-contestant]");
   if (removeButton) { const list = document.querySelector("#contestant-list"); if (list.children.length <= 2) notify("A race needs at least two racers.", true); else { removeButton.closest(".contestant-config-row").remove(); updateSchedulePreview(); } return; }
@@ -684,14 +1194,15 @@ document.addEventListener("fullscreenchange", () => {
 });
 
 document.addEventListener("visibilitychange", () => {
-  if (kioskMode && document.visibilityState === "visible") refreshKioskState();
+  if (document.visibilityState === "visible") startLiveUpdates();
+  else stopLiveUpdates();
 });
 
 if (window.location.pathname === "/workspace") {
   landingPage.hidden = true;
   workspaceShell.hidden = false;
   document.body.className = kioskMode ? "workspace-mode kiosk-mode" : "workspace-mode";
-  loadState().then(() => { if (kioskMode) startKioskRefresh(); });
+  loadState();
 } else {
   landingPage.hidden = false;
   workspaceShell.hidden = true;

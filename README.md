@@ -18,7 +18,7 @@ From the repository root:
 docker compose up --build
 ```
 
-Open <http://localhost:7272>. Tournament data is stored in `./data/marble_race.db` and survives image rebuilds and container recreation.
+Open <http://localhost:7272>. Tournament data is stored in `./data/rollrank.db` and survives image rebuilds and container recreation.
 
 Stop the app without deleting tournament data:
 
