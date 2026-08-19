@@ -265,6 +265,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible { 
 .heat-entry-name { display:flex; flex-direction:column; gap:2px; min-width:0; }
 .origin-badge { color:var(--muted); font-size:8px; font-weight:750; text-transform:uppercase; }
 .heat-entry select,.championship-row select { width:100%; padding:7px 8px; border:1px solid rgba(255,255,255,.22); border-radius:7px; background:rgba(255,255,255,.06); color:var(--ink); font-size:10px; }
+.heat-entry select option,.championship-row select option { background:#fff; color:#132c46; }
 .marble-results { display:grid; gap:5px; }
 .marble-result { display:grid; grid-template-columns:43px minmax(0,1fr); align-items:center; gap:5px; }
 .marble-result>span { display:flex; flex-direction:column; color:var(--ink); font-size:8px; font-weight:850; text-transform:uppercase; }
