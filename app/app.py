@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import io
+import json
 import re
+import time
 from typing import Any
 
-from flask import Flask, jsonify, request, send_file
+from flask import Flask, Response, jsonify, request, send_file, stream_with_context
 
 from db import (
     calculate_racers_per_heat,
@@ -551,6 +553,66 @@ def get_state():
         return jsonify(build_state(connection, tournament_id))
     finally:
         connection.close()
+
+
+def state_event(payload: dict[str, Any], retry: int | None = None) -> str:
+    prefix = f"retry: {retry}\n" if retry is not None else ""
+    encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+    return f"{prefix}event: state\ndata: {encoded}\n\n"
+
+
+@app.get("/api/tournaments/<int:tournament_id>/events")
+def tournament_events(tournament_id: int):
+    # Resolve before starting the response so a missing tournament returns a
+    # normal JSON 404 instead of failing inside an established event stream.
+    connection = connect()
+    try:
+        tournament_id = resolve_tournament_id(connection, tournament_id)
+    finally:
+        connection.close()
+
+    def stream():
+        stream_connection = connect()
+        last_payload = ""
+        last_data_version = -1
+        last_keepalive = time.monotonic()
+        first_event = True
+        try:
+            while True:
+                data_version = stream_connection.execute("PRAGMA data_version").fetchone()[0]
+                if first_event or data_version != last_data_version:
+                    exists = stream_connection.execute(
+                        "SELECT 1 FROM tournaments WHERE id = ?", (tournament_id,)
+                    ).fetchone()
+                    if not exists:
+                        yield "event: tournament-deleted\ndata: {}\n\n"
+                        return
+                    payload = build_state(stream_connection, tournament_id)
+                    encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+                    if first_event or encoded != last_payload:
+                        yield state_event(payload, retry=2000 if first_event else None)
+                        last_payload = encoded
+                        last_keepalive = time.monotonic()
+                    last_data_version = data_version
+                    first_event = False
+                if time.monotonic() - last_keepalive >= 15:
+                    yield ": keepalive\n\n"
+                    last_keepalive = time.monotonic()
+                time.sleep(1)
+        except GeneratorExit:
+            return
+        finally:
+            stream_connection.close()
+
+    return Response(
+        stream_with_context(stream()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 def integer_field(

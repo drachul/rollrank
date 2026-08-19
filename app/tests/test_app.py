@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -107,6 +108,50 @@ class MarbleRaceApiTest(unittest.TestCase):
             self.assertEqual(state["championship"][stage]["heats"], [])
         self.assertFalse(state["championship"]["final"]["ready"])
         self.assertIsNone(state["championship"]["final"]["heat"])
+
+    def test_tournament_event_stream_sends_initial_state(self) -> None:
+        created = self.client.post(
+            "/api/tournaments", json={"name": "Live Event Stream Cup"}
+        ).get_json()
+        tournament_id = created["competition"]["id"]
+        self.addCleanup(
+            lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close()
+        )
+        response = self.client.get(
+            f"/api/tournaments/{tournament_id}/events", buffered=False
+        )
+        try:
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(response.content_type.startswith("text/event-stream"))
+            self.assertEqual(response.headers["Cache-Control"], "no-cache")
+            first_event = next(response.response).decode("utf-8")
+            self.assertIn("retry: 2000", first_event)
+            self.assertIn("event: state", first_event)
+            data_line = next(
+                line.removeprefix("data: ")
+                for line in first_event.splitlines()
+                if line.startswith("data: ")
+            )
+            payload = json.loads(data_line)
+            self.assertEqual(payload["competition"]["id"], tournament_id)
+
+            heat = payload["days"][0]["heats"][0]
+            started = self.client.put(f'/api/heats/{heat["id"]}/start')
+            self.assertEqual(started.status_code, 200)
+            updated_event = next(response.response).decode("utf-8")
+            updated_data_line = next(
+                line.removeprefix("data: ")
+                for line in updated_event.splitlines()
+                if line.startswith("data: ")
+            )
+            updated_payload = json.loads(updated_data_line)
+            updated_heat = updated_payload["days"][0]["heats"][0]
+            self.assertTrue(updated_heat["started"])
+        finally:
+            response.close()
+
+        missing = self.client.get("/api/tournaments/999999/events")
+        self.assertEqual(missing.status_code, 404)
 
     def test_new_database_starts_without_a_tournament(self) -> None:
         self.assertEqual(self.initial_tournaments, [])
@@ -314,7 +359,8 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertIn("data-enter-kiosk", frontend)
         self.assertIn("data-exit-kiosk", frontend)
         self.assertIn("function renderKioskDashboard()", frontend)
-        self.assertIn("window.setInterval(refreshLiveState, 5000)", frontend)
+        self.assertIn("new EventSource(`/api/tournaments/${tournamentId}/events`)", frontend)
+        self.assertNotIn("window.setInterval(refreshLiveState", frontend)
         self.assertIn('activeView === "dashboard" || activeView === "standings"', frontend)
         self.assertIn('url.searchParams.set("display", "kiosk")', frontend)
         self.assertIn(".workspace-mode.kiosk-mode", styles)

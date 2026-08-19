@@ -5,8 +5,8 @@ let activeView = supportedViews.includes(initialParams.get("view")) ? initialPar
 let activeDay = 1;
 let activeTournamentId = Number(initialParams.get("tournament")) || null;
 let kioskMode = initialParams.get("display") === "kiosk";
-let liveRefreshTimer = null;
-let liveRefreshInFlight = false;
+let liveEventSource = null;
+let liveEventTournamentId = null;
 let kioskRefreshFailed = false;
 let kioskLastUpdated = null;
 let kioskUsesBrowserFullscreen = false;
@@ -87,32 +87,45 @@ function activeViewIsLive() {
   return kioskMode || activeView === "dashboard" || activeView === "standings";
 }
 
-async function refreshLiveState() {
-  if (!activeViewIsLive() || liveRefreshInFlight || !activeTournamentId) return;
-  liveRefreshInFlight = true;
-  try {
-    const nextState = await api(`/api/state?tournamentId=${activeTournamentId}`);
-    applyState(nextState);
-  } catch (_error) {
-    kioskRefreshFailed = true;
-    const liveStatus = document.querySelector(".kiosk-live-status");
-    if (liveStatus) {
-      liveStatus.classList.add("stale");
-      liveStatus.innerHTML = "<i></i> Reconnecting…";
-    }
-  } finally {
-    liveRefreshInFlight = false;
+function markLiveDisconnected() {
+  kioskRefreshFailed = true;
+  const liveStatus = document.querySelector(".kiosk-live-status");
+  if (liveStatus) {
+    liveStatus.classList.add("stale");
+    liveStatus.innerHTML = "<i></i> Reconnecting…";
   }
 }
 
-function startLiveRefresh() {
-  if (liveRefreshTimer) window.clearInterval(liveRefreshTimer);
-  liveRefreshTimer = window.setInterval(refreshLiveState, 5000);
+function startLiveUpdates() {
+  if (!activeViewIsLive() || !activeTournamentId || document.visibilityState === "hidden") {
+    stopLiveUpdates();
+    return;
+  }
+  if (liveEventSource && liveEventTournamentId === activeTournamentId) return;
+  stopLiveUpdates();
+  const tournamentId = activeTournamentId;
+  const source = new EventSource(`/api/tournaments/${tournamentId}/events`);
+  liveEventSource = source;
+  liveEventTournamentId = tournamentId;
+  source.addEventListener("state", (event) => {
+    if (source !== liveEventSource) return;
+    try { applyState(JSON.parse(event.data)); }
+    catch (_error) { markLiveDisconnected(); }
+  });
+  source.addEventListener("tournament-deleted", () => {
+    if (source !== liveEventSource) return;
+    stopLiveUpdates();
+    loadState(null);
+  });
+  source.onerror = () => {
+    if (source === liveEventSource) markLiveDisconnected();
+  };
 }
 
-function stopLiveRefresh() {
-  if (liveRefreshTimer) window.clearInterval(liveRefreshTimer);
-  liveRefreshTimer = null;
+function stopLiveUpdates() {
+  if (liveEventSource) liveEventSource.close();
+  liveEventSource = null;
+  liveEventTournamentId = null;
 }
 
 async function setKioskMode(enabled, requestBrowserFullscreen = false) {
@@ -805,7 +818,7 @@ function render() {
   app.innerHTML = (views[activeView] || renderDashboard)();
   if (activeView === "setup") requestAnimationFrame(updateSchedulePreview);
   if (!kioskMode) app.focus({preventScroll:true});
-  if (activeViewIsLive()) startLiveRefresh(); else stopLiveRefresh();
+  if (activeViewIsLive()) startLiveUpdates(); else stopLiveUpdates();
 }
 
 async function startHeat(heatId) {
@@ -963,7 +976,8 @@ document.addEventListener("fullscreenchange", () => {
 });
 
 document.addEventListener("visibilitychange", () => {
-  if (activeViewIsLive() && document.visibilityState === "visible") refreshLiveState();
+  if (document.visibilityState === "visible") startLiveUpdates();
+  else stopLiveUpdates();
 });
 
 if (window.location.pathname === "/workspace") {
