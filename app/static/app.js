@@ -350,7 +350,7 @@ function renderKioskFinalDashboard() {
       <div class="kiosk-controls"><span class="kiosk-live-status${kioskRefreshFailed ? " stale" : ""}"><i></i>${liveStatus}</span><button type="button" data-exit-kiosk aria-label="Exit fullscreen display">Exit <span aria-hidden="true">×</span></button></div>
     </header>
     <section class="kiosk-final-lineup">
-      <header><div><p class="kiosk-card-label">The final</p><h2>${finalStage.complete ? `${escapeHtml(finalStage.champion.name)} is the champion` : "Final race lineup"}</h2></div><span>${finalStage.complete ? "Official result" : "Awaiting final result"}</span></header>
+      <header><div><p class="kiosk-card-label">${finalStage.complete ? "The final" : (finalStage.heat.started ? "In progress" : "Up next")}</p><h2>${finalStage.complete ? `${escapeHtml(finalStage.champion.name)} is the champion` : "Championship: Final"}</h2></div><span>${finalStage.complete ? "Official result" : "Awaiting final result"}</span></header>
       <div class="kiosk-final-racers">${entries.map((entry) => `<article>${marble(entry.color)}<div><strong>${escapeHtml(entry.name)}</strong>${originBadge(entry)}</div></article>`).join("")}</div>
     </section>
     <section class="kiosk-final-results">
@@ -409,9 +409,9 @@ function renderKioskDashboard() {
   if (nextHeat) {
     nextContent = `<div class="kiosk-card-heading"><p class="kiosk-card-label">${nextHeat.started ? "In progress" : "Up next"}</p><b>Race #${nextHeat.globalNumber}</b></div><h2>Round ${nextHeat.day} · Heat ${nextHeat.heatNumber}</h2><div class="kiosk-next-racers">${nextHeat.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>`;
   } else if (nextWildcard) {
-    nextContent = `<div class="kiosk-card-heading"><p class="kiosk-card-label">${nextWildcard.started ? "In progress" : "Up next"}</p><b>Wildcard</b></div><h2>Heat ${nextWildcard.heatNumber}</h2><div class="kiosk-next-racers">${nextWildcard.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>`;
+    nextContent = `<div class="kiosk-card-heading"><p class="kiosk-card-label">${nextWildcard.started ? "In progress" : "Up next"}</p><b>Championship</b></div><h2>Championship: Wildcard Heat ${nextWildcard.heatNumber}</h2><div class="kiosk-next-racers">${nextWildcard.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>`;
   } else if (nextPreliminary) {
-    nextContent = `<div class="kiosk-card-heading"><p class="kiosk-card-label">${nextPreliminary.started ? "In progress" : "Up next"}</p><b>Preliminary</b></div><h2>Heat ${nextPreliminary.heatNumber}</h2><div class="kiosk-next-racers">${nextPreliminary.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>`;
+    nextContent = `<div class="kiosk-card-heading"><p class="kiosk-card-label">${nextPreliminary.started ? "In progress" : "Up next"}</p><b>Championship</b></div><h2>Championship: Preliminary Heat ${nextPreliminary.heatNumber}</h2><div class="kiosk-next-racers">${nextPreliminary.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>`;
   } else {
     nextContent = `<p class="kiosk-card-label">Up next</p><div class="kiosk-final-ready"><span>★</span><div><strong>Championship in progress</strong><p>Check the bracket for the current stage.</p></div></div>`;
   }
