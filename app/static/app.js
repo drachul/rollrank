@@ -5,8 +5,8 @@ let activeView = supportedViews.includes(initialParams.get("view")) ? initialPar
 let activeDay = 1;
 let activeTournamentId = Number(initialParams.get("tournament")) || null;
 let kioskMode = initialParams.get("display") === "kiosk";
-let kioskRefreshTimer = null;
-let kioskRefreshInFlight = false;
+let liveRefreshTimer = null;
+let liveRefreshInFlight = false;
 let kioskRefreshFailed = false;
 let kioskLastUpdated = null;
 let kioskUsesBrowserFullscreen = false;
@@ -83,9 +83,13 @@ function kioskTimestamp() {
   return `Updated ${kioskLastUpdated.toLocaleTimeString([], {hour:"numeric", minute:"2-digit", second:"2-digit"})}`;
 }
 
-async function refreshKioskState() {
-  if (!kioskMode || kioskRefreshInFlight || !activeTournamentId) return;
-  kioskRefreshInFlight = true;
+function dashboardIsLive() {
+  return kioskMode || activeView === "dashboard";
+}
+
+async function refreshLiveState() {
+  if (!dashboardIsLive() || liveRefreshInFlight || !activeTournamentId) return;
+  liveRefreshInFlight = true;
   try {
     const nextState = await api(`/api/state?tournamentId=${activeTournamentId}`);
     applyState(nextState);
@@ -97,18 +101,18 @@ async function refreshKioskState() {
       liveStatus.innerHTML = "<i></i> Reconnecting…";
     }
   } finally {
-    kioskRefreshInFlight = false;
+    liveRefreshInFlight = false;
   }
 }
 
-function startKioskRefresh() {
-  if (kioskRefreshTimer) window.clearInterval(kioskRefreshTimer);
-  kioskRefreshTimer = window.setInterval(refreshKioskState, 5000);
+function startLiveRefresh() {
+  if (liveRefreshTimer) window.clearInterval(liveRefreshTimer);
+  liveRefreshTimer = window.setInterval(refreshLiveState, 5000);
 }
 
-function stopKioskRefresh() {
-  if (kioskRefreshTimer) window.clearInterval(kioskRefreshTimer);
-  kioskRefreshTimer = null;
+function stopLiveRefresh() {
+  if (liveRefreshTimer) window.clearInterval(liveRefreshTimer);
+  liveRefreshTimer = null;
 }
 
 async function setKioskMode(enabled, requestBrowserFullscreen = false) {
@@ -121,17 +125,14 @@ async function setKioskMode(enabled, requestBrowserFullscreen = false) {
   else url.searchParams.delete("display");
   window.history.replaceState({}, "", url);
 
+  render();
   if (enabled) {
-    startKioskRefresh();
-    render();
     if (requestBrowserFullscreen && document.documentElement.requestFullscreen && !document.fullscreenElement) {
       kioskUsesBrowserFullscreen = true;
       try { await document.documentElement.requestFullscreen(); }
       catch (_error) { kioskUsesBrowserFullscreen = false; }
     }
   } else {
-    stopKioskRefresh();
-    render();
     if (document.fullscreenElement && document.exitFullscreen) {
       try { await document.exitFullscreen(); } catch (_error) { /* The page view still exits kiosk mode. */ }
     }
@@ -293,7 +294,7 @@ function renderDashboard() {
     </section>
     <section class="dashboard-grid">
       <article class="panel">
-        <div class="panel-heading"><div><p class="eyebrow">Race queue</p><h2>${nextHeat ? `Next: Round ${nextHeat.day}, Heat ${nextHeat.heatNumber}` : "All round heats complete"}</h2></div><button class="text-button" data-view="heats">View rounds →</button></div>
+        <div class="panel-heading"><div><p class="eyebrow">Race queue</p><h2>${nextHeat ? `${nextHeat.started ? "In Progress" : "Next"}: Round ${nextHeat.day}, Heat ${nextHeat.heatNumber}` : "All round heats complete"}</h2></div><button class="text-button" data-view="heats">View rounds →</button></div>
         ${nextHeat ? `<div class="next-heat">
           <div class="heat-flag"><small>Race</small><strong>#${nextHeat.globalNumber}</strong></div>
           <div class="racer-preview">${nextHeat.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>
@@ -377,11 +378,11 @@ function renderKioskDashboard() {
   let nextContent = "";
 
   if (nextHeat) {
-    nextContent = `<div class="kiosk-card-heading"><p class="kiosk-card-label">Up next</p><b>Race #${nextHeat.globalNumber}</b></div><h2>Round ${nextHeat.day} · Heat ${nextHeat.heatNumber}</h2><div class="kiosk-next-racers">${nextHeat.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>`;
+    nextContent = `<div class="kiosk-card-heading"><p class="kiosk-card-label">${nextHeat.started ? "In progress" : "Up next"}</p><b>Race #${nextHeat.globalNumber}</b></div><h2>Round ${nextHeat.day} · Heat ${nextHeat.heatNumber}</h2><div class="kiosk-next-racers">${nextHeat.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>`;
   } else if (nextWildcard) {
-    nextContent = `<div class="kiosk-card-heading"><p class="kiosk-card-label">Up next</p><b>Wildcard</b></div><h2>Heat ${nextWildcard.heatNumber}</h2><div class="kiosk-next-racers">${nextWildcard.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>`;
+    nextContent = `<div class="kiosk-card-heading"><p class="kiosk-card-label">${nextWildcard.started ? "In progress" : "Up next"}</p><b>Wildcard</b></div><h2>Heat ${nextWildcard.heatNumber}</h2><div class="kiosk-next-racers">${nextWildcard.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>`;
   } else if (nextPreliminary) {
-    nextContent = `<div class="kiosk-card-heading"><p class="kiosk-card-label">Up next</p><b>Preliminary</b></div><h2>Heat ${nextPreliminary.heatNumber}</h2><div class="kiosk-next-racers">${nextPreliminary.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>`;
+    nextContent = `<div class="kiosk-card-heading"><p class="kiosk-card-label">${nextPreliminary.started ? "In progress" : "Up next"}</p><b>Preliminary</b></div><h2>Heat ${nextPreliminary.heatNumber}</h2><div class="kiosk-next-racers">${nextPreliminary.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>`;
   } else {
     nextContent = `<p class="kiosk-card-label">Up next</p><div class="kiosk-final-ready"><span>★</span><div><strong>Championship in progress</strong><p>Check the bracket for the current stage.</p></div></div>`;
   }
@@ -768,6 +769,7 @@ function render() {
   app.innerHTML = (views[activeView] || renderDashboard)();
   if (activeView === "setup") requestAnimationFrame(updateSchedulePreview);
   if (!kioskMode) app.focus({preventScroll:true});
+  if (dashboardIsLive()) startLiveRefresh(); else stopLiveRefresh();
 }
 
 async function startHeat(heatId) {
@@ -925,14 +927,14 @@ document.addEventListener("fullscreenchange", () => {
 });
 
 document.addEventListener("visibilitychange", () => {
-  if (kioskMode && document.visibilityState === "visible") refreshKioskState();
+  if (dashboardIsLive() && document.visibilityState === "visible") refreshLiveState();
 });
 
 if (window.location.pathname === "/workspace") {
   landingPage.hidden = true;
   workspaceShell.hidden = false;
   document.body.className = kioskMode ? "workspace-mode kiosk-mode" : "workspace-mode";
-  loadState().then(() => { if (kioskMode) startKioskRefresh(); });
+  loadState();
 } else {
   landingPage.hidden = false;
   workspaceShell.hidden = true;
