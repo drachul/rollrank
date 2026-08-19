@@ -8,6 +8,8 @@ let kioskMode = initialParams.get("display") === "kiosk";
 let liveEventSource = null;
 let liveEventTournamentId = null;
 let kioskIntroTimer = null;
+let kioskResultsTimer = null;
+let kioskCupTimer = null;
 let kioskRefreshFailed = false;
 let kioskLastUpdated = null;
 let kioskUsesBrowserFullscreen = false;
@@ -71,7 +73,8 @@ function syncTournamentChrome() {
 
 function applyState(nextState) {
   const introductionHeat = kioskMode ? newlyStartedHeat(state, nextState) : null;
-  if (state && state.competition.id !== nextState.competition.id) stopKioskRaceIntroduction();
+  const completedHeat = kioskMode ? newlyCompletedHeat(state, nextState) : null;
+  if (state && state.competition.id !== nextState.competition.id) stopKioskRaceAnimations();
   state = nextState;
   activeTournamentId = state.competition.id;
   if (activeDay !== "championship") activeDay = Math.min(activeDay, state.competition.days);
@@ -79,7 +82,9 @@ function applyState(nextState) {
   kioskLastUpdated = new Date();
   syncTournamentChrome();
   render();
-  if (introductionHeat) startKioskRaceIntroduction(introductionHeat);
+  if (completedHeat?.stage === "final") startKioskCupPresentation(completedHeat, state.competition.name);
+  else if (completedHeat) startKioskRaceResults(completedHeat);
+  else if (introductionHeat) startKioskRaceIntroduction(introductionHeat);
 }
 
 function kioskTimestamp() {
@@ -149,6 +154,14 @@ function newlyStartedHeat(previousState, nextState) {
     .sort((first, second) => first.globalNumber - second.globalNumber)[0] || null;
 }
 
+function newlyCompletedHeat(previousState, nextState) {
+  if (!previousState || previousState.competition.id !== nextState.competition.id) return null;
+  const previousHeats = new Map(tournamentHeats(previousState).map((heat) => [heat.id, heat]));
+  return tournamentHeats(nextState)
+    .filter((heat) => previousHeats.has(heat.id) && heat.complete && !previousHeats.get(heat.id).complete)
+    .sort((first, second) => first.globalNumber - second.globalNumber)[0] || null;
+}
+
 function kioskIntroductionHeatName(heat) {
   if (heat.stage === "wildcard") return `Championship: Wildcard Heat ${heat.heatNumber}`;
   if (heat.stage === "preliminary") return `Championship: Preliminary Heat ${heat.heatNumber}`;
@@ -162,8 +175,28 @@ function stopKioskRaceIntroduction() {
   document.querySelector(".kiosk-race-intro")?.remove();
 }
 
+function stopKioskRaceResults() {
+  if (kioskResultsTimer) window.clearTimeout(kioskResultsTimer);
+  kioskResultsTimer = null;
+  document.querySelector(".kiosk-race-results")?.remove();
+}
+
+function stopKioskCupPresentation() {
+  if (kioskCupTimer) window.clearTimeout(kioskCupTimer);
+  kioskCupTimer = null;
+  document.querySelector(".kiosk-cup-presentation")?.remove();
+}
+
+function stopKioskRaceAnimations() {
+  stopKioskRaceIntroduction();
+  stopKioskRaceResults();
+  stopKioskCupPresentation();
+}
+
 function startKioskRaceIntroduction(heat) {
   if (!kioskMode || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  stopKioskRaceResults();
+  stopKioskCupPresentation();
   stopKioskRaceIntroduction();
   const overlay = document.createElement("section");
   overlay.className = "kiosk-race-intro";
@@ -191,8 +224,128 @@ function startKioskRaceIntroduction(heat) {
   kioskIntroTimer = window.setTimeout(stopKioskRaceIntroduction, 9400);
 }
 
+function heatMarblesInFinishOrder(heat) {
+  const racers = heat.entries.flatMap((entry) => entry.marbles.map((result) => ({
+    name: entry.name,
+    color: entry.color,
+    marbleNumber: result.number,
+    showMarbleNumber: entry.marbles.length > 1,
+    finish: Number(result.finish),
+    lane: entry.lane,
+  })));
+  return racers.sort((first, second) => {
+    if (first.finish === 0 && second.finish !== 0) return 1;
+    if (first.finish !== 0 && second.finish === 0) return -1;
+    if (first.finish !== second.finish) return first.finish - second.finish;
+    return first.lane - second.lane || first.marbleNumber - second.marbleNumber;
+  });
+}
+
+function randomKioskDnfEffect() {
+  const effects = ["crash", "fire", "explode"];
+  return effects[Math.floor(Math.random() * effects.length)];
+}
+
+function startKioskRaceResults(heat) {
+  if (!kioskMode || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  stopKioskRaceIntroduction();
+  stopKioskCupPresentation();
+  stopKioskRaceResults();
+  const results = heatMarblesInFinishOrder(heat).map((result, index) => ({
+    ...result,
+    dnfEffect: result.finish === 0 ? randomKioskDnfEffect() : null,
+    dnfExitY: index % 2 ? "78vh" : "-78vh",
+    dnfSpin: index % 2 ? "820deg" : "-820deg",
+  }));
+  const densityClass = results.length > 18 ? " crowded" : results.length > 10 ? " compact" : "";
+  const resultDelayStep = Math.min(170, Math.floor(3500 / Math.max(1, results.length - 1)));
+  const overlay = document.createElement("section");
+  overlay.className = `kiosk-race-results${densityClass}`;
+  overlay.setAttribute("aria-label", `Race results for ${kioskIntroductionHeatName(heat)}`);
+  overlay.innerHTML = `
+    <header>
+      <p>Official result</p>
+      <h2>${escapeHtml(kioskIntroductionHeatName(heat))}</h2>
+    </header>
+    <div class="kiosk-results-track">
+      <i class="kiosk-results-finish-line" aria-hidden="true"><span>Finish</span></i>
+      ${results.map((result, index) => `<article class="kiosk-result-racer${result.finish === 0 ? ` dnf dnf-${result.dnfEffect}` : ""}" style="--result-y:${((index + .5) / results.length * 100).toFixed(3)}%;--result-delay:${index * resultDelayStep}ms;--dnf-exit-y:${result.dnfExitY};--dnf-spin:${result.dnfSpin}">
+        ${marble(result.color)}
+        <strong>${escapeHtml(result.name)}${result.showMarbleNumber ? ` <small>· Marble ${result.marbleNumber}</small>` : ""}</strong>
+        <b>${result.finish === 0 ? "DNF" : ordinal(result.finish)}</b>
+        ${result.finish === 0 ? `<i class="kiosk-result-dnf-effect" aria-hidden="true"></i>` : ""}
+      </article>`).join("")}
+    </div>`;
+  document.body.appendChild(overlay);
+  kioskResultsTimer = window.setTimeout(stopKioskRaceResults, 10000);
+}
+
+function kioskCupTiming(position) {
+  const base = {3: 0, 2: 8, 1: 16}[position];
+  return {
+    announcement: `${base + .55}s`,
+    racer: `${base + 2.65}s`,
+    presenter: `${base + 4.45}s`,
+    trophy: `${base + 6.25}s`,
+  };
+}
+
+function kioskCupAnnouncement(racer, position, tournamentName) {
+  const timing = kioskCupTiming(position);
+  const introduction = position === 1
+    ? `And your ${escapeHtml(tournamentName)} Champion`
+    : `In ${ordinal(position)} place`;
+  return `<div class="kiosk-cup-announcement${position === 1 ? " champion" : ""}" style="--announcement-delay:${timing.announcement}">
+    <p>${introduction}</p>
+    <h2>${escapeHtml(racer.name)}!</h2>
+  </div>`;
+}
+
+function kioskCupPodiumPlace(racer, position) {
+  const placeMeta = {
+    1: {className: "gold", label: "Champion", trophy: "🏆", racerIn: "50vw", racerMid: "12vw", presenterIn: "-55vw", presenterOut: "52vw"},
+    2: {className: "silver", label: "Second place", trophy: "🥈", racerIn: "-52vw", racerMid: "-13vw", presenterIn: "50vw", presenterOut: "-50vw"},
+    3: {className: "bronze", label: "Third place", trophy: "🥉", racerIn: "52vw", racerMid: "13vw", presenterIn: "-50vw", presenterOut: "48vw"},
+  }[position];
+  if (!racer) return `<article class="kiosk-cup-place ${placeMeta.className} empty"><div class="kiosk-cup-step"><b>${position}</b><span>${placeMeta.label}</span></div></article>`;
+  const timing = kioskCupTiming(position);
+  return `<article class="kiosk-cup-place ${placeMeta.className}" style="--racer-delay:${timing.racer};--presenter-delay:${timing.presenter};--trophy-delay:${timing.trophy};--racer-in:${placeMeta.racerIn};--racer-mid:${placeMeta.racerMid};--presenter-in:${placeMeta.presenterIn};--presenter-out:${placeMeta.presenterOut}">
+    <div class="kiosk-cup-racer">
+      ${marble(racer.color)}
+      <strong>${escapeHtml(racer.name)}</strong>
+      <span class="kiosk-cup-winner-trophy" role="img" aria-label="${placeMeta.label} trophy">${placeMeta.trophy}</span>
+    </div>
+    <div class="kiosk-cup-presenter" aria-hidden="true">
+      <div class="kiosk-cup-host">${marble("#172D52")}<i class="kiosk-cup-top-hat"></i></div>
+      <span class="kiosk-cup-presenter-trophy">${placeMeta.trophy}</span>
+    </div>
+    <div class="kiosk-cup-step"><b>${position}</b><span>${placeMeta.label}</span></div>
+  </article>`;
+}
+
+function startKioskCupPresentation(finalHeat, tournamentName) {
+  if (!kioskMode || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  stopKioskRaceAnimations();
+  const placedRacers = new Map(finalHeat.entries.filter((entry) => entry.finish > 0 && entry.finish <= 3).map((entry) => [Number(entry.finish), entry]));
+  const sequence = [3, 2, 1].filter((position) => placedRacers.has(position));
+  const overlay = document.createElement("section");
+  overlay.className = "kiosk-cup-presentation";
+  overlay.setAttribute("aria-label", `${tournamentName} cup presentation`);
+  overlay.innerHTML = `
+    ${fireworksMarkup("kiosk-cup-fireworks")}
+    <header><p>Official cup presentation</p><strong>${escapeHtml(tournamentName)}</strong></header>
+    ${sequence.map((position) => kioskCupAnnouncement(placedRacers.get(position), position, tournamentName)).join("")}
+    <div class="kiosk-cup-stage">
+      <div class="kiosk-cup-podium">
+        ${[2, 1, 3].map((position) => kioskCupPodiumPlace(placedRacers.get(position), position)).join("")}
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  kioskCupTimer = window.setTimeout(stopKioskCupPresentation, 32000);
+}
+
 async function setKioskMode(enabled, requestBrowserFullscreen = false) {
-  if (!enabled) stopKioskRaceIntroduction();
+  if (!enabled) stopKioskRaceAnimations();
   kioskMode = enabled;
   activeView = "dashboard";
   document.body.classList.toggle("kiosk-mode", enabled);
@@ -303,7 +456,8 @@ function viewHeader(eyebrow, title, description, action = "") {
 }
 
 function fireworksMarkup() {
-  return `<div class="kiosk-fireworks" aria-hidden="true">
+  const extraClass = arguments[0] || "";
+  return `<div class="kiosk-fireworks${extraClass ? ` ${extraClass}` : ""}" aria-hidden="true">
     <i style="--x:12%;--y:17%;--delay:0s;--color:#f4c542"></i><i style="--x:31%;--y:9%;--delay:.75s;--color:#5ba1ff"></i><i style="--x:52%;--y:18%;--delay:1.35s;--color:#ff6b8a"></i><i style="--x:72%;--y:8%;--delay:.35s;--color:#6ee7b7"></i><i style="--x:89%;--y:21%;--delay:1.05s;--color:#c4a7ff"></i><i style="--x:22%;--y:53%;--delay:1.7s;--color:#ff8f5b"></i><i style="--x:82%;--y:58%;--delay:2s;--color:#f4c542"></i>
   </div>`;
 }
