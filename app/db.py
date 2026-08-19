@@ -60,11 +60,6 @@ def transaction() -> Iterator[sqlite3.Connection]:
         connection.close()
 
 
-# NOTE: this schema is a breaking change from earlier versions (stage-aware heats,
-# no final_entries table, renamed/new tournament columns). CREATE TABLE IF NOT
-# EXISTS does not add columns to an already-created table, so an existing
-# data/rollrank.db built under the old schema must be deleted (or
-# APP_DATA_DIR pointed at a fresh directory) before running against this schema.
 SCHEMA = [
     """
     CREATE TABLE IF NOT EXISTS tournaments (
@@ -78,6 +73,8 @@ SCHEMA = [
         marbles_per_racer INTEGER NOT NULL DEFAULT 1 CHECK (marbles_per_racer >= 1),
         championship_max_marbles_per_heat INTEGER NOT NULL DEFAULT 6 CHECK (championship_max_marbles_per_heat >= 2),
         max_bye_marbles_per_racer INTEGER NOT NULL DEFAULT 1 CHECK (max_bye_marbles_per_racer >= 0),
+        wildcard_racers_promoted_per_heat INTEGER NOT NULL DEFAULT 2 CHECK (wildcard_racers_promoted_per_heat BETWEEN 1 AND 24),
+        preliminary_racers_promoted_per_heat INTEGER NOT NULL DEFAULT 2 CHECK (preliminary_racers_promoted_per_heat BETWEEN 1 AND 24),
         max_final_racers INTEGER NOT NULL CHECK (max_final_racers >= 2),
         seed INTEGER NOT NULL DEFAULT 7,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -145,8 +142,9 @@ def create_tournament(connection: sqlite3.Connection, name: str) -> int:
             (name, days, heats_per_day, heats_per_racer_per_day,
              racers_per_heat, max_marbles_per_heat, marbles_per_racer,
              championship_max_marbles_per_heat, max_bye_marbles_per_racer,
+             wildcard_racers_promoted_per_heat, preliminary_racers_promoted_per_heat,
              max_final_racers, seed)
-        VALUES (?, 3, 4, 3, 6, 6, 1, 6, 1, 6, 7)
+        VALUES (?, 3, 4, 3, 6, 6, 1, 6, 1, 2, 2, 6, 7)
         """,
         (name,),
     )
@@ -1044,6 +1042,10 @@ def wildcard_field(connection: sqlite3.Connection, tournament_id: int) -> list[d
 
 
 def preliminary_field(connection: sqlite3.Connection, tournament_id: int) -> list[dict[str, Any]]:
+    tournament = connection.execute(
+        "SELECT wildcard_racers_promoted_per_heat FROM tournaments WHERE id = ?",
+        (tournament_id,),
+    ).fetchone()
     field = championship_field(connection, tournament_id)
     entries = [
         {
@@ -1060,7 +1062,12 @@ def preliminary_field(connection: sqlite3.Connection, tournament_id: int) -> lis
     ).fetchall()
     if wildcard_heats:
         for heat_row in wildcard_heats:
-            for racer_id in heat_top_n(connection, heat_row["id"], 1):
+            # heat_top_n ranks distinct racers by aggregate points, so
+            # multiple marbles from one racer can strengthen that racer's
+            # result but cannot consume multiple qualifying places.
+            for racer_id in heat_top_n(
+                connection, heat_row["id"], tournament["wildcard_racers_promoted_per_heat"]
+            ):
                 entries.append(
                     {
                         "racerId": racer_id,
@@ -1099,7 +1106,11 @@ def final_field(
     ).fetchall()
     if preliminary_heats:
         for heat_row in preliminary_heats:
-            for racer_id in heat_top_n(connection, heat_row["id"], 2):
+            for racer_id in heat_top_n(
+                connection,
+                heat_row["id"],
+                tournament["preliminary_racers_promoted_per_heat"],
+            ):
                 candidates.append(
                     {"racerId": racer_id, "originStage": "preliminary", "originHeatId": heat_row["id"]}
                 )

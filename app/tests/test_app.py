@@ -15,6 +15,7 @@ from db import (  # noqa: E402
     balanced_schedule,
     championship_field,
     connect,
+    heat_top_n,
     preliminary_field,
     standings,
     wildcard_field,
@@ -88,6 +89,8 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertEqual(len(state["days"]), 3)
         self.assertEqual(state["competition"]["heatsPerRacerPerDay"], 3)
         self.assertEqual(state["competition"]["maxMarblesPerHeat"], 6)
+        self.assertEqual(state["competition"]["wildcardRacersPromotedPerHeat"], 2)
+        self.assertEqual(state["competition"]["preliminaryRacersPromotedPerHeat"], 2)
         self.assertEqual(state["competition"]["racersPerHeat"], 6)
         self.assertEqual(state["competition"]["marblesPerHeat"], 6)
         self.assertEqual(state["competition"]["marblesPerRacer"], 1)
@@ -260,6 +263,8 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertNotIn("raceTitle", frontend)
         self.assertIn('document.title = `${state.competition.name} · RollRank`', frontend)
         self.assertIn("Live leader", frontend)
+        self.assertIn("stat.live && !stat.liveAlreadyCounted ? stat.count + 1 : stat.count", frontend)
+        self.assertNotIn("displayCount: stat.live ? stat.count + 1 : stat.count", frontend)
         self.assertIn("Open dashboard", frontend)
         self.assertIn("No tournaments yet", frontend)
         self.assertIn('class="new-tournament-label">New</span>', index)
@@ -267,6 +272,10 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertIn("Max Racers in Final", frontend)
         self.assertIn("Max marbles in wildcard/prelim heats", frontend)
         self.assertIn("Max bye marbles per racer", frontend)
+        self.assertIn("Wildcard racers promoted / heat", frontend)
+        self.assertIn("Preliminary racers promoted / heat", frontend)
+        self.assertIn('name="wildcardRacersPromotedPerHeat"', frontend)
+        self.assertIn('name="preliminaryRacersPromotedPerHeat"', frontend)
         self.assertIn("Top 3 podium", frontend)
         self.assertIn("Gold trophy", frontend)
         self.assertIn("Silver trophy", frontend)
@@ -468,6 +477,15 @@ class MarbleRaceApiTest(unittest.TestCase):
             self.assertEqual(
                 [entry["points"] for entry in scored_heat["entries"]],
                 [17, 8, 3],
+            )
+            connection = connect()
+            try:
+                top_two_racers = heat_top_n(connection, heat["id"], 2)
+            finally:
+                connection.close()
+            self.assertEqual(
+                top_two_racers,
+                [heat["entries"][0]["contestantId"], heat["entries"][1]["contestantId"]],
             )
 
         self.assertTrue(state["championship"]["wildcard"]["ready"])
@@ -1281,8 +1299,10 @@ class MarbleRaceApiTest(unittest.TestCase):
                 "heatsPerRacerPerDay": 1,
                 "maxMarblesPerHeat": 8,
                 "marblesPerRacer": 1,
-                "championshipMaxMarblesPerHeat": 3,
+                "championshipMaxMarblesPerHeat": 5,
                 "maxByeMarblesPerRacer": 1,
+                "wildcardRacersPromotedPerHeat": 2,
+                "preliminaryRacersPromotedPerHeat": 1,
                 "maxFinalRacers": 6,
                 "points": [10, 7, 5, 3, 2, 1, 0, 0],
                 "contestants": [
@@ -1326,8 +1346,9 @@ class MarbleRaceApiTest(unittest.TestCase):
         decided = [entry for entry in preliminary_projected if entry["decided"]]
         pending = [entry for entry in preliminary_projected if not entry["decided"]]
         self.assertEqual([entry["contestantId"] for entry in decided], [contestant_ids[7]])
-        self.assertEqual(len(pending), len(champ["wildcard"]["heats"]))
+        self.assertEqual(len(pending), 2 * len(champ["wildcard"]["heats"]))
         self.assertTrue(all(entry["originStage"] == "wildcard" for entry in pending))
+        self.assertEqual({entry["qualifyingPlace"] for entry in pending}, {1, 2})
 
         self.assertFalse(champ["final"]["ready"])
         final_projected = champ["final"]["projectedEntries"]
@@ -1336,9 +1357,9 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertEqual(final_projected[0]["contestantId"], contestant_ids[6])
         self.assertEqual(final_projected[0]["originStage"], "bye")
 
-        # Score just the first wildcard heat; its winner should now appear
-        # decided in the preliminary projection while the other heat's slot
-        # is still pending.
+        # Score just the first wildcard heat; its top two racers should now
+        # appear in the preliminary projection while the other heat's two
+        # slots are still pending.
         first_heat = champ["wildcard"]["heats"][0]
         second_heat_id = champ["wildcard"]["heats"][1]["id"]
         results = [
@@ -1358,9 +1379,44 @@ class MarbleRaceApiTest(unittest.TestCase):
         projected = state["championship"]["preliminary"]["projectedEntries"]
         decided_ids = {entry["contestantId"] for entry in projected if entry["decided"]}
         self.assertIn(first_heat["entries"][0]["contestantId"], decided_ids)
+        self.assertIn(first_heat["entries"][1]["contestantId"], decided_ids)
         still_pending = [entry for entry in projected if not entry["decided"]]
-        self.assertEqual(len(still_pending), 1)
-        self.assertEqual(still_pending[0]["originHeatId"], second_heat_id)
+        self.assertEqual(len(still_pending), 2)
+        self.assertTrue(all(entry["originHeatId"] == second_heat_id for entry in still_pending))
+
+        second_heat = next(
+            heat
+            for heat in state["championship"]["wildcard"]["heats"]
+            if heat["id"] == second_heat_id
+        )
+        saved = score_heat_sequentially(self.client, second_heat)
+        self.assertEqual(saved.status_code, 200)
+        state = saved.get_json()
+        self.assertTrue(state["championship"]["preliminary"]["ready"])
+        promoted_ids = {
+            entry["contestantId"]
+            for heat in state["championship"]["preliminary"]["heats"]
+            for entry in heat["entries"]
+            if entry.get("originStage") == "wildcard"
+        }
+        expected_promoted_ids = {
+            entry["contestantId"]
+            for heat in champ["wildcard"]["heats"]
+            for entry in heat["entries"][:2]
+        }
+        self.assertEqual(promoted_ids, expected_promoted_ids)
+
+        preliminary_heats = state["championship"]["preliminary"]["heats"]
+        expected_finalists = {
+            contestant_ids[6],
+            *(heat["entries"][0]["contestantId"] for heat in preliminary_heats),
+        }
+        state = score_all_heats_sequentially(self.client, preliminary_heats)
+        self.assertTrue(state["championship"]["final"]["ready"])
+        actual_finalists = {
+            entry["contestantId"] for entry in state["championship"]["final"]["heat"]["entries"]
+        }
+        self.assertEqual(actual_finalists, expected_finalists)
 
     def test_editing_an_earlier_staging_heat_is_blocked_once_later_heats_have_run(self) -> None:
         created = self.client.post(
@@ -1572,12 +1628,27 @@ class MarbleRaceApiTest(unittest.TestCase):
         )
         self.assertEqual(out_of_range.status_code, 400)
 
+        invalid_promotion_count = self.client.put(
+            f"/api/tournaments/{tournament_id}",
+            json={
+                **base_payload,
+                "championshipMaxMarblesPerHeat": 6,
+                "maxByeMarblesPerRacer": 1,
+                "wildcardRacersPromotedPerHeat": 0,
+                "preliminaryRacersPromotedPerHeat": 2,
+                "maxFinalRacers": 6,
+            },
+        )
+        self.assertEqual(invalid_promotion_count.status_code, 400)
+
         valid = self.client.put(
             f"/api/tournaments/{tournament_id}",
             json={
                 **base_payload,
                 "championshipMaxMarblesPerHeat": 4,
                 "maxByeMarblesPerRacer": 2,
+                "wildcardRacersPromotedPerHeat": 3,
+                "preliminaryRacersPromotedPerHeat": 1,
                 "maxFinalRacers": 5,
             },
         )
@@ -1585,6 +1656,8 @@ class MarbleRaceApiTest(unittest.TestCase):
         state = valid.get_json()
         self.assertEqual(state["competition"]["championshipMaxMarblesPerHeat"], 4)
         self.assertEqual(state["competition"]["maxByeMarblesPerRacer"], 2)
+        self.assertEqual(state["competition"]["wildcardRacersPromotedPerHeat"], 3)
+        self.assertEqual(state["competition"]["preliminaryRacersPromotedPerHeat"], 1)
         self.assertEqual(state["competition"]["maxFinalRacers"], 5)
 
     def test_scoring_unstarted_staging_heat_is_rejected(self) -> None:

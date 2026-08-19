@@ -371,12 +371,13 @@ def wildcard_page(c: canvas.Canvas, state: dict[str, Any], width: float, height:
 
 def preliminary_page(c: canvas.Canvas, state: dict[str, Any], width: float, height: float, page: int) -> int:
     heats = state["championship"]["preliminary"]["heats"]
+    promoted = state["competition"]["wildcardRacersPromotedPerHeat"]
     return stage_heats_page(
         c,
         state,
         heats,
         "PRELIMINARY",
-        "Preliminary heats: wildcard advancers and round runners-up",
+        f"Preliminary heats: top {promoted} racer{'s' if promoted != 1 else ''} from each wildcard heat and round runners-up",
         width,
         height,
         page,

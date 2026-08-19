@@ -365,17 +365,16 @@ function renderKioskFinalDashboard() {
 function racerStatBadges(racer) {
   const tiers = racer.dayChampionshipTiers || [];
   const stats = [
-    {label: "W", title: "Wins", count: racer.wins, live: racer.liveRoundLeader},
-    {label: "B", title: "Byes", count: tiers.filter((tier) => tier === "bye").length, live: racer.liveTier === "bye"},
-    {label: "P", title: "Preliminary", count: tiers.filter((tier) => tier === "preliminary").length, live: racer.liveTier === "preliminary"},
-    {label: "WC", title: "Wildcard", count: tiers.filter((tier) => tier === "wildcard").length, live: racer.liveTier === "wildcard"},
+    {label: "W", title: "Wins", count: racer.wins, live: racer.liveRoundLeader, liveAlreadyCounted: false},
+    {label: "B", title: "Byes", count: tiers.filter((tier) => tier === "bye").length, live: racer.liveTier === "bye", liveAlreadyCounted: true},
+    {label: "P", title: "Preliminary", count: tiers.filter((tier) => tier === "preliminary").length, live: racer.liveTier === "preliminary", liveAlreadyCounted: true},
+    {label: "WC", title: "Wildcard", count: tiers.filter((tier) => tier === "wildcard").length, live: racer.liveTier === "wildcard", liveAlreadyCounted: true},
   ];
-  // A racer leading the in-progress round for a category shows what that
-  // count would become if the round ended right now, not just the already-
-  // finalized count -- otherwise a racer's very first live lead (before any
-  // round has finished) never shows up at all.
+  // Wins exclude the live round in the API and need a provisional +1. Live
+  // championship tiers are already present in dayChampionshipTiers, so their
+  // count only needs the asterisk and must not be incremented again.
   return stats
-    .map((stat) => ({...stat, displayCount: stat.live ? stat.count + 1 : stat.count}))
+    .map((stat) => ({...stat, displayCount: stat.live && !stat.liveAlreadyCounted ? stat.count + 1 : stat.count}))
     .filter((stat) => stat.displayCount > 0);
 }
 
@@ -590,7 +589,7 @@ function ladderProjectedRoster(entries, lockedLabel) {
     <ul class="ladder-entries">
       ${entries.map((entry) => entry.decided
         ? `<li class="ladder-entry ${tierClass(entry.originStage === "wildcard" ? "wildcard" : entry.originStage === "bye" ? "bye" : "preliminary")}">${marble(entry.color, "small")}${ladderEntryLabel(entry.name, entry.marbleSlots || 1, entry.seedRounds)}</li>`
-        : `<li class="ladder-entry pending"><span class="tbd-marble" aria-hidden="true">?</span><span>Heat ${entry.heatNumber} winner</span><b>TBD</b></li>`
+        : `<li class="ladder-entry pending"><span class="tbd-marble" aria-hidden="true">?</span><span>Heat ${entry.heatNumber}${entry.qualifyingPlace ? ` · ${ordinal(entry.qualifyingPlace)} racer` : " winner"}</span><b>TBD</b></li>`
       ).join("")}
     </ul>
     <p class="ladder-projected-note">${lockedLabel}</p>
@@ -729,7 +728,8 @@ function renderChampionshipStageBody(stage, lockedDescription) {
 
 function renderFinalStageBody(finalStage) {
   if (!finalStage.ready) {
-    return championshipStatusCard("⏳", "Not ready", "Waiting on the preliminary round", "Preliminary heat winners and round-win byes race here once every preliminary heat is scored.");
+    const promoted = state.competition.preliminaryRacersPromotedPerHeat;
+    return championshipStatusCard("⏳", "Not ready", "Waiting on the preliminary round", `The top ${promoted} racer${promoted === 1 ? "" : "s"} from each preliminary heat and round-win byes race here once every preliminary heat is scored.`);
   }
   if (!finalStage.heat) {
     return championshipStatusCard("→", "No final field", "Nobody qualified", "This tournament didn't produce any finalists.");
@@ -750,13 +750,14 @@ function championshipReportLink() {
 function renderChampionshipStages() {
   const champ = state.championship;
   const c = state.competition;
+  const wildcardPromoted = c.wildcardRacersPromotedPerHeat;
   return `<section class="championship-stage">
       <div class="panel-heading"><div><p class="eyebrow">Stage 1</p><h2>Wildcard heats</h2></div>${championshipStageChip(champ.wildcard)}</div>
       ${renderChampionshipStageBody(champ.wildcard, `3rd and 4th place finishers from every round race here once all ${c.totalHeats} round heats are complete.`)}
     </section>
     <section class="championship-stage">
       <div class="panel-heading"><div><p class="eyebrow">Stage 2</p><h2>Preliminary heats</h2></div>${championshipStageChip(champ.preliminary)}</div>
-      ${renderChampionshipStageBody(champ.preliminary, "Wildcard heat winners and round runners-up race here once every wildcard heat is scored.")}
+      ${renderChampionshipStageBody(champ.preliminary, `The top ${wildcardPromoted} racer${wildcardPromoted === 1 ? "" : "s"} from each wildcard heat and the round runners-up race here once every wildcard heat is scored.`)}
     </section>
     <section class="championship-stage">
       <div class="panel-heading"><div><p class="eyebrow">Stage 3</p><h2>${champ.final.complete ? "Final results" : "The final"}</h2></div><div class="panel-heading-actions">${championshipStageChip(champ.final)}${champ.final.complete ? championshipReportLink() : ""}</div></div>
@@ -782,7 +783,13 @@ function renderSetup() {
         </div>
         <div class="config-group">
           <h3 class="eyebrow">Championship round</h3>
-          <div class="field-grid"><label class="field"><span>Max marbles in wildcard/prelim heats</span><input name="championshipMaxMarblesPerHeat" type="number" min="2" max="480" value="${c.championshipMaxMarblesPerHeat}" required><small>Sizes wildcard and preliminary heats automatically.</small></label><label class="field"><span>Max bye marbles per racer</span><input name="maxByeMarblesPerRacer" type="number" min="0" max="20" value="${c.maxByeMarblesPerRacer}" required><small>Caps how many round wins one racer can bank as byes, and how many marbles a racer can earn in the preliminary heat. Wildcard marbles are uncapped.</small></label><label class="field"><span>Max Racers in Final</span><input name="maxFinalRacers" type="number" min="2" max="24" value="${c.maxFinalRacers}" required><small>Trims the final field if byes and preliminary winners exceed this.</small></label></div>
+          <div class="field-grid">
+            <label class="field"><span>Max marbles in wildcard/prelim heats</span><input name="championshipMaxMarblesPerHeat" type="number" min="2" max="480" value="${c.championshipMaxMarblesPerHeat}" required><small>Sizes wildcard and preliminary heats automatically.</small></label>
+            <label class="field"><span>Max bye marbles per racer</span><input name="maxByeMarblesPerRacer" type="number" min="0" max="20" value="${c.maxByeMarblesPerRacer}" required><small>Caps how many round wins one racer can bank as byes, and how many marbles a racer can earn in the preliminary heat. Wildcard marbles are uncapped.</small></label>
+            <label class="field"><span>Wildcard racers promoted / heat</span><input name="wildcardRacersPromotedPerHeat" type="number" min="1" max="24" value="${c.wildcardRacersPromotedPerHeat}" required><small>Top racers from each wildcard heat who advance to the preliminary stage.</small></label>
+            <label class="field"><span>Preliminary racers promoted / heat</span><input name="preliminaryRacersPromotedPerHeat" type="number" min="1" max="24" value="${c.preliminaryRacersPromotedPerHeat}" required><small>Top racers from each preliminary heat who advance to the final.</small></label>
+            <label class="field"><span>Max Racers in Final</span><input name="maxFinalRacers" type="number" min="2" max="24" value="${c.maxFinalRacers}" required><small>Trims the final field if byes and preliminary qualifiers exceed this.</small></label>
+          </div>
         </div>
       </section>
       <section class="panel config-panel"><div class="section-title"><span>02</span><div><h2>Racers</h2><p>Names and colors are used throughout the race sheets.</p></div></div><div id="contestant-list">${state.contestants.map(contestantRow).join("")}</div><button type="button" class="secondary-button full" data-add-contestant>+ Add racer</button></section>
@@ -822,7 +829,7 @@ function configPayload(confirmReset = false) {
   const form = document.querySelector("#config-form");
   const formData = new FormData(form);
   const contestants = [...form.querySelectorAll(".contestant-config-row")].map((row) => ({color:row.querySelector('input[type="color"]').value, name:row.querySelector('input[type="text"]').value}));
-  return {name:formData.get("name"), days:formData.get("days"), heatsPerRacerPerDay:formData.get("heatsPerRacerPerDay"), maxMarblesPerHeat:formData.get("maxMarblesPerHeat"), marblesPerRacer:formData.get("marblesPerRacer"), championshipMaxMarblesPerHeat:formData.get("championshipMaxMarblesPerHeat"), maxByeMarblesPerRacer:formData.get("maxByeMarblesPerRacer"), maxFinalRacers:formData.get("maxFinalRacers"), points:String(formData.get("points")).split(",").map((value) => value.trim()), contestants, confirmReset};
+  return {name:formData.get("name"), days:formData.get("days"), heatsPerRacerPerDay:formData.get("heatsPerRacerPerDay"), maxMarblesPerHeat:formData.get("maxMarblesPerHeat"), marblesPerRacer:formData.get("marblesPerRacer"), championshipMaxMarblesPerHeat:formData.get("championshipMaxMarblesPerHeat"), maxByeMarblesPerRacer:formData.get("maxByeMarblesPerRacer"), wildcardRacersPromotedPerHeat:formData.get("wildcardRacersPromotedPerHeat"), preliminaryRacersPromotedPerHeat:formData.get("preliminaryRacersPromotedPerHeat"), maxFinalRacers:formData.get("maxFinalRacers"), points:String(formData.get("points")).split(",").map((value) => value.trim()), contestants, confirmReset};
 }
 
 function updateSchedulePreview() {

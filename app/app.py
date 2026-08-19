@@ -282,46 +282,57 @@ def _projected_roster(
     known_entries: list[dict[str, Any]],
     source_heats: list[dict[str, Any]],
     origin_stage: str,
+    qualifiers_per_heat: int = 1,
 ) -> list[dict[str, Any]]:
     """The racers who will fill a locked stage, as far as that's knowable
     right now: racers who already directly qualified (known_entries), plus
-    one slot per heat feeding into this stage -- the actual winner if that
-    heat is already scored, otherwise a TBD placeholder.
+    the configured number of racer slots per heat feeding into this stage --
+    the actual qualifiers if that heat is scored, otherwise TBD placeholders.
     """
     roster = [{**entry, "decided": True} for entry in known_entries]
     for heat in source_heats:
-        winner_entry = None
+        qualifier_entries = []
         if heat["complete"]:
-            winner_ids = heat_top_n(connection, heat["id"], 1)
-            if winner_ids:
-                winner_entry = next(
-                    (entry for entry in heat["entries"] if entry["contestantId"] == winner_ids[0]), None
+            qualifier_ids = heat_top_n(connection, heat["id"], qualifiers_per_heat)
+            qualifier_entries = [
+                next(
+                    (entry for entry in heat["entries"] if entry["contestantId"] == racer_id), None
                 )
-        if winner_entry:
-            roster.append(
-                {
-                    "contestantId": winner_entry["contestantId"],
-                    "name": winner_entry["name"],
-                    "color": winner_entry["color"],
-                    "originStage": origin_stage,
-                    "originHeatId": heat["id"],
-                    "seedRounds": winner_entry.get("seedRounds", []),
-                    "decided": True,
-                }
-            )
-        else:
-            roster.append(
-                {
-                    "originStage": origin_stage,
-                    "originHeatId": heat["id"],
-                    "heatNumber": heat["heatNumber"],
-                    "decided": False,
-                }
-            )
+                for racer_id in qualifier_ids
+            ]
+        slot_count = min(qualifiers_per_heat, len(heat["entries"]))
+        for index in range(slot_count):
+            qualifier_entry = qualifier_entries[index] if index < len(qualifier_entries) else None
+            if qualifier_entry:
+                roster.append(
+                    {
+                        "contestantId": qualifier_entry["contestantId"],
+                        "name": qualifier_entry["name"],
+                        "color": qualifier_entry["color"],
+                        "originStage": origin_stage,
+                        "originHeatId": heat["id"],
+                        "qualifyingPlace": index + 1,
+                        "seedRounds": qualifier_entry.get("seedRounds", []),
+                        "decided": True,
+                    }
+                )
+            else:
+                roster.append(
+                    {
+                        "originStage": origin_stage,
+                        "originHeatId": heat["id"],
+                        "heatNumber": heat["heatNumber"],
+                        "qualifyingPlace": index + 1,
+                        "decided": False,
+                    }
+                )
     return roster
 
 
 def build_championship_state(connection, tournament_id: int, staging_ready: bool) -> dict[str, Any]:
+    tournament = connection.execute(
+        "SELECT * FROM tournaments WHERE id = ?", (tournament_id,)
+    ).fetchone()
     wildcard_heats = shape_heats(fetch_heat_rows(connection, tournament_id, "wildcard")) if staging_ready else []
     attach_seed_rounds(connection, wildcard_heats)
     wildcard_complete = staging_ready and all(heat["complete"] for heat in wildcard_heats)
@@ -368,7 +379,13 @@ def build_championship_state(connection, tournament_id: int, staging_ready: bool
                 }
                 for item in consolidate_by_racer(field["preliminaryDirect"])
             ]
-            preliminary_projected = _projected_roster(connection, known_preliminary, wildcard_heats, "wildcard")
+            preliminary_projected = _projected_roster(
+                connection,
+                known_preliminary,
+                wildcard_heats,
+                "wildcard",
+                qualifiers_per_heat=tournament["wildcard_racers_promoted_per_heat"],
+            )
 
     final_ready = preliminary_ready and preliminary_complete
     if staging_ready and not final_ready:
@@ -387,7 +404,13 @@ def build_championship_state(connection, tournament_id: int, staging_ready: bool
             }
             for item in consolidate_by_racer(field["byes"])
         ]
-        final_projected = _projected_roster(connection, known_final, preliminary_heats, "preliminary")
+        final_projected = _projected_roster(
+            connection,
+            known_final,
+            preliminary_heats,
+            "preliminary",
+            qualifiers_per_heat=tournament["preliminary_racers_promoted_per_heat"],
+        )
 
     final_heats = shape_heats(fetch_heat_rows(connection, tournament_id, "final")) if final_ready else []
     attach_seed_rounds(connection, final_heats)
@@ -504,6 +527,8 @@ def build_state(connection, tournament_id: int) -> dict[str, Any]:
             "marblesPerRacer": tournament["marbles_per_racer"],
             "championshipMaxMarblesPerHeat": tournament["championship_max_marbles_per_heat"],
             "maxByeMarblesPerRacer": tournament["max_bye_marbles_per_racer"],
+            "wildcardRacersPromotedPerHeat": tournament["wildcard_racers_promoted_per_heat"],
+            "preliminaryRacersPromotedPerHeat": tournament["preliminary_racers_promoted_per_heat"],
             "maxFinalRacers": tournament["max_final_racers"],
             "totalHeats": total_heats,
             "completedHeats": completed_heats,
@@ -573,6 +598,8 @@ def validate_configuration(data: dict[str, Any]) -> dict[str, Any]:
     normalized_data = {
         **data,
         "marblesPerRacer": data.get("marblesPerRacer", 1),
+        "wildcardRacersPromotedPerHeat": data.get("wildcardRacersPromotedPerHeat", 2),
+        "preliminaryRacersPromotedPerHeat": data.get("preliminaryRacersPromotedPerHeat", 2),
     }
     marbles_per_racer = integer_field(
         normalized_data, "marblesPerRacer", 1, 20, "Marbles per racer per heat"
@@ -597,6 +624,20 @@ def validate_configuration(data: dict[str, Any]) -> dict[str, Any]:
     )
     max_bye_marbles_per_racer = integer_field(
         data, "maxByeMarblesPerRacer", 0, 20, "Max bye marbles per racer"
+    )
+    wildcard_racers_promoted_per_heat = integer_field(
+        normalized_data,
+        "wildcardRacersPromotedPerHeat",
+        1,
+        24,
+        "Wildcard racers promoted per heat",
+    )
+    preliminary_racers_promoted_per_heat = integer_field(
+        normalized_data,
+        "preliminaryRacersPromotedPerHeat",
+        1,
+        24,
+        "Preliminary racers promoted per heat",
     )
     max_final_racers = integer_field(
         data, "maxFinalRacers", 2, min(24, len(contestants)), "Max final racers"
@@ -629,6 +670,8 @@ def validate_configuration(data: dict[str, Any]) -> dict[str, Any]:
         "marblesPerRacer": marbles_per_racer,
         "championshipMaxMarblesPerHeat": championship_max_marbles_per_heat,
         "maxByeMarblesPerRacer": max_bye_marbles_per_racer,
+        "wildcardRacersPromotedPerHeat": wildcard_racers_promoted_per_heat,
+        "preliminaryRacersPromotedPerHeat": preliminary_racers_promoted_per_heat,
         "maxFinalRacers": max_final_racers,
         "contestants": contestants,
         "points": points,
@@ -704,6 +747,10 @@ def update_tournament(tournament_id: int):
         championship_settings_changed = (
             current["championship_max_marbles_per_heat"] != data["championshipMaxMarblesPerHeat"]
             or current["max_bye_marbles_per_racer"] != data["maxByeMarblesPerRacer"]
+            or current["wildcard_racers_promoted_per_heat"]
+            != data["wildcardRacersPromotedPerHeat"]
+            or current["preliminary_racers_promoted_per_heat"]
+            != data["preliminaryRacersPromotedPerHeat"]
             or current["max_final_racers"] != data["maxFinalRacers"]
         )
         has_results = connection.execute(
@@ -744,6 +791,7 @@ def update_tournament(tournament_id: int):
             SET name = ?, days = ?, heats_per_day = ?, heats_per_racer_per_day = ?,
                 racers_per_heat = ?, max_marbles_per_heat = ?, marbles_per_racer = ?,
                 championship_max_marbles_per_heat = ?, max_bye_marbles_per_racer = ?,
+                wildcard_racers_promoted_per_heat = ?, preliminary_racers_promoted_per_heat = ?,
                 max_final_racers = ?,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
@@ -758,6 +806,8 @@ def update_tournament(tournament_id: int):
                 data["marblesPerRacer"],
                 data["championshipMaxMarblesPerHeat"],
                 data["maxByeMarblesPerRacer"],
+                data["wildcardRacersPromotedPerHeat"],
+                data["preliminaryRacersPromotedPerHeat"],
                 data["maxFinalRacers"],
                 tournament_id,
             ),
