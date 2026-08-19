@@ -1015,11 +1015,35 @@ function renderSetup() {
         <div class="config-group">
           <h3 class="eyebrow">Championship round</h3>
           <div class="field-grid">
-            <label class="field"><span>Max marbles in wildcard/prelim heats</span><input name="championshipMaxMarblesPerHeat" type="number" min="2" max="480" value="${c.championshipMaxMarblesPerHeat}" required><small>Sizes wildcard and preliminary heats automatically.</small></label>
-            <label class="field"><span>Max bye marbles per racer</span><input name="maxByeMarblesPerRacer" type="number" min="0" max="20" value="${c.maxByeMarblesPerRacer}" required><small>Caps how many round wins one racer can bank as byes, and how many marbles a racer can earn in the preliminary heat. Wildcard marbles are uncapped.</small></label>
             <label class="field"><span>Wildcard racers promoted / heat</span><input name="wildcardRacersPromotedPerHeat" type="number" min="1" max="24" value="${c.wildcardRacersPromotedPerHeat}" required><small>Top racers from each wildcard heat who advance to the preliminary stage.</small></label>
             <label class="field"><span>Preliminary racers promoted / heat</span><input name="preliminaryRacersPromotedPerHeat" type="number" min="1" max="24" value="${c.preliminaryRacersPromotedPerHeat}" required><small>Top racers from each preliminary heat who advance to the final.</small></label>
             <label class="field"><span>Max Racers in Final</span><input name="maxFinalRacers" type="number" min="2" max="24" value="${c.maxFinalRacers}" required><small>Trims the final field if byes and preliminary qualifiers exceed this.</small></label>
+          </div>
+        </div>
+        <div class="config-group">
+          <h3 class="eyebrow">Bye to final</h3>
+          <div class="field-grid">
+            <label class="field"><span>Max final bye marbles per racer</span><input name="maxFinalByeMarblesPerRacer" type="number" min="0" max="20" value="${c.maxFinalByeMarblesPerRacer}" required><small>Caps how many round wins one racer can bank as byes into the final.</small></label>
+            <label class="field"><span>Max prelim marbles for racer with final bye</span><input name="maxPrelimMarblesForRacerWithFinalBye" type="number" min="0" max="20" value="${c.maxPrelimMarblesForRacerWithFinalBye}" required><small>Extra preliminary marbles a racer may also hold once they have a final bye.</small></label>
+            <label class="field"><span>Max wildcard marbles for racer with final bye</span><input name="maxWildcardMarblesForRacerWithFinalBye" type="number" min="0" max="20" value="${c.maxWildcardMarblesForRacerWithFinalBye}" required><small>Extra wildcard marbles a racer may also hold once they have a final bye.</small></label>
+            <label class="field checkbox-field"><input name="allowCascadingFinalByeSelection" type="checkbox" ${c.allowCascadingFinalByeSelection ? "checked" : ""}><span>Allow cascading final bye selection</span><small>If the round's 1st place is already capped out, cascade the bye seat to 2nd, 3rd, etc.</small></label>
+          </div>
+        </div>
+        <div class="config-group">
+          <h3 class="eyebrow">Promotion to preliminary</h3>
+          <div class="field-grid">
+            <label class="field"><span>Max prelim promotion marbles per racer</span><input name="maxPrelimPromotionMarblesPerRacer" type="number" min="0" max="20" value="${c.maxPrelimPromotionMarblesPerRacer}" required><small>Caps how many marbles per racer may get promoted to the preliminary stage.</small></label>
+            <label class="field"><span>Max wildcard marbles for racer with prelim promotion</span><input name="maxWildcardMarblesForRacerWithPrelimPromotion" type="number" min="0" max="20" value="${c.maxWildcardMarblesForRacerWithPrelimPromotion}" required><small>Extra wildcard marbles a racer may also hold once they have a preliminary promotion.</small></label>
+            <label class="field"><span>Max marbles per preliminary heat</span><input name="preliminaryMaxMarblesPerHeat" type="number" min="2" max="480" value="${c.preliminaryMaxMarblesPerHeat}" required><small>Sizes preliminary heats automatically.</small></label>
+            <label class="field checkbox-field"><input name="allowCascadingPrelimPromotionSelection" type="checkbox" ${c.allowCascadingPrelimPromotionSelection ? "checked" : ""}><span>Allow cascading prelim promotion selection</span><small>If the round's 2nd place is already capped out, cascade the seat to 3rd, 4th, etc.</small></label>
+          </div>
+        </div>
+        <div class="config-group">
+          <h3 class="eyebrow">Promotion to wildcard</h3>
+          <div class="field-grid">
+            <label class="field"><span>Max wildcard promotion marbles per racer</span><input name="maxWildcardPromotionMarblesPerRacer" type="number" min="0" max="20" value="${c.maxWildcardPromotionMarblesPerRacer}" required><small>Caps how many marbles per racer may get promoted to wildcard heats.</small></label>
+            <label class="field"><span>Max marbles per wildcard heat</span><input name="wildcardMaxMarblesPerHeat" type="number" min="2" max="480" value="${c.wildcardMaxMarblesPerHeat}" required><small>Sizes wildcard heats automatically.</small></label>
+            <label class="field checkbox-field"><input name="allowCascadingWildcardPromotionSelection" type="checkbox" ${c.allowCascadingWildcardPromotionSelection ? "checked" : ""}><span>Allow cascading wildcard promotion selection</span><small>If the round's 3rd place is already capped out, cascade the seat further down the standings.</small></label>
           </div>
         </div>
       </section>
@@ -1060,7 +1084,7 @@ function configPayload(confirmReset = false) {
   const form = document.querySelector("#config-form");
   const formData = new FormData(form);
   const contestants = [...form.querySelectorAll(".contestant-config-row")].map((row) => ({color:row.querySelector('input[type="color"]').value, name:row.querySelector('input[type="text"]').value}));
-  return {name:formData.get("name"), days:formData.get("days"), heatsPerRacerPerDay:formData.get("heatsPerRacerPerDay"), maxMarblesPerHeat:formData.get("maxMarblesPerHeat"), marblesPerRacer:formData.get("marblesPerRacer"), championshipMaxMarblesPerHeat:formData.get("championshipMaxMarblesPerHeat"), maxByeMarblesPerRacer:formData.get("maxByeMarblesPerRacer"), wildcardRacersPromotedPerHeat:formData.get("wildcardRacersPromotedPerHeat"), preliminaryRacersPromotedPerHeat:formData.get("preliminaryRacersPromotedPerHeat"), maxFinalRacers:formData.get("maxFinalRacers"), points:String(formData.get("points")).split(",").map((value) => value.trim()), contestants, confirmReset};
+  return {name:formData.get("name"), days:formData.get("days"), heatsPerRacerPerDay:formData.get("heatsPerRacerPerDay"), maxMarblesPerHeat:formData.get("maxMarblesPerHeat"), marblesPerRacer:formData.get("marblesPerRacer"), wildcardMaxMarblesPerHeat:formData.get("wildcardMaxMarblesPerHeat"), preliminaryMaxMarblesPerHeat:formData.get("preliminaryMaxMarblesPerHeat"), maxFinalByeMarblesPerRacer:formData.get("maxFinalByeMarblesPerRacer"), maxPrelimMarblesForRacerWithFinalBye:formData.get("maxPrelimMarblesForRacerWithFinalBye"), maxWildcardMarblesForRacerWithFinalBye:formData.get("maxWildcardMarblesForRacerWithFinalBye"), allowCascadingFinalByeSelection:formData.get("allowCascadingFinalByeSelection") === "on", maxPrelimPromotionMarblesPerRacer:formData.get("maxPrelimPromotionMarblesPerRacer"), allowCascadingPrelimPromotionSelection:formData.get("allowCascadingPrelimPromotionSelection") === "on", maxWildcardMarblesForRacerWithPrelimPromotion:formData.get("maxWildcardMarblesForRacerWithPrelimPromotion"), maxWildcardPromotionMarblesPerRacer:formData.get("maxWildcardPromotionMarblesPerRacer"), allowCascadingWildcardPromotionSelection:formData.get("allowCascadingWildcardPromotionSelection") === "on", wildcardRacersPromotedPerHeat:formData.get("wildcardRacersPromotedPerHeat"), preliminaryRacersPromotedPerHeat:formData.get("preliminaryRacersPromotedPerHeat"), maxFinalRacers:formData.get("maxFinalRacers"), points:String(formData.get("points")).split(",").map((value) => value.trim()), contestants, confirmReset};
 }
 
 function updateSchedulePreview() {
