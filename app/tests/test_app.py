@@ -315,12 +315,23 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertIn('class="new-tournament-label">New</span>', index)
         self.assertIn("Create a fresh tournament", index)
         self.assertIn("Max Racers in Final", frontend)
-        self.assertIn("Max marbles in wildcard/prelim heats", frontend)
-        self.assertIn("Max bye marbles per racer", frontend)
         self.assertIn("Wildcard racers promoted / heat", frontend)
         self.assertIn("Preliminary racers promoted / heat", frontend)
         self.assertIn('name="wildcardRacersPromotedPerHeat"', frontend)
         self.assertIn('name="preliminaryRacersPromotedPerHeat"', frontend)
+        self.assertIn("Max final bye marbles per racer", frontend)
+        self.assertIn("Max prelim marbles for racer with final bye", frontend)
+        self.assertIn("Max wildcard marbles for racer with final bye", frontend)
+        self.assertIn('name="allowCascadingFinalByeSelection"', frontend)
+        self.assertIn("Max prelim promotion marbles per racer", frontend)
+        self.assertIn('name="allowCascadingPrelimPromotionSelection"', frontend)
+        self.assertIn("Max wildcard marbles for racer with prelim promotion", frontend)
+        self.assertIn("Max marbles per wildcard heat", frontend)
+        self.assertIn("Max marbles per preliminary heat", frontend)
+        self.assertIn('name="wildcardMaxMarblesPerHeat"', frontend)
+        self.assertIn('name="preliminaryMaxMarblesPerHeat"', frontend)
+        self.assertIn("Max wildcard promotion marbles per racer", frontend)
+        self.assertIn('name="allowCascadingWildcardPromotionSelection"', frontend)
         self.assertIn("Top 3 podium", frontend)
         self.assertIn("Gold trophy", frontend)
         self.assertIn("Silver trophy", frontend)
@@ -514,8 +525,10 @@ class MarbleRaceApiTest(unittest.TestCase):
                 "heatsPerRacerPerDay": 1,
                 "maxMarblesPerHeat": 6,
                 "marblesPerRacer": 2,
-                "championshipMaxMarblesPerHeat": 6,
-                "maxByeMarblesPerRacer": 1,
+                "wildcardMaxMarblesPerHeat": 6,
+                "preliminaryMaxMarblesPerHeat": 6,
+                "maxFinalByeMarblesPerRacer": 1,
+                "maxPrelimPromotionMarblesPerRacer": 1,
                 "maxFinalRacers": 3,
                 "points": [10, 7, 5, 3, 2, 1],
                 "contestants": racers,
@@ -573,7 +586,8 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertEqual(sum(racer["wins"] for racer in state["standings"]), 1)
         # marblesPerRacer only applies to staging heats -- wildcard/preliminary
         # heats race one marble per qualifying occurrence (capped by
-        # maxByeMarblesPerRacer, which is 1 here), regardless of this setting.
+        # maxPrelimPromotionMarblesPerRacer, which is 1 here), regardless of
+        # this setting.
         wildcard_heats = state["championship"]["wildcard"]["heats"]
         self.assertTrue(wildcard_heats)
         self.assertTrue(
@@ -614,8 +628,10 @@ class MarbleRaceApiTest(unittest.TestCase):
                 "heatsPerRacerPerDay": 3,
                 "maxMarblesPerHeat": 10,
                 "marblesPerRacer": 2,
-                "championshipMaxMarblesPerHeat": 6,
-                "maxByeMarblesPerRacer": 1,
+                "wildcardMaxMarblesPerHeat": 6,
+                "preliminaryMaxMarblesPerHeat": 6,
+                "maxFinalByeMarblesPerRacer": 1,
+                "maxPrelimPromotionMarblesPerRacer": 1,
                 "maxFinalRacers": 6,
                 "points": [10, 7, 5, 3, 2, 1, 0, 0],
                 "contestants": racers,
@@ -660,8 +676,10 @@ class MarbleRaceApiTest(unittest.TestCase):
                 "heatsPerRacerPerDay": 1,
                 "maxMarblesPerHeat": 3,
                 "marblesPerRacer": 1,
-                "championshipMaxMarblesPerHeat": 6,
-                "maxByeMarblesPerRacer": 1,
+                "wildcardMaxMarblesPerHeat": 6,
+                "preliminaryMaxMarblesPerHeat": 6,
+                "maxFinalByeMarblesPerRacer": 1,
+                "maxPrelimPromotionMarblesPerRacer": 1,
                 "maxFinalRacers": 3,
                 "points": [5, 3, 1],
                 "contestants": racers,
@@ -716,8 +734,11 @@ class MarbleRaceApiTest(unittest.TestCase):
                 "heatsPerRacerPerDay": 1,
                 "maxMarblesPerHeat": 8,
                 "marblesPerRacer": 1,
-                "championshipMaxMarblesPerHeat": 6,
-                "maxByeMarblesPerRacer": 1,
+                "wildcardMaxMarblesPerHeat": 6,
+                "preliminaryMaxMarblesPerHeat": 6,
+                "maxFinalByeMarblesPerRacer": 1,
+                "allowCascadingFinalByeSelection": False,
+                "maxPrelimPromotionMarblesPerRacer": 1,
                 "maxFinalRacers": 6,
                 "points": [10, 7, 5, 3, 2, 1, 0, 0],
                 "contestants": [
@@ -778,8 +799,10 @@ class MarbleRaceApiTest(unittest.TestCase):
                 "heatsPerRacerPerDay": 1,
                 "maxMarblesPerHeat": 8,
                 "marblesPerRacer": 1,
-                "championshipMaxMarblesPerHeat": 6,
-                "maxByeMarblesPerRacer": 1,
+                "wildcardMaxMarblesPerHeat": 6,
+                "preliminaryMaxMarblesPerHeat": 6,
+                "maxFinalByeMarblesPerRacer": 1,
+                "maxPrelimPromotionMarblesPerRacer": 1,
                 "maxFinalRacers": 6,
                 "points": [10, 7, 5, 3, 2, 1, 0, 0],
                 "contestants": [
@@ -916,8 +939,12 @@ class MarbleRaceApiTest(unittest.TestCase):
                 "heatsPerRacerPerDay": 1,
                 "maxMarblesPerHeat": 8,
                 "marblesPerRacer": 1,
-                "championshipMaxMarblesPerHeat": 6,
-                "maxByeMarblesPerRacer": 1,
+                "wildcardMaxMarblesPerHeat": 6,
+                "preliminaryMaxMarblesPerHeat": 6,
+                "maxFinalByeMarblesPerRacer": 1,
+                "allowCascadingFinalByeSelection": False,
+                "maxPrelimPromotionMarblesPerRacer": 1,
+                "maxWildcardPromotionMarblesPerRacer": 20,
                 "maxFinalRacers": 6,
                 "points": [10, 7, 5, 3, 2, 1, 0, 0],
                 "contestants": [
@@ -1020,8 +1047,10 @@ class MarbleRaceApiTest(unittest.TestCase):
                 "heatsPerRacerPerDay": 1,
                 "maxMarblesPerHeat": 8,
                 "marblesPerRacer": 1,
-                "championshipMaxMarblesPerHeat": 24,
-                "maxByeMarblesPerRacer": 2,
+                "wildcardMaxMarblesPerHeat": 24,
+                "preliminaryMaxMarblesPerHeat": 24,
+                "maxFinalByeMarblesPerRacer": 2,
+                "maxPrelimPromotionMarblesPerRacer": 2,
                 "maxFinalRacers": 8,
                 "points": [10, 7, 5, 3, 2, 1, 0, 0],
                 "contestants": [
@@ -1115,6 +1144,392 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertEqual(len(entries_by_racer[f]["marbles"]), 2)
         self.assertEqual(len(entries_by_racer[g]["marbles"]), 1)
 
+    def test_final_bye_cascades_to_next_finisher_when_winner_is_capped(self) -> None:
+        created = self.client.post(
+            "/api/tournaments", json={"name": "Bye Cascade Cup"}
+        ).get_json()
+        tournament_id = created["competition"]["id"]
+        self.addCleanup(
+            lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close()
+        )
+        state = self.client.put(
+            f"/api/tournaments/{tournament_id}",
+            json={
+                "name": "Bye Cascade Cup",
+                "days": 2,
+                "heatsPerRacerPerDay": 1,
+                "maxMarblesPerHeat": 4,
+                "marblesPerRacer": 1,
+                "wildcardMaxMarblesPerHeat": 6,
+                "preliminaryMaxMarblesPerHeat": 6,
+                "maxFinalByeMarblesPerRacer": 1,
+                "allowCascadingFinalByeSelection": True,
+                "maxPrelimPromotionMarblesPerRacer": 1,
+                "maxFinalRacers": 4,
+                "points": [10, 7, 5, 3],
+                "contestants": [
+                    {"name": racer["name"], "color": racer["color"]}
+                    for racer in created["contestants"][:4]
+                ],
+            },
+        ).get_json()
+        contestant_ids = [racer["id"] for racer in state["contestants"]]
+        a, b, c, d = contestant_ids
+
+        # A wins both rounds but is capped at one bye marble.
+        finish_orders = [[a, b, c, d], [a, b, c, d]]
+        for day, order in zip(state["days"], finish_orders):
+            heat = day["heats"][0]
+            finishes = {racer_id: place for place, racer_id in enumerate(order, start=1)}
+            results = [
+                {
+                    "contestantId": entry["contestantId"],
+                    "marbleNumber": entry["marbles"][0]["number"],
+                    "finish": finishes[entry["contestantId"]],
+                }
+                for entry in heat["entries"]
+            ]
+            start_heat(self.client, heat)
+            saved = self.client.put(f'/api/heats/{heat["id"]}/results', json={"results": results})
+            self.assertEqual(saved.status_code, 200)
+            state = saved.get_json()
+
+        connection = connect()
+        try:
+            field = championship_field(connection, tournament_id)
+        finally:
+            connection.close()
+
+        # With cascading on, day 2's bye seat doesn't sit empty once A is
+        # capped out -- it cascades to B, that round's 2nd place finisher.
+        byes_by_round = {item["originRound"]: item["racerId"] for item in field["byes"]}
+        self.assertEqual(byes_by_round, {1: a, 2: b})
+
+    def test_final_bye_forfeits_seat_when_cascading_is_disabled(self) -> None:
+        created = self.client.post(
+            "/api/tournaments", json={"name": "Bye No-Cascade Cup"}
+        ).get_json()
+        tournament_id = created["competition"]["id"]
+        self.addCleanup(
+            lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close()
+        )
+        state = self.client.put(
+            f"/api/tournaments/{tournament_id}",
+            json={
+                "name": "Bye No-Cascade Cup",
+                "days": 2,
+                "heatsPerRacerPerDay": 1,
+                "maxMarblesPerHeat": 4,
+                "marblesPerRacer": 1,
+                "wildcardMaxMarblesPerHeat": 6,
+                "preliminaryMaxMarblesPerHeat": 6,
+                "maxFinalByeMarblesPerRacer": 1,
+                "allowCascadingFinalByeSelection": False,
+                "maxPrelimPromotionMarblesPerRacer": 1,
+                "maxFinalRacers": 4,
+                "points": [10, 7, 5, 3],
+                "contestants": [
+                    {"name": racer["name"], "color": racer["color"]}
+                    for racer in created["contestants"][:4]
+                ],
+            },
+        ).get_json()
+        contestant_ids = [racer["id"] for racer in state["contestants"]]
+        a, b, c, d = contestant_ids
+
+        finish_orders = [[a, b, c, d], [a, b, c, d]]
+        for day, order in zip(state["days"], finish_orders):
+            heat = day["heats"][0]
+            finishes = {racer_id: place for place, racer_id in enumerate(order, start=1)}
+            results = [
+                {
+                    "contestantId": entry["contestantId"],
+                    "marbleNumber": entry["marbles"][0]["number"],
+                    "finish": finishes[entry["contestantId"]],
+                }
+                for entry in heat["entries"]
+            ]
+            start_heat(self.client, heat)
+            saved = self.client.put(f'/api/heats/{heat["id"]}/results', json={"results": results})
+            self.assertEqual(saved.status_code, 200)
+            state = saved.get_json()
+
+        connection = connect()
+        try:
+            field = championship_field(connection, tournament_id)
+        finally:
+            connection.close()
+
+        # With cascading off, day 2's bye seat is simply forfeited once A is
+        # capped out -- it does not fall through to B.
+        self.assertEqual(field["byes"], [{"racerId": a, "originRound": 1}])
+        self.assertTrue(all(item["racerId"] != b for item in field["byes"]))
+
+    def test_bye_tier_racer_earns_bonus_preliminary_marble(self) -> None:
+        created = self.client.post(
+            "/api/tournaments", json={"name": "Bye Bonus Cup"}
+        ).get_json()
+        tournament_id = created["competition"]["id"]
+        self.addCleanup(
+            lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close()
+        )
+        state = self.client.put(
+            f"/api/tournaments/{tournament_id}",
+            json={
+                "name": "Bye Bonus Cup",
+                "days": 2,
+                "heatsPerRacerPerDay": 1,
+                "maxMarblesPerHeat": 4,
+                "marblesPerRacer": 1,
+                "wildcardMaxMarblesPerHeat": 6,
+                "preliminaryMaxMarblesPerHeat": 6,
+                "maxFinalByeMarblesPerRacer": 2,
+                "maxPrelimMarblesForRacerWithFinalBye": 1,
+                "maxPrelimPromotionMarblesPerRacer": 1,
+                "maxFinalRacers": 4,
+                "points": [10, 7, 5, 3],
+                "contestants": [
+                    {"name": racer["name"], "color": racer["color"]}
+                    for racer in created["contestants"][:4]
+                ],
+            },
+        ).get_json()
+        contestant_ids = [racer["id"] for racer in state["contestants"]]
+        a, b, c, d = contestant_ids
+
+        # A wins day 1 (banking a final bye) then places 2nd on day 2, behind D.
+        finish_orders = [[a, b, c, d], [d, a, b, c]]
+        for day, order in zip(state["days"], finish_orders):
+            heat = day["heats"][0]
+            finishes = {racer_id: place for place, racer_id in enumerate(order, start=1)}
+            results = [
+                {
+                    "contestantId": entry["contestantId"],
+                    "marbleNumber": entry["marbles"][0]["number"],
+                    "finish": finishes[entry["contestantId"]],
+                }
+                for entry in heat["entries"]
+            ]
+            start_heat(self.client, heat)
+            saved = self.client.put(f'/api/heats/{heat["id"]}/results', json={"results": results})
+            self.assertEqual(saved.status_code, 200)
+            state = saved.get_json()
+
+        connection = connect()
+        try:
+            field = championship_field(connection, tournament_id)
+        finally:
+            connection.close()
+
+        # A already has a final bye (day 1), but the bye-tier prelim bonus
+        # lets them also bank a preliminary marble from day 2's 2nd place.
+        prelim_by_racer = {
+            item["racerId"]: item["originRound"] for item in field["preliminaryDirect"]
+        }
+        self.assertEqual(prelim_by_racer.get(a), 2)
+
+    def test_preliminary_promotion_cap_is_independent_of_bye_cap(self) -> None:
+        created = self.client.post(
+            "/api/tournaments", json={"name": "Independent Caps Cup"}
+        ).get_json()
+        tournament_id = created["competition"]["id"]
+        self.addCleanup(
+            lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close()
+        )
+        state = self.client.put(
+            f"/api/tournaments/{tournament_id}",
+            json={
+                "name": "Independent Caps Cup",
+                "days": 3,
+                "heatsPerRacerPerDay": 1,
+                "maxMarblesPerHeat": 4,
+                "marblesPerRacer": 1,
+                "wildcardMaxMarblesPerHeat": 6,
+                "preliminaryMaxMarblesPerHeat": 6,
+                "maxFinalByeMarblesPerRacer": 5,
+                "maxPrelimPromotionMarblesPerRacer": 2,
+                "maxFinalRacers": 4,
+                "points": [10, 7, 5, 3],
+                "contestants": [
+                    {"name": racer["name"], "color": racer["color"]}
+                    for racer in created["contestants"][:4]
+                ],
+            },
+        ).get_json()
+        contestant_ids = [racer["id"] for racer in state["contestants"]]
+        v, w, x, y = contestant_ids
+
+        # W places 2nd every round (three chances at a preliminary marble),
+        # and a different racer wins each round so the bye tier never caps
+        # out -- the much higher bye cap (5) must not be what limits W.
+        finish_orders = [[v, w, x, y], [x, w, v, y], [y, w, v, x]]
+        for day, order in zip(state["days"], finish_orders):
+            heat = day["heats"][0]
+            finishes = {racer_id: place for place, racer_id in enumerate(order, start=1)}
+            results = [
+                {
+                    "contestantId": entry["contestantId"],
+                    "marbleNumber": entry["marbles"][0]["number"],
+                    "finish": finishes[entry["contestantId"]],
+                }
+                for entry in heat["entries"]
+            ]
+            start_heat(self.client, heat)
+            saved = self.client.put(f'/api/heats/{heat["id"]}/results', json={"results": results})
+            self.assertEqual(saved.status_code, 200)
+            state = saved.get_json()
+
+        connection = connect()
+        try:
+            field = championship_field(connection, tournament_id)
+        finally:
+            connection.close()
+
+        # W's own cap of 2 truncates their third occurrence, independent of
+        # the bye tier's cap of 5.
+        w_rounds = sorted(
+            item["originRound"] for item in field["preliminaryDirect"] if item["racerId"] == w
+        )
+        self.assertEqual(w_rounds, [1, 2])
+
+    def test_wildcard_promotion_marbles_cascade_past_capped_finisher(self) -> None:
+        created = self.client.post(
+            "/api/tournaments", json={"name": "Wildcard Cascade Cup"}
+        ).get_json()
+        tournament_id = created["competition"]["id"]
+        self.addCleanup(
+            lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close()
+        )
+        state = self.client.put(
+            f"/api/tournaments/{tournament_id}",
+            json={
+                "name": "Wildcard Cascade Cup",
+                "days": 2,
+                "heatsPerRacerPerDay": 1,
+                "maxMarblesPerHeat": 5,
+                "marblesPerRacer": 1,
+                "wildcardMaxMarblesPerHeat": 12,
+                "preliminaryMaxMarblesPerHeat": 12,
+                "maxFinalByeMarblesPerRacer": 2,
+                "maxPrelimPromotionMarblesPerRacer": 2,
+                "maxWildcardPromotionMarblesPerRacer": 1,
+                "allowCascadingWildcardPromotionSelection": True,
+                "maxFinalRacers": 5,
+                "points": [10, 7, 5, 3, 2],
+                "contestants": [
+                    {"name": racer["name"], "color": racer["color"]}
+                    for racer in created["contestants"][:5]
+                ],
+            },
+        ).get_json()
+        contestant_ids = [racer["id"] for racer in state["contestants"]]
+        v, w, x, y, z = contestant_ids
+
+        # Same placements both rounds: V wins, W is 2nd (preliminary), X and
+        # Y are the natural wildcard pair, Z never places in the zone.
+        finish_orders = [[v, w, x, y, z], [v, w, x, y, z]]
+        for day, order in zip(state["days"], finish_orders):
+            heat = day["heats"][0]
+            finishes = {racer_id: place for place, racer_id in enumerate(order, start=1)}
+            results = [
+                {
+                    "contestantId": entry["contestantId"],
+                    "marbleNumber": entry["marbles"][0]["number"],
+                    "finish": finishes[entry["contestantId"]],
+                }
+                for entry in heat["entries"]
+            ]
+            start_heat(self.client, heat)
+            saved = self.client.put(f'/api/heats/{heat["id"]}/results', json={"results": results})
+            self.assertEqual(saved.status_code, 200)
+            state = saved.get_json()
+
+        connection = connect()
+        try:
+            field = championship_field(connection, tournament_id)
+        finally:
+            connection.close()
+
+        # X and Y each cap out at one wildcard marble (their day 1
+        # occurrence). With cascading on, day 2's now-ineligible seats
+        # don't sit empty -- the seat cascades to Z, the next finisher.
+        by_racer: dict[int, list[int]] = {}
+        for item in field["wildcardPool"]:
+            by_racer.setdefault(item["racerId"], []).append(item["originRound"])
+        self.assertEqual(by_racer[x], [1])
+        self.assertEqual(by_racer[y], [1])
+        self.assertEqual(by_racer[z], [2])
+
+    def test_wildcard_promotion_marbles_forfeit_seat_when_cascading_is_disabled(self) -> None:
+        created = self.client.post(
+            "/api/tournaments", json={"name": "Wildcard No-Cascade Cup"}
+        ).get_json()
+        tournament_id = created["competition"]["id"]
+        self.addCleanup(
+            lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close()
+        )
+        state = self.client.put(
+            f"/api/tournaments/{tournament_id}",
+            json={
+                "name": "Wildcard No-Cascade Cup",
+                "days": 2,
+                "heatsPerRacerPerDay": 1,
+                "maxMarblesPerHeat": 5,
+                "marblesPerRacer": 1,
+                "wildcardMaxMarblesPerHeat": 12,
+                "preliminaryMaxMarblesPerHeat": 12,
+                "maxFinalByeMarblesPerRacer": 2,
+                "maxPrelimPromotionMarblesPerRacer": 0,
+                "maxWildcardPromotionMarblesPerRacer": 1,
+                "allowCascadingWildcardPromotionSelection": False,
+                "maxFinalRacers": 5,
+                "points": [10, 7, 5, 3, 2],
+                "contestants": [
+                    {"name": racer["name"], "color": racer["color"]}
+                    for racer in created["contestants"][:5]
+                ],
+            },
+        ).get_json()
+        contestant_ids = [racer["id"] for racer in state["contestants"]]
+        v, w, x, y, z = contestant_ids
+
+        # Preliminary promotion is disabled, so the wildcard pool's two
+        # fixed seats (with cascading off) land on W and X, the round's
+        # 2nd/3rd place finishers.
+        finish_orders = [[v, w, x, y, z], [v, w, x, y, z]]
+        for day, order in zip(state["days"], finish_orders):
+            heat = day["heats"][0]
+            finishes = {racer_id: place for place, racer_id in enumerate(order, start=1)}
+            results = [
+                {
+                    "contestantId": entry["contestantId"],
+                    "marbleNumber": entry["marbles"][0]["number"],
+                    "finish": finishes[entry["contestantId"]],
+                }
+                for entry in heat["entries"]
+            ]
+            start_heat(self.client, heat)
+            saved = self.client.put(f'/api/heats/{heat["id"]}/results', json={"results": results})
+            self.assertEqual(saved.status_code, 200)
+            state = saved.get_json()
+
+        connection = connect()
+        try:
+            field = championship_field(connection, tournament_id)
+        finally:
+            connection.close()
+
+        # With cascading off, only the two fixed seats (W, X) are ever
+        # tried -- once they're capped out on day 2, that round contributes
+        # no wildcard marbles at all rather than falling through to Y or Z.
+        by_racer: dict[int, list[int]] = {}
+        for item in field["wildcardPool"]:
+            by_racer.setdefault(item["racerId"], []).append(item["originRound"])
+        self.assertEqual(by_racer[w], [1])
+        self.assertEqual(by_racer[x], [1])
+        self.assertNotIn(y, by_racer)
+        self.assertNotIn(z, by_racer)
+
     def test_standings_rank_by_tier_not_raw_placement_count(self) -> None:
         created = self.client.post(
             "/api/tournaments", json={"name": "Tier Ranking Cup"}
@@ -1132,8 +1547,10 @@ class MarbleRaceApiTest(unittest.TestCase):
                 "heatsPerRacerPerDay": 1,
                 "maxMarblesPerHeat": 8,
                 "marblesPerRacer": 1,
-                "championshipMaxMarblesPerHeat": 24,
-                "maxByeMarblesPerRacer": 2,
+                "wildcardMaxMarblesPerHeat": 24,
+                "preliminaryMaxMarblesPerHeat": 24,
+                "maxFinalByeMarblesPerRacer": 2,
+                "maxPrelimPromotionMarblesPerRacer": 2,
                 "maxFinalRacers": 8,
                 "points": [10, 7, 5, 3, 2, 1, 0, 0],
                 "contestants": [
@@ -1208,8 +1625,11 @@ class MarbleRaceApiTest(unittest.TestCase):
                 "heatsPerRacerPerDay": 1,
                 "maxMarblesPerHeat": 8,
                 "marblesPerRacer": 1,
-                "championshipMaxMarblesPerHeat": 3,
-                "maxByeMarblesPerRacer": 4,
+                "wildcardMaxMarblesPerHeat": 3,
+                "preliminaryMaxMarblesPerHeat": 3,
+                "maxFinalByeMarblesPerRacer": 4,
+                "maxPrelimPromotionMarblesPerRacer": 20,
+                "maxWildcardPromotionMarblesPerRacer": 20,
                 "maxFinalRacers": 8,
                 "points": [10, 7, 5, 3, 2, 1, 0, 0],
                 "contestants": [
@@ -1223,7 +1643,7 @@ class MarbleRaceApiTest(unittest.TestCase):
         # Flash(3) is always 2nd (a steady single-marble preliminary
         # qualifier), and Orange Orbit(5)/Purple Comet(4) are always
         # eligible for wildcard and rack up a marble every round (uncapped)
-        # -- far more than the tiny championshipMaxMarblesPerHeat of 3 can
+        # -- far more than the tiny wildcardMaxMarblesPerHeat of 3 can
         # hold from one racer alongside anyone else.
         finish_orders = [
             [0, 3, 5, 1, 2, 4, 6, 7],
@@ -1314,8 +1734,12 @@ class MarbleRaceApiTest(unittest.TestCase):
                 "heatsPerRacerPerDay": 1,
                 "maxMarblesPerHeat": 8,
                 "marblesPerRacer": 1,
-                "championshipMaxMarblesPerHeat": 3,
-                "maxByeMarblesPerRacer": 1,
+                "wildcardMaxMarblesPerHeat": 3,
+                "preliminaryMaxMarblesPerHeat": 3,
+                "maxFinalByeMarblesPerRacer": 1,
+                "allowCascadingFinalByeSelection": False,
+                "maxPrelimPromotionMarblesPerRacer": 1,
+                "allowCascadingPrelimPromotionSelection": False,
                 "maxFinalRacers": 6,
                 "points": [10, 7, 5, 3, 2, 1, 0, 0],
                 "contestants": [
@@ -1375,8 +1799,12 @@ class MarbleRaceApiTest(unittest.TestCase):
                 "heatsPerRacerPerDay": 1,
                 "maxMarblesPerHeat": 8,
                 "marblesPerRacer": 1,
-                "championshipMaxMarblesPerHeat": 5,
-                "maxByeMarblesPerRacer": 1,
+                "wildcardMaxMarblesPerHeat": 5,
+                "preliminaryMaxMarblesPerHeat": 5,
+                "maxFinalByeMarblesPerRacer": 1,
+                "allowCascadingFinalByeSelection": False,
+                "maxPrelimPromotionMarblesPerRacer": 1,
+                "allowCascadingPrelimPromotionSelection": False,
                 "wildcardRacersPromotedPerHeat": 2,
                 "preliminaryRacersPromotedPerHeat": 1,
                 "maxFinalRacers": 6,
@@ -1561,8 +1989,11 @@ class MarbleRaceApiTest(unittest.TestCase):
                 "heatsPerRacerPerDay": 1,
                 "maxMarblesPerHeat": 2,
                 "marblesPerRacer": 1,
-                "championshipMaxMarblesPerHeat": 6,
-                "maxByeMarblesPerRacer": 1,
+                "wildcardMaxMarblesPerHeat": 6,
+                "preliminaryMaxMarblesPerHeat": 6,
+                "maxFinalByeMarblesPerRacer": 1,
+                "allowCascadingFinalByeSelection": False,
+                "maxPrelimPromotionMarblesPerRacer": 1,
                 "maxFinalRacers": 2,
                 "points": [10, 7],
                 "contestants": racers,
@@ -1616,8 +2047,10 @@ class MarbleRaceApiTest(unittest.TestCase):
                 "heatsPerRacerPerDay": 1,
                 "maxMarblesPerHeat": 8,
                 "marblesPerRacer": 1,
-                "championshipMaxMarblesPerHeat": 6,
-                "maxByeMarblesPerRacer": 1,
+                "wildcardMaxMarblesPerHeat": 6,
+                "preliminaryMaxMarblesPerHeat": 6,
+                "maxFinalByeMarblesPerRacer": 1,
+                "maxPrelimPromotionMarblesPerRacer": 1,
                 "maxFinalRacers": 3,
                 "points": [10, 7, 5, 3, 2, 1, 0, 0],
                 "contestants": [
@@ -1689,7 +2122,7 @@ class MarbleRaceApiTest(unittest.TestCase):
 
         missing_field = self.client.put(
             f"/api/tournaments/{tournament_id}",
-            json={**base_payload, "maxByeMarblesPerRacer": 1, "maxFinalRacers": 6},
+            json={**base_payload, "maxFinalByeMarblesPerRacer": 1, "maxFinalRacers": 6},
         )
         self.assertEqual(missing_field.status_code, 400)
 
@@ -1697,8 +2130,9 @@ class MarbleRaceApiTest(unittest.TestCase):
             f"/api/tournaments/{tournament_id}",
             json={
                 **base_payload,
-                "championshipMaxMarblesPerHeat": 6,
-                "maxByeMarblesPerRacer": -1,
+                "wildcardMaxMarblesPerHeat": 6,
+                "preliminaryMaxMarblesPerHeat": 6,
+                "maxFinalByeMarblesPerRacer": -1,
                 "maxFinalRacers": 6,
             },
         )
@@ -1708,8 +2142,9 @@ class MarbleRaceApiTest(unittest.TestCase):
             f"/api/tournaments/{tournament_id}",
             json={
                 **base_payload,
-                "championshipMaxMarblesPerHeat": 6,
-                "maxByeMarblesPerRacer": 1,
+                "wildcardMaxMarblesPerHeat": 6,
+                "preliminaryMaxMarblesPerHeat": 6,
+                "maxFinalByeMarblesPerRacer": 1,
                 "wildcardRacersPromotedPerHeat": 0,
                 "preliminaryRacersPromotedPerHeat": 2,
                 "maxFinalRacers": 6,
@@ -1721,8 +2156,17 @@ class MarbleRaceApiTest(unittest.TestCase):
             f"/api/tournaments/{tournament_id}",
             json={
                 **base_payload,
-                "championshipMaxMarblesPerHeat": 4,
-                "maxByeMarblesPerRacer": 2,
+                "wildcardMaxMarblesPerHeat": 4,
+                "preliminaryMaxMarblesPerHeat": 7,
+                "maxFinalByeMarblesPerRacer": 2,
+                "maxPrelimMarblesForRacerWithFinalBye": 1,
+                "maxWildcardMarblesForRacerWithFinalBye": 1,
+                "allowCascadingFinalByeSelection": False,
+                "maxPrelimPromotionMarblesPerRacer": 3,
+                "allowCascadingPrelimPromotionSelection": False,
+                "maxWildcardMarblesForRacerWithPrelimPromotion": 1,
+                "maxWildcardPromotionMarblesPerRacer": 5,
+                "allowCascadingWildcardPromotionSelection": False,
                 "wildcardRacersPromotedPerHeat": 3,
                 "preliminaryRacersPromotedPerHeat": 1,
                 "maxFinalRacers": 5,
@@ -1730,8 +2174,19 @@ class MarbleRaceApiTest(unittest.TestCase):
         )
         self.assertEqual(valid.status_code, 200)
         state = valid.get_json()
-        self.assertEqual(state["competition"]["championshipMaxMarblesPerHeat"], 4)
-        self.assertEqual(state["competition"]["maxByeMarblesPerRacer"], 2)
+        self.assertEqual(state["competition"]["wildcardMaxMarblesPerHeat"], 4)
+        self.assertEqual(state["competition"]["preliminaryMaxMarblesPerHeat"], 7)
+        self.assertEqual(state["competition"]["maxFinalByeMarblesPerRacer"], 2)
+        self.assertEqual(state["competition"]["maxPrelimMarblesForRacerWithFinalBye"], 1)
+        self.assertEqual(state["competition"]["maxWildcardMarblesForRacerWithFinalBye"], 1)
+        self.assertFalse(state["competition"]["allowCascadingFinalByeSelection"])
+        self.assertEqual(state["competition"]["maxPrelimPromotionMarblesPerRacer"], 3)
+        self.assertFalse(state["competition"]["allowCascadingPrelimPromotionSelection"])
+        self.assertEqual(
+            state["competition"]["maxWildcardMarblesForRacerWithPrelimPromotion"], 1
+        )
+        self.assertEqual(state["competition"]["maxWildcardPromotionMarblesPerRacer"], 5)
+        self.assertFalse(state["competition"]["allowCascadingWildcardPromotionSelection"])
         self.assertEqual(state["competition"]["wildcardRacersPromotedPerHeat"], 3)
         self.assertEqual(state["competition"]["preliminaryRacersPromotedPerHeat"], 1)
         self.assertEqual(state["competition"]["maxFinalRacers"], 5)

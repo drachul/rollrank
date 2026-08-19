@@ -71,8 +71,17 @@ SCHEMA = [
         racers_per_heat INTEGER NOT NULL CHECK (racers_per_heat >= 2),
         max_marbles_per_heat INTEGER NOT NULL CHECK (max_marbles_per_heat >= 2),
         marbles_per_racer INTEGER NOT NULL DEFAULT 1 CHECK (marbles_per_racer >= 1),
-        championship_max_marbles_per_heat INTEGER NOT NULL DEFAULT 6 CHECK (championship_max_marbles_per_heat >= 2),
-        max_bye_marbles_per_racer INTEGER NOT NULL DEFAULT 1 CHECK (max_bye_marbles_per_racer >= 0),
+        wildcard_max_marbles_per_heat INTEGER NOT NULL DEFAULT 6 CHECK (wildcard_max_marbles_per_heat >= 2),
+        preliminary_max_marbles_per_heat INTEGER NOT NULL DEFAULT 6 CHECK (preliminary_max_marbles_per_heat >= 2),
+        max_final_bye_marbles_per_racer INTEGER NOT NULL DEFAULT 2 CHECK (max_final_bye_marbles_per_racer BETWEEN 0 AND 20),
+        max_prelim_marbles_for_racer_with_final_bye INTEGER NOT NULL DEFAULT 0 CHECK (max_prelim_marbles_for_racer_with_final_bye BETWEEN 0 AND 20),
+        max_wildcard_marbles_for_racer_with_final_bye INTEGER NOT NULL DEFAULT 0 CHECK (max_wildcard_marbles_for_racer_with_final_bye BETWEEN 0 AND 20),
+        allow_cascading_final_bye_selection INTEGER NOT NULL DEFAULT 1 CHECK (allow_cascading_final_bye_selection IN (0, 1)),
+        max_prelim_promotion_marbles_per_racer INTEGER NOT NULL DEFAULT 1 CHECK (max_prelim_promotion_marbles_per_racer BETWEEN 0 AND 20),
+        allow_cascading_prelim_promotion_selection INTEGER NOT NULL DEFAULT 1 CHECK (allow_cascading_prelim_promotion_selection IN (0, 1)),
+        max_wildcard_marbles_for_racer_with_prelim_promotion INTEGER NOT NULL DEFAULT 0 CHECK (max_wildcard_marbles_for_racer_with_prelim_promotion BETWEEN 0 AND 20),
+        max_wildcard_promotion_marbles_per_racer INTEGER NOT NULL DEFAULT 2 CHECK (max_wildcard_promotion_marbles_per_racer BETWEEN 0 AND 20),
+        allow_cascading_wildcard_promotion_selection INTEGER NOT NULL DEFAULT 1 CHECK (allow_cascading_wildcard_promotion_selection IN (0, 1)),
         wildcard_racers_promoted_per_heat INTEGER NOT NULL DEFAULT 2 CHECK (wildcard_racers_promoted_per_heat BETWEEN 1 AND 24),
         preliminary_racers_promoted_per_heat INTEGER NOT NULL DEFAULT 2 CHECK (preliminary_racers_promoted_per_heat BETWEEN 1 AND 24),
         max_final_racers INTEGER NOT NULL CHECK (max_final_racers >= 2),
@@ -141,10 +150,19 @@ def create_tournament(connection: sqlite3.Connection, name: str) -> int:
         INSERT INTO tournaments
             (name, days, heats_per_day, heats_per_racer_per_day,
              racers_per_heat, max_marbles_per_heat, marbles_per_racer,
-             championship_max_marbles_per_heat, max_bye_marbles_per_racer,
+             wildcard_max_marbles_per_heat, preliminary_max_marbles_per_heat,
+             max_final_bye_marbles_per_racer,
+             max_prelim_marbles_for_racer_with_final_bye,
+             max_wildcard_marbles_for_racer_with_final_bye,
+             allow_cascading_final_bye_selection,
+             max_prelim_promotion_marbles_per_racer,
+             allow_cascading_prelim_promotion_selection,
+             max_wildcard_marbles_for_racer_with_prelim_promotion,
+             max_wildcard_promotion_marbles_per_racer,
+             allow_cascading_wildcard_promotion_selection,
              wildcard_racers_promoted_per_heat, preliminary_racers_promoted_per_heat,
              max_final_racers, seed)
-        VALUES (?, 3, 4, 3, 6, 6, 1, 6, 1, 2, 2, 6, 7)
+        VALUES (?, 3, 4, 3, 6, 6, 1, 6, 6, 2, 0, 0, 1, 1, 1, 0, 2, 1, 2, 2, 6, 7)
         """,
         (name,),
     )
@@ -742,6 +760,33 @@ def heat_top_n(connection: sqlite3.Connection, heat_id: int, n: int) -> list[int
     return [row["racer_id"] for row in rows[:n]]
 
 
+def _cascade_select(
+    pool: Sequence[dict[str, Any]],
+    seats: int,
+    cascade: bool,
+    capacity_fn: Callable[[int], int],
+    running_counts: dict[int, int],
+) -> list[dict[str, Any]]:
+    """Fill up to `seats` slots from pool (already in rank order).
+
+    With cascading, scan down the pool until each seat is filled or the pool
+    runs out -- a candidate who's already at their capacity is skipped in
+    favor of the next-best finisher. Without cascading, each seat has
+    exactly one fixed candidate (pool[i]) and is forfeited outright if that
+    candidate is at capacity; no other rank is tried for that seat.
+    """
+    selected: list[dict[str, Any]] = []
+    candidates = pool if cascade else pool[:seats]
+    for rank_row in candidates:
+        if len(selected) >= seats:
+            break
+        racer_id = rank_row["id"]
+        if running_counts.get(racer_id, 0) < capacity_fn(racer_id):
+            selected.append(rank_row)
+            running_counts[racer_id] = running_counts.get(racer_id, 0) + 1
+    return selected
+
+
 def championship_field(
     connection: sqlite3.Connection, tournament_id: int, live_day: int | None = None
 ) -> dict[str, list[dict[str, Any]]]:
@@ -752,36 +797,46 @@ def championship_field(
     day, even though it isn't finished racing itself -- used to preview what
     a round in progress would award if it ended right now.
 
-    Tier priority is bye > preliminary > wildcard: a racer who ever wins a
-    round (rank 1) is permanently ineligible for preliminary or wildcard,
-    even in rounds where they didn't win. Each round's rank-1 finisher is
-    always its bye candidate -- no cascading, no reassignment; wins beyond
-    max_bye_marbles_per_racer are simply forfeited (earliest wins kept, by
-    day ascending).
+    Tier priority is bye > preliminary > wildcard, resolved in three full
+    passes over every day (ascending), each seeing the previous pass's
+    completed results. Each tier has its own per-racer marble cap and its
+    own cascade toggle:
 
-    A round's preliminary candidate is normally its rank-2 finisher, but if
-    that racer is already bye-ineligible, we cascade down the round's own
-    standings (rank 3, 4, ...) until we reach someone who isn't. The
-    wildcard pool then draws two seats per round from whoever's left after
-    the bye and preliminary claims.
+    - Bye: one seat per round, normally its rank-1 finisher. If they're
+      already at max_final_bye_marbles_per_racer and cascading is on, the
+      seat cascades down the round's standings to the first racer under
+      cap; with cascading off the seat is simply forfeited.
+    - Preliminary: one seat per round from rank 2 down (rank 1 is always
+      reserved for the bye seat above), capped at
+      max_prelim_promotion_marbles_per_racer -- except a bye-tier racer's
+      preliminary capacity is instead max_prelim_marbles_for_racer_with_
+      final_bye (0 by default, i.e. still excluded unless raised).
+    - Wildcard: two seats per round from rank 2 down, capped at
+      max_wildcard_promotion_marbles_per_racer -- except a bye-tier racer's
+      wildcard capacity is max_wildcard_marbles_for_racer_with_final_bye,
+      and a preliminary-tier racer's is max_wildcard_marbles_for_racer_
+      with_prelim_promotion (both 0 by default).
 
     In the shared-pool model every racer competes in every round, so the
     same racer can qualify for the same tier in more than one round. Rather
     than keeping only their single best slot, each racer's qualifying
     occurrences (by day ascending) become separate marbles in that tier's
-    heat. max_bye_marbles_per_racer caps this for the bye and preliminary
-    tiers only -- wildcard marbles are uncapped, since a round's two
-    wildcard seats are filled fresh from whoever's left every time (unlike
-    bye/preliminary, a racer's wildcard occurrence in one round is never
-    "spent" in a way that would leave another round's seat empty).
+    heat, up to that racer's capacity for the tier.
     """
     tournament = connection.execute(
         "SELECT * FROM tournaments WHERE id = ?", (tournament_id,)
     ).fetchone()
-    marble_cap = tournament["max_bye_marbles_per_racer"]
+    bye_cap = tournament["max_final_bye_marbles_per_racer"]
+    cascade_bye = bool(tournament["allow_cascading_final_bye_selection"])
+    bye_prelim_bonus = tournament["max_prelim_marbles_for_racer_with_final_bye"]
+    bye_wildcard_bonus = tournament["max_wildcard_marbles_for_racer_with_final_bye"]
+    prelim_cap = tournament["max_prelim_promotion_marbles_per_racer"]
+    cascade_prelim = bool(tournament["allow_cascading_prelim_promotion_selection"])
+    prelim_wildcard_bonus = tournament["max_wildcard_marbles_for_racer_with_prelim_promotion"]
+    wildcard_cap = tournament["max_wildcard_promotion_marbles_per_racer"]
+    cascade_wildcard = bool(tournament["allow_cascading_wildcard_promotion_selection"])
 
     rankings: dict[int, list[dict[str, Any]]] = {}
-    bye_wins: dict[int, list[int]] = {}
     for day in range(1, tournament["days"] + 1):
         # A day isn't done racing until every one of its heats is scored --
         # round_standings() for a day still in progress (or untouched, where
@@ -790,46 +845,43 @@ def championship_field(
         # explicitly being previewed via live_day.
         if day != live_day and not is_staging_day_complete(connection, tournament_id, day):
             continue
-        ranking = round_standings(connection, tournament_id, day)
-        rankings[day] = ranking
-        bye_wins.setdefault(ranking[0]["id"], []).append(day)
+        rankings[day] = round_standings(connection, tournament_id, day)
 
     byes: list[dict[str, Any]] = []
-    for racer_id, days_won in bye_wins.items():
-        for day in sorted(days_won)[:marble_cap]:
-            byes.append({"racerId": racer_id, "originRound": day})
-    bye_racer_ids = set(bye_wins.keys())
-
-    # Each round's preliminary occurrence is the first (highest-ranked)
-    # finisher who isn't bye-ineligible -- normally rank 2, but cascading
-    # past bye-tier racers as far down the standings as it takes.
-    prelim_occurrences: dict[int, list[tuple[int, int]]] = {}
-    for day, ranking in rankings.items():
-        for rank_row in ranking[1:]:
-            if rank_row["id"] in bye_racer_ids:
-                continue
-            prelim_occurrences.setdefault(rank_row["id"], []).append(
-                (day, rank_row["totalPoints"])
-            )
-            break
+    bye_counts: dict[int, int] = {}
+    for day in sorted(rankings):
+        for rank_row in _cascade_select(
+            rankings[day], 1, cascade_bye, lambda _rid: bye_cap, bye_counts
+        ):
+            byes.append({"racerId": rank_row["id"], "originRound": day})
+    bye_racer_ids = {racer_id for racer_id, count in bye_counts.items() if count > 0}
 
     preliminary_direct: list[dict[str, Any]] = []
-    for racer_id, occurrences in prelim_occurrences.items():
-        for day, points in sorted(occurrences)[:marble_cap]:
-            preliminary_direct.append({"racerId": racer_id, "originRound": day, "points": points})
-    preliminary_racer_ids = set(prelim_occurrences.keys())
+    prelim_counts: dict[int, int] = {}
+    prelim_capacity = lambda rid: bye_prelim_bonus if rid in bye_racer_ids else prelim_cap
+    for day in sorted(rankings):
+        for rank_row in _cascade_select(
+            rankings[day][1:], 1, cascade_prelim, prelim_capacity, prelim_counts
+        ):
+            preliminary_direct.append(
+                {"racerId": rank_row["id"], "originRound": day, "points": rank_row["totalPoints"]}
+            )
+    prelim_racer_ids = {racer_id for racer_id, count in prelim_counts.items() if count > 0}
 
-    # Each round's wildcard seats are the first two finishers, in rank
-    # order, who aren't themselves bye- or preliminary-tier -- uncapped, so
-    # a racer eligible in several rounds races a marble for each one.
     wildcard_pool: list[dict[str, Any]] = []
-    for day, ranking in rankings.items():
-        eligible = [
-            rank_row
-            for rank_row in ranking[1:]
-            if rank_row["id"] not in bye_racer_ids and rank_row["id"] not in preliminary_racer_ids
-        ]
-        for rank_row in eligible[:2]:
+    wildcard_counts: dict[int, int] = {}
+
+    def wildcard_capacity(rid: int) -> int:
+        if rid in bye_racer_ids:
+            return bye_wildcard_bonus
+        if rid in prelim_racer_ids:
+            return prelim_wildcard_bonus
+        return wildcard_cap
+
+    for day in sorted(rankings):
+        for rank_row in _cascade_select(
+            rankings[day][1:], 2, cascade_wildcard, wildcard_capacity, wildcard_counts
+        ):
             wildcard_pool.append(
                 {"racerId": rank_row["id"], "originRound": day, "points": rank_row["totalPoints"]}
             )
@@ -1201,7 +1253,7 @@ def build_wildcard_heats(connection: sqlite3.Connection, tournament_id: int) -> 
     # total marble volume rather than racer count.
     total_marbles = sum(entry["marbleSlots"] for entry in entries)
     _marbles_per_heat, heat_count = calculate_championship_heat_size(
-        total_marbles, tournament["championship_max_marbles_per_heat"], 1
+        total_marbles, tournament["wildcard_max_marbles_per_heat"], 1
     )
     if heat_count == 0:
         return
@@ -1225,7 +1277,7 @@ def build_preliminary_heats(connection: sqlite3.Connection, tournament_id: int) 
         return
     total_marbles = sum(entry["marbleSlots"] for entry in entries)
     _marbles_per_heat, heat_count = calculate_championship_heat_size(
-        total_marbles, tournament["championship_max_marbles_per_heat"], 1
+        total_marbles, tournament["preliminary_max_marbles_per_heat"], 1
     )
     if heat_count == 0:
         return
@@ -1278,8 +1330,9 @@ def _stage_ready_to_advance(
     """
     if field_size == 0:
         return True
+    max_marbles_column = "wildcard_max_marbles_per_heat" if stage == "wildcard" else "preliminary_max_marbles_per_heat"
     _marbles_per_heat, heat_count = calculate_championship_heat_size(
-        field_size, tournament_row["championship_max_marbles_per_heat"], 1
+        field_size, tournament_row[max_marbles_column], 1
     )
     if heat_count == 0:
         return True

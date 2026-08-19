@@ -527,8 +527,33 @@ def build_state(connection, tournament_id: int) -> dict[str, Any]:
             "marblesPerHeat": tournament["racers_per_heat"]
             * tournament["marbles_per_racer"],
             "marblesPerRacer": tournament["marbles_per_racer"],
-            "championshipMaxMarblesPerHeat": tournament["championship_max_marbles_per_heat"],
-            "maxByeMarblesPerRacer": tournament["max_bye_marbles_per_racer"],
+            "wildcardMaxMarblesPerHeat": tournament["wildcard_max_marbles_per_heat"],
+            "preliminaryMaxMarblesPerHeat": tournament["preliminary_max_marbles_per_heat"],
+            "maxFinalByeMarblesPerRacer": tournament["max_final_bye_marbles_per_racer"],
+            "maxPrelimMarblesForRacerWithFinalBye": tournament[
+                "max_prelim_marbles_for_racer_with_final_bye"
+            ],
+            "maxWildcardMarblesForRacerWithFinalBye": tournament[
+                "max_wildcard_marbles_for_racer_with_final_bye"
+            ],
+            "allowCascadingFinalByeSelection": bool(
+                tournament["allow_cascading_final_bye_selection"]
+            ),
+            "maxPrelimPromotionMarblesPerRacer": tournament[
+                "max_prelim_promotion_marbles_per_racer"
+            ],
+            "allowCascadingPrelimPromotionSelection": bool(
+                tournament["allow_cascading_prelim_promotion_selection"]
+            ),
+            "maxWildcardMarblesForRacerWithPrelimPromotion": tournament[
+                "max_wildcard_marbles_for_racer_with_prelim_promotion"
+            ],
+            "maxWildcardPromotionMarblesPerRacer": tournament[
+                "max_wildcard_promotion_marbles_per_racer"
+            ],
+            "allowCascadingWildcardPromotionSelection": bool(
+                tournament["allow_cascading_wildcard_promotion_selection"]
+            ),
             "wildcardRacersPromotedPerHeat": tournament["wildcard_racers_promoted_per_heat"],
             "preliminaryRacersPromotedPerHeat": tournament["preliminary_racers_promoted_per_heat"],
             "maxFinalRacers": tournament["max_final_racers"],
@@ -628,6 +653,13 @@ def integer_field(
     return value
 
 
+def boolean_field(data: dict[str, Any], name: str, default: bool) -> bool:
+    value = data.get(name)
+    if value is None:
+        return default
+    return bool(value)
+
+
 def validated_tournament_name(value: Any) -> str:
     name = str(value or "").strip()
     if not 1 <= len(name) <= 80:
@@ -662,6 +694,22 @@ def validate_configuration(data: dict[str, Any]) -> dict[str, Any]:
         "marblesPerRacer": data.get("marblesPerRacer", 1),
         "wildcardRacersPromotedPerHeat": data.get("wildcardRacersPromotedPerHeat", 2),
         "preliminaryRacersPromotedPerHeat": data.get("preliminaryRacersPromotedPerHeat", 2),
+        "maxFinalByeMarblesPerRacer": data.get("maxFinalByeMarblesPerRacer", 2),
+        "maxPrelimMarblesForRacerWithFinalBye": data.get(
+            "maxPrelimMarblesForRacerWithFinalBye", 0
+        ),
+        "maxWildcardMarblesForRacerWithFinalBye": data.get(
+            "maxWildcardMarblesForRacerWithFinalBye", 0
+        ),
+        "maxPrelimPromotionMarblesPerRacer": data.get(
+            "maxPrelimPromotionMarblesPerRacer", 1
+        ),
+        "maxWildcardMarblesForRacerWithPrelimPromotion": data.get(
+            "maxWildcardMarblesForRacerWithPrelimPromotion", 0
+        ),
+        "maxWildcardPromotionMarblesPerRacer": data.get(
+            "maxWildcardPromotionMarblesPerRacer", 2
+        ),
     }
     marbles_per_racer = integer_field(
         normalized_data, "marblesPerRacer", 1, 20, "Marbles per racer per heat"
@@ -681,11 +729,58 @@ def validate_configuration(data: dict[str, Any]) -> dict[str, Any]:
         )
     except ValueError as exc:
         raise ApiError(str(exc)) from exc
-    championship_max_marbles_per_heat = integer_field(
-        data, "championshipMaxMarblesPerHeat", 2, MAX_MARBLES_PER_HEAT, "Max marbles per championship heat"
+    wildcard_max_marbles_per_heat = integer_field(
+        data, "wildcardMaxMarblesPerHeat", 2, MAX_MARBLES_PER_HEAT, "Max marbles per wildcard heat"
     )
-    max_bye_marbles_per_racer = integer_field(
-        data, "maxByeMarblesPerRacer", 0, 20, "Max bye marbles per racer"
+    preliminary_max_marbles_per_heat = integer_field(
+        data, "preliminaryMaxMarblesPerHeat", 2, MAX_MARBLES_PER_HEAT, "Max marbles per preliminary heat"
+    )
+    max_final_bye_marbles_per_racer = integer_field(
+        normalized_data, "maxFinalByeMarblesPerRacer", 0, 20, "Max final bye marbles per racer"
+    )
+    max_prelim_marbles_for_racer_with_final_bye = integer_field(
+        normalized_data,
+        "maxPrelimMarblesForRacerWithFinalBye",
+        0,
+        20,
+        "Max prelim marbles for racer with final bye",
+    )
+    max_wildcard_marbles_for_racer_with_final_bye = integer_field(
+        normalized_data,
+        "maxWildcardMarblesForRacerWithFinalBye",
+        0,
+        20,
+        "Max wildcard marbles for racer with final bye",
+    )
+    allow_cascading_final_bye_selection = boolean_field(
+        data, "allowCascadingFinalByeSelection", True
+    )
+    max_prelim_promotion_marbles_per_racer = integer_field(
+        normalized_data,
+        "maxPrelimPromotionMarblesPerRacer",
+        0,
+        20,
+        "Max prelim promotion marbles per racer",
+    )
+    allow_cascading_prelim_promotion_selection = boolean_field(
+        data, "allowCascadingPrelimPromotionSelection", True
+    )
+    max_wildcard_marbles_for_racer_with_prelim_promotion = integer_field(
+        normalized_data,
+        "maxWildcardMarblesForRacerWithPrelimPromotion",
+        0,
+        20,
+        "Max wildcard marbles for racer with prelim promotion",
+    )
+    max_wildcard_promotion_marbles_per_racer = integer_field(
+        normalized_data,
+        "maxWildcardPromotionMarblesPerRacer",
+        0,
+        20,
+        "Max wildcard promotion marbles per racer",
+    )
+    allow_cascading_wildcard_promotion_selection = boolean_field(
+        data, "allowCascadingWildcardPromotionSelection", True
     )
     wildcard_racers_promoted_per_heat = integer_field(
         normalized_data,
@@ -730,8 +825,19 @@ def validate_configuration(data: dict[str, Any]) -> dict[str, Any]:
         "racersPerHeat": racers_per_heat,
         "maxMarblesPerHeat": max_marbles_per_heat,
         "marblesPerRacer": marbles_per_racer,
-        "championshipMaxMarblesPerHeat": championship_max_marbles_per_heat,
-        "maxByeMarblesPerRacer": max_bye_marbles_per_racer,
+        "wildcardMaxMarblesPerHeat": wildcard_max_marbles_per_heat,
+        "preliminaryMaxMarblesPerHeat": preliminary_max_marbles_per_heat,
+        "maxFinalByeMarblesPerRacer": max_final_bye_marbles_per_racer,
+        "maxPrelimMarblesForRacerWithFinalBye": max_prelim_marbles_for_racer_with_final_bye,
+        "maxWildcardMarblesForRacerWithFinalBye": max_wildcard_marbles_for_racer_with_final_bye,
+        "allowCascadingFinalByeSelection": allow_cascading_final_bye_selection,
+        "maxPrelimPromotionMarblesPerRacer": max_prelim_promotion_marbles_per_racer,
+        "allowCascadingPrelimPromotionSelection": allow_cascading_prelim_promotion_selection,
+        "maxWildcardMarblesForRacerWithPrelimPromotion": (
+            max_wildcard_marbles_for_racer_with_prelim_promotion
+        ),
+        "maxWildcardPromotionMarblesPerRacer": max_wildcard_promotion_marbles_per_racer,
+        "allowCascadingWildcardPromotionSelection": allow_cascading_wildcard_promotion_selection,
         "wildcardRacersPromotedPerHeat": wildcard_racers_promoted_per_heat,
         "preliminaryRacersPromotedPerHeat": preliminary_racers_promoted_per_heat,
         "maxFinalRacers": max_final_racers,
@@ -807,8 +913,25 @@ def update_tournament(tournament_id: int):
             or current_points != data["points"]
         )
         championship_settings_changed = (
-            current["championship_max_marbles_per_heat"] != data["championshipMaxMarblesPerHeat"]
-            or current["max_bye_marbles_per_racer"] != data["maxByeMarblesPerRacer"]
+            current["wildcard_max_marbles_per_heat"] != data["wildcardMaxMarblesPerHeat"]
+            or current["preliminary_max_marbles_per_heat"] != data["preliminaryMaxMarblesPerHeat"]
+            or current["max_final_bye_marbles_per_racer"] != data["maxFinalByeMarblesPerRacer"]
+            or current["max_prelim_marbles_for_racer_with_final_bye"]
+            != data["maxPrelimMarblesForRacerWithFinalBye"]
+            or current["max_wildcard_marbles_for_racer_with_final_bye"]
+            != data["maxWildcardMarblesForRacerWithFinalBye"]
+            or bool(current["allow_cascading_final_bye_selection"])
+            != data["allowCascadingFinalByeSelection"]
+            or current["max_prelim_promotion_marbles_per_racer"]
+            != data["maxPrelimPromotionMarblesPerRacer"]
+            or bool(current["allow_cascading_prelim_promotion_selection"])
+            != data["allowCascadingPrelimPromotionSelection"]
+            or current["max_wildcard_marbles_for_racer_with_prelim_promotion"]
+            != data["maxWildcardMarblesForRacerWithPrelimPromotion"]
+            or current["max_wildcard_promotion_marbles_per_racer"]
+            != data["maxWildcardPromotionMarblesPerRacer"]
+            or bool(current["allow_cascading_wildcard_promotion_selection"])
+            != data["allowCascadingWildcardPromotionSelection"]
             or current["wildcard_racers_promoted_per_heat"]
             != data["wildcardRacersPromotedPerHeat"]
             or current["preliminary_racers_promoted_per_heat"]
@@ -852,7 +975,16 @@ def update_tournament(tournament_id: int):
             UPDATE tournaments
             SET name = ?, days = ?, heats_per_day = ?, heats_per_racer_per_day = ?,
                 racers_per_heat = ?, max_marbles_per_heat = ?, marbles_per_racer = ?,
-                championship_max_marbles_per_heat = ?, max_bye_marbles_per_racer = ?,
+                wildcard_max_marbles_per_heat = ?, preliminary_max_marbles_per_heat = ?,
+                max_final_bye_marbles_per_racer = ?,
+                max_prelim_marbles_for_racer_with_final_bye = ?,
+                max_wildcard_marbles_for_racer_with_final_bye = ?,
+                allow_cascading_final_bye_selection = ?,
+                max_prelim_promotion_marbles_per_racer = ?,
+                allow_cascading_prelim_promotion_selection = ?,
+                max_wildcard_marbles_for_racer_with_prelim_promotion = ?,
+                max_wildcard_promotion_marbles_per_racer = ?,
+                allow_cascading_wildcard_promotion_selection = ?,
                 wildcard_racers_promoted_per_heat = ?, preliminary_racers_promoted_per_heat = ?,
                 max_final_racers = ?,
                 updated_at = CURRENT_TIMESTAMP
@@ -866,8 +998,17 @@ def update_tournament(tournament_id: int):
                 data["racersPerHeat"],
                 data["maxMarblesPerHeat"],
                 data["marblesPerRacer"],
-                data["championshipMaxMarblesPerHeat"],
-                data["maxByeMarblesPerRacer"],
+                data["wildcardMaxMarblesPerHeat"],
+                data["preliminaryMaxMarblesPerHeat"],
+                data["maxFinalByeMarblesPerRacer"],
+                data["maxPrelimMarblesForRacerWithFinalBye"],
+                data["maxWildcardMarblesForRacerWithFinalBye"],
+                data["allowCascadingFinalByeSelection"],
+                data["maxPrelimPromotionMarblesPerRacer"],
+                data["allowCascadingPrelimPromotionSelection"],
+                data["maxWildcardMarblesForRacerWithPrelimPromotion"],
+                data["maxWildcardPromotionMarblesPerRacer"],
+                data["allowCascadingWildcardPromotionSelection"],
                 data["wildcardRacersPromotedPerHeat"],
                 data["preliminaryRacersPromotedPerHeat"],
                 data["maxFinalRacers"],
