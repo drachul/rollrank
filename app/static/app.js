@@ -7,6 +7,7 @@ let activeTournamentId = Number(initialParams.get("tournament")) || null;
 let kioskMode = initialParams.get("display") === "kiosk";
 let liveEventSource = null;
 let liveEventTournamentId = null;
+let kioskIntroTimer = null;
 let kioskRefreshFailed = false;
 let kioskLastUpdated = null;
 let kioskUsesBrowserFullscreen = false;
@@ -69,6 +70,8 @@ function syncTournamentChrome() {
 }
 
 function applyState(nextState) {
+  const introductionHeat = kioskMode ? newlyStartedHeat(state, nextState) : null;
+  if (state && state.competition.id !== nextState.competition.id) stopKioskRaceIntroduction();
   state = nextState;
   activeTournamentId = state.competition.id;
   if (activeDay !== "championship") activeDay = Math.min(activeDay, state.competition.days);
@@ -76,6 +79,7 @@ function applyState(nextState) {
   kioskLastUpdated = new Date();
   syncTournamentChrome();
   render();
+  if (introductionHeat) startKioskRaceIntroduction(introductionHeat);
 }
 
 function kioskTimestamp() {
@@ -128,7 +132,67 @@ function stopLiveUpdates() {
   liveEventTournamentId = null;
 }
 
+function tournamentHeats(snapshot) {
+  if (!snapshot) return [];
+  const championship = snapshot.championship;
+  const heats = snapshot.days.flatMap((day) => day.heats)
+    .concat(championship.wildcard.heats, championship.preliminary.heats);
+  if (championship.final.heat) heats.push(championship.final.heat);
+  return heats;
+}
+
+function newlyStartedHeat(previousState, nextState) {
+  if (!previousState || previousState.competition.id !== nextState.competition.id) return null;
+  const previousHeats = new Map(tournamentHeats(previousState).map((heat) => [heat.id, heat]));
+  return tournamentHeats(nextState)
+    .filter((heat) => heat.started && !previousHeats.get(heat.id)?.started)
+    .sort((first, second) => first.globalNumber - second.globalNumber)[0] || null;
+}
+
+function kioskIntroductionHeatName(heat) {
+  if (heat.stage === "wildcard") return `Championship: Wildcard Heat ${heat.heatNumber}`;
+  if (heat.stage === "preliminary") return `Championship: Preliminary Heat ${heat.heatNumber}`;
+  if (heat.stage === "final") return "Championship: Final";
+  return `Round ${heat.day} · Heat ${heat.heatNumber}`;
+}
+
+function stopKioskRaceIntroduction() {
+  if (kioskIntroTimer) window.clearTimeout(kioskIntroTimer);
+  kioskIntroTimer = null;
+  document.querySelector(".kiosk-race-intro")?.remove();
+}
+
+function startKioskRaceIntroduction(heat) {
+  if (!kioskMode || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  stopKioskRaceIntroduction();
+  const overlay = document.createElement("section");
+  overlay.className = "kiosk-race-intro";
+  overlay.setAttribute("aria-label", `Race introduction for ${kioskIntroductionHeatName(heat)}`);
+  overlay.innerHTML = `
+    <div class="kiosk-intro-stage kiosk-intro-title">
+      <p>Now racing</p>
+      <h2>${escapeHtml(kioskIntroductionHeatName(heat))}</h2>
+    </div>
+    <div class="kiosk-intro-stage kiosk-intro-lineup">
+      <p>Racers to the line</p>
+      <div class="kiosk-intro-racers">
+        ${heat.entries.map((entry, index) => `<article style="--intro-index:${index}">${marble(entry.color)}<strong>${escapeHtml(entry.name)}</strong></article>`).join("")}
+      </div>
+      <i class="kiosk-intro-start-line" aria-hidden="true"></i>
+    </div>
+    <div class="kiosk-intro-stage kiosk-intro-marks">
+      <h2>On your marks!</h2>
+    </div>
+    <div class="kiosk-intro-stage kiosk-intro-go">
+      <div class="kiosk-intro-flag" aria-hidden="true"><i></i><span></span></div>
+      <h2>Go!</h2>
+    </div>`;
+  document.body.appendChild(overlay);
+  kioskIntroTimer = window.setTimeout(stopKioskRaceIntroduction, 9400);
+}
+
 async function setKioskMode(enabled, requestBrowserFullscreen = false) {
+  if (!enabled) stopKioskRaceIntroduction();
   kioskMode = enabled;
   activeView = "dashboard";
   document.body.classList.toggle("kiosk-mode", enabled);
