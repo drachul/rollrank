@@ -359,6 +359,7 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertIn("data-enter-kiosk", frontend)
         self.assertIn("data-exit-kiosk", frontend)
         self.assertIn("function renderKioskDashboard()", frontend)
+        self.assertNotIn("Updates automatically every 5 seconds", frontend)
         self.assertIn("new EventSource(`/api/tournaments/${tournamentId}/events`)", frontend)
         self.assertNotIn("window.setInterval(refreshLiveState", frontend)
         self.assertIn('activeView === "dashboard" || activeView === "standings"', frontend)

@@ -370,7 +370,7 @@ function renderKioskFinalDashboard() {
       <header><div><p class="kiosk-card-label">${finalStage.complete ? "Official result" : "Placement board"}</p><h2>${finalStage.complete ? "Final podium" : "Podium spots"}</h2></div><span>${finalStage.complete ? "🏆 Final complete" : "Results will appear here automatically"}</span></header>
       <div class="kiosk-final-podium">${podium}</div>
       ${remainingEntries.length ? `<div class="kiosk-remaining-heading"><strong>Remaining places</strong><span>${finalStage.complete ? (dnfs.length ? `${dnfs.length} DNF${dnfs.length === 1 ? "" : "s"} tied for ${ordinal(dnfPlace)}` : "Final order") : "Waiting to be filled"}</span></div><div class="kiosk-final-places">${remaining}</div>` : ""}
-      <footer><span>${finalStage.complete ? `${escapeHtml(finalStage.champion.name)} takes the RollRank title` : "Submit the final result from the Rounds tab"}</span><span>Updates automatically every 5 seconds</span></footer>
+      <footer><span>${finalStage.complete ? `${escapeHtml(finalStage.champion.name)} takes the RollRank title` : "Submit the final result from the Rounds tab"}</span></footer>
     </section>
   </section>`;
 }
@@ -451,7 +451,7 @@ function renderKioskDashboard() {
       <div class="kiosk-standing-list">
         ${visibleStandings.map((racer) => `<article><span class="kiosk-rank">${racer.rank}</span>${marble(racer.color, "small")}<strong>${escapeHtml(racer.name)}</strong>${kioskStatBadgesMarkup(racer)}</article>`).join("")}
       </div>
-      <footer><span>Showing ${visibleStandings.length} of ${state.standings.length} racers</span><span>Updates automatically every 5 seconds</span></footer>
+      <footer><span>Showing ${visibleStandings.length} of ${state.standings.length} racers</span></footer>
     </section>
   </section>`;
 }
