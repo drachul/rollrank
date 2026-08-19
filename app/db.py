@@ -34,7 +34,7 @@ STAGE_CASCADE = {
 def database_path() -> Path:
     data_dir = Path(os.environ.get("APP_DATA_DIR", Path(__file__).parent.parent / "data"))
     data_dir.mkdir(parents=True, exist_ok=True)
-    return data_dir / "marble_race.db"
+    return data_dir / "rollrank.db"
 
 
 def connect() -> sqlite3.Connection:
@@ -63,7 +63,7 @@ def transaction() -> Iterator[sqlite3.Connection]:
 # NOTE: this schema is a breaking change from earlier versions (stage-aware heats,
 # no final_entries table, renamed/new tournament columns). CREATE TABLE IF NOT
 # EXISTS does not add columns to an already-created table, so an existing
-# data/marble_race.db built under the old schema must be deleted (or
+# data/rollrank.db built under the old schema must be deleted (or
 # APP_DATA_DIR pointed at a fresh directory) before running against this schema.
 SCHEMA = [
     """

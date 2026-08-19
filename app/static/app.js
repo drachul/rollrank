@@ -19,7 +19,6 @@ const app = document.querySelector("#app");
 const toast = document.querySelector("#toast");
 const tournamentSwitcher = document.querySelector("#tournament-switcher");
 const tournamentDialog = document.querySelector("#new-tournament-dialog");
-const printReport = document.querySelector("#print-report");
 
 const escapeHtml = (value) => String(value ?? "")
   .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
@@ -63,7 +62,6 @@ function reportUrl() {
 function syncTournamentChrome() {
   activeTournamentId = state.competition.id;
   tournamentSwitcher.innerHTML = state.tournaments.map((tournament) => `<option value="${tournament.id}" ${tournament.id === activeTournamentId ? "selected" : ""}>${escapeHtml(tournament.name)} · ${tournament.completedHeats}/${tournament.totalHeats}</option>`).join("");
-  printReport.href = reportUrl();
   document.title = `${state.competition.name} · RollRank`;
   const url = new URL(window.location.href);
   url.searchParams.set("tournament", activeTournamentId);
@@ -715,6 +713,10 @@ function championshipStageChip(stage) {
   return `<span class="${stage.complete ? "complete-chip" : "pending-chip"}">${stage.complete ? "Complete" : "In progress"}</span>`;
 }
 
+function championshipReportLink() {
+  return `<a class="print-button compact" href="${reportUrl()}" target="_blank" rel="noopener"><span class="pdf-icon" aria-hidden="true"></span> Printable report</a>`;
+}
+
 function renderChampionshipStages() {
   const champ = state.championship;
   const c = state.competition;
@@ -727,7 +729,7 @@ function renderChampionshipStages() {
       ${renderChampionshipStageBody(champ.preliminary, "Wildcard heat winners and round runners-up race here once every wildcard heat is scored.")}
     </section>
     <section class="championship-stage">
-      <div class="panel-heading"><div><p class="eyebrow">Stage 3</p><h2>${champ.final.complete ? "Final results" : "The final"}</h2></div>${championshipStageChip(champ.final)}</div>
+      <div class="panel-heading"><div><p class="eyebrow">Stage 3</p><h2>${champ.final.complete ? "Final results" : "The final"}</h2></div><div class="panel-heading-actions">${championshipStageChip(champ.final)}${champ.final.complete ? championshipReportLink() : ""}</div></div>
       ${renderFinalStageBody(champ.final)}
     </section>`;
 }
@@ -742,9 +744,16 @@ function renderSetup() {
     <form id="config-form" class="setup-grid">
       <section class="panel config-panel"><div class="section-title"><span>01</span><div><h2>Tournament format</h2><p>Name the event and define its schedule.</p></div></div>
         <label class="field wide"><span>Tournament name</span><input name="name" value="${escapeHtml(c.name)}" maxlength="80" required></label>
-        <div class="field-grid"><label class="field"><span>Race rounds</span><input name="days" type="number" min="1" max="30" value="${c.days}" required></label><label class="field"><span>Heats per racer / round</span><input name="heatsPerRacerPerDay" type="number" min="1" max="20" value="${c.heatsPerRacerPerDay}" required></label><label class="field"><span>Max marbles per heat</span><input name="maxMarblesPerHeat" type="number" min="2" max="480" value="${c.maxMarblesPerHeat}" required><small>The app automatically chooses the largest full heat under this limit.</small></label><label class="field"><span>Marbles per racer / heat</span><input name="marblesPerRacer" type="number" min="1" max="20" value="${c.marblesPerRacer}" required><small>Applies to round heats only.</small></label><label class="field"><span>Max marbles per championship heat</span><input name="championshipMaxMarblesPerHeat" type="number" min="2" max="480" value="${c.championshipMaxMarblesPerHeat}" required><small>Sizes wildcard and preliminary heats automatically.</small></label><label class="field"><span>Max bye marbles per racer</span><input name="maxByeMarblesPerRacer" type="number" min="0" max="20" value="${c.maxByeMarblesPerRacer}" required><small>Caps how many round wins one racer can bank as byes, and how many marbles a racer can earn in the preliminary heat. Wildcard marbles are uncapped.</small></label><label class="field"><span>Max final racers</span><input name="maxFinalRacers" type="number" min="2" max="24" value="${c.maxFinalRacers}" required><small>Trims the final field if byes and preliminary winners exceed this.</small></label></div>
-        <div class="schedule-preview" id="schedule-preview"><strong>${c.heatsPerDay} heats per round · ${c.racersPerHeat} racers per heat</strong><span>Every racer appears ${c.heatsPerRacerPerDay} times each round; each heat uses ${c.marblesPerHeat} of the ${c.maxMarblesPerHeat} allowed marbles.</span></div>
-        <label class="field wide"><span>Points by finishing place</span><input name="points" value="${state.points.join(", ")}" required><small>Comma-separated, starting with first place. Missing places receive zero points.</small></label>
+        <div class="config-group">
+          <h3 class="eyebrow">Staging rounds</h3>
+          <div class="field-grid"><label class="field"><span>Race rounds</span><input name="days" type="number" min="1" max="30" value="${c.days}" required></label><label class="field"><span>Heats per racer / round</span><input name="heatsPerRacerPerDay" type="number" min="1" max="20" value="${c.heatsPerRacerPerDay}" required></label><label class="field"><span>Max marbles per heat</span><input name="maxMarblesPerHeat" type="number" min="2" max="480" value="${c.maxMarblesPerHeat}" required><small>The app automatically chooses the largest full heat under this limit.</small></label><label class="field"><span>Marbles per racer / heat</span><input name="marblesPerRacer" type="number" min="1" max="20" value="${c.marblesPerRacer}" required><small>Applies to round heats only.</small></label></div>
+          <div class="schedule-preview" id="schedule-preview"><strong>${c.heatsPerDay} heats per round · ${c.racersPerHeat} racers per heat</strong><span>Every racer appears ${c.heatsPerRacerPerDay} times each round; each heat uses ${c.marblesPerHeat} of the ${c.maxMarblesPerHeat} allowed marbles.</span></div>
+          <label class="field wide"><span>Points by finishing place</span><input name="points" value="${state.points.join(", ")}" required><small>Comma-separated, starting with first place. Missing places receive zero points.</small></label>
+        </div>
+        <div class="config-group">
+          <h3 class="eyebrow">Championship round</h3>
+          <div class="field-grid"><label class="field"><span>Max marbles in wildcard/prelim heats</span><input name="championshipMaxMarblesPerHeat" type="number" min="2" max="480" value="${c.championshipMaxMarblesPerHeat}" required><small>Sizes wildcard and preliminary heats automatically.</small></label><label class="field"><span>Max bye marbles per racer</span><input name="maxByeMarblesPerRacer" type="number" min="0" max="20" value="${c.maxByeMarblesPerRacer}" required><small>Caps how many round wins one racer can bank as byes, and how many marbles a racer can earn in the preliminary heat. Wildcard marbles are uncapped.</small></label><label class="field"><span>Max Racers in Final</span><input name="maxFinalRacers" type="number" min="2" max="24" value="${c.maxFinalRacers}" required><small>Trims the final field if byes and preliminary winners exceed this.</small></label></div>
+        </div>
       </section>
       <section class="panel config-panel"><div class="section-title"><span>02</span><div><h2>Racers</h2><p>Names and colors are used throughout the race sheets.</p></div></div><div id="contestant-list">${state.contestants.map(contestantRow).join("")}</div><button type="button" class="secondary-button full" data-add-contestant>+ Add racer</button></section>
       <section class="panel tournament-management"><div><p class="eyebrow">Tournament library</p><h2>Manage this tournament</h2><p>Create another tournament from the selector above, or permanently remove this one.</p></div><button type="button" class="danger-button" data-delete-tournament>Delete tournament</button></section>

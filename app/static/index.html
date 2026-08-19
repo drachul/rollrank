@@ -36,19 +36,16 @@
           <img class="brand-mark" src="/static/marble-logo.png" alt="" width="40" height="40" />
           <span class="brand-wordmark"><strong>RollRank</strong><small>Tournament control</small></span>
         </a>
+        <nav class="main-nav" aria-label="Primary navigation">
+          <button data-view="dashboard" class="active"><span class="nav-icon" aria-hidden="true">🏠</span><span>Dashboard</span></button>
+          <button data-view="heats"><span class="nav-icon" aria-hidden="true">🏁</span><span>Rounds</span></button>
+          <button data-view="standings"><span class="nav-icon" aria-hidden="true">📊</span><span>Standings</span></button>
+          <button data-view="setup"><span class="nav-icon" aria-hidden="true">⚙️</span><span>Setup</span></button>
+        </nav>
         <div class="tournament-control">
           <label for="tournament-switcher">Tournament</label>
           <div><select id="tournament-switcher" aria-label="Select tournament"></select><button type="button" class="new-tournament-button" data-new-tournament aria-label="Create tournament"><span aria-hidden="true">+</span><span class="new-tournament-label">New</span></button></div>
         </div>
-        <nav class="main-nav" aria-label="Primary navigation">
-          <button data-view="dashboard" class="active">Dashboard</button>
-          <button data-view="heats">Rounds</button>
-          <button data-view="standings">Standings</button>
-          <button data-view="setup">Setup</button>
-        </nav>
-        <a class="print-button" id="print-report" href="/api/report.pdf" target="_blank" rel="noopener">
-          <span class="pdf-icon" aria-hidden="true"></span> Printable report
-        </a>
       </header>
       <main id="app" tabindex="-1">
         <div class="loading-state"><span class="spinner"></span><p>Loading RollRank...</p></div>
