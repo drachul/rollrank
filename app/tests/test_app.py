@@ -315,6 +315,7 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertIn("data-exit-kiosk", frontend)
         self.assertIn("function renderKioskDashboard()", frontend)
         self.assertIn("window.setInterval(refreshLiveState, 5000)", frontend)
+        self.assertIn('activeView === "dashboard" || activeView === "standings"', frontend)
         self.assertIn('url.searchParams.set("display", "kiosk")', frontend)
         self.assertIn(".workspace-mode.kiosk-mode", styles)
         self.assertIn(".kiosk-standing-list", styles)

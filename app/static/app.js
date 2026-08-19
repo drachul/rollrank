@@ -83,12 +83,12 @@ function kioskTimestamp() {
   return `Updated ${kioskLastUpdated.toLocaleTimeString([], {hour:"numeric", minute:"2-digit", second:"2-digit"})}`;
 }
 
-function dashboardIsLive() {
-  return kioskMode || activeView === "dashboard";
+function activeViewIsLive() {
+  return kioskMode || activeView === "dashboard" || activeView === "standings";
 }
 
 async function refreshLiveState() {
-  if (!dashboardIsLive() || liveRefreshInFlight || !activeTournamentId) return;
+  if (!activeViewIsLive() || liveRefreshInFlight || !activeTournamentId) return;
   liveRefreshInFlight = true;
   try {
     const nextState = await api(`/api/state?tournamentId=${activeTournamentId}`);
@@ -805,7 +805,7 @@ function render() {
   app.innerHTML = (views[activeView] || renderDashboard)();
   if (activeView === "setup") requestAnimationFrame(updateSchedulePreview);
   if (!kioskMode) app.focus({preventScroll:true});
-  if (dashboardIsLive()) startLiveRefresh(); else stopLiveRefresh();
+  if (activeViewIsLive()) startLiveRefresh(); else stopLiveRefresh();
 }
 
 async function startHeat(heatId) {
@@ -963,7 +963,7 @@ document.addEventListener("fullscreenchange", () => {
 });
 
 document.addEventListener("visibilitychange", () => {
-  if (dashboardIsLive() && document.visibilityState === "visible") refreshLiveState();
+  if (activeViewIsLive() && document.visibilityState === "visible") refreshLiveState();
 });
 
 if (window.location.pathname === "/workspace") {
