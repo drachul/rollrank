@@ -356,6 +356,7 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertIn('url("/static/rollrank-hero.png") center/cover fixed', styles)
         self.assertIn("background:rgba(5,21,34,.92)", styles)
         self.assertIn(".workspace-mode .view-heading h1 { color:#fff; }", styles)
+        self.assertIn(".heat-entry select option,.championship-row select option { background:#fff; color:#132c46; }", styles)
         self.assertIn("data-enter-kiosk", frontend)
         self.assertIn("data-exit-kiosk", frontend)
         self.assertIn("function renderKioskDashboard()", frontend)
