@@ -614,7 +614,7 @@ function ladderFinalColumn(finalStage, sourceHeats) {
     <div class="ladder-heat-head"><span>The Final</span><span class="${finalStage.complete ? "complete-chip" : "pending-chip"}">${finalStage.complete ? "Complete" : "In progress"}</span></div>
     <ul class="ladder-entries">
       ${entries.map((entry) => `<li class="ladder-entry${entry.finish === 0 ? " dnf" : ""}">
-        ${marble(entry.color, "small")}${ladderEntryLabel(entry.name, 1, entry.seedRounds, seedHeatTag(entry, sourceHeats, "Preliminary"))}<b>${entry.finish === 1 ? "🏆" : entry.points == null ? "" : `${entry.points}<small>pts</small>`}</b>
+        ${marble(entry.color, "small")}${ladderEntryLabel(entry.name, 1, entry.seedRounds, seedHeatTag(entry, sourceHeats, "Preliminary"))}<b>${entry.finish === 1 ? "🏆" : ladderPlaceLabel(entry)}</b>
       </li>`).join("")}
     </ul>
   </article>`;
