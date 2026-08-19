@@ -727,7 +727,7 @@ class MarbleRaceApiTest(unittest.TestCase):
         wildcard_ids = {item["racerId"] for item in field["wildcardPool"]}
         self.assertEqual(wildcard_ids, {third_place_id, fourth_place_id})
 
-    def test_standings_show_pending_until_the_round_fully_completes(self) -> None:
+    def test_standings_show_provisional_placements_until_the_round_fully_completes(self) -> None:
         created = self.client.post(
             "/api/tournaments", json={"name": "Pending Round Cup"}
         ).get_json()
@@ -737,19 +737,70 @@ class MarbleRaceApiTest(unittest.TestCase):
         )
         day1_heats = created["days"][0]["heats"]
         self.assertEqual(len(day1_heats), 4)
+        self.assertIsNone(created["competition"]["liveRoundDay"])
 
-        # Scoring just the first of day 1's four heats shouldn't produce a
-        # real-looking placement for anyone -- the round isn't done racing.
+        # Scoring just the first of day 1's four heats gives everyone a
+        # provisional (not yet official) round placement, since the round
+        # itself is still in progress -- but nobody's win/promotion tallies
+        # move until the round actually finishes.
         partial = score_heat_sequentially(self.client, day1_heats[0]).get_json()
-        self.assertTrue(all(racer["dayPlacements"][0] is None for racer in partial["standings"]))
-        self.assertTrue(
-            all(racer["dayChampionshipTiers"][0] is None for racer in partial["standings"])
-        )
+        self.assertEqual(partial["competition"]["liveRoundDay"], 1)
+        self.assertTrue(all(racer["dayPlacements"][0] is not None for racer in partial["standings"]))
+        self.assertTrue(all(racer["wins"] == 0 for racer in partial["standings"]))
+        self.assertTrue(all(racer["preliminaryPromotions"] == 0 for racer in partial["standings"]))
+        self.assertTrue(all(racer["wildcardAdvancements"] == 0 for racer in partial["standings"]))
+        leader = next(racer for racer in partial["standings"] if racer["dayPlacements"][0] == 1)
+        self.assertEqual(leader["dayChampionshipTiers"][0], "bye")
+        self.assertTrue(leader["liveRoundLeader"])
 
         state = score_all_heats_sequentially(self.client, day1_heats[1:])
+        self.assertIsNone(state["competition"]["liveRoundDay"])
         day1_placements = sorted(racer["dayPlacements"][0] for racer in state["standings"])
         self.assertEqual(day1_placements, list(range(1, 9)))
         self.assertTrue(any(racer["dayChampionshipTiers"][0] == "bye" for racer in state["standings"]))
+        self.assertTrue(any(racer["wins"] == 1 for racer in state["standings"]))
+
+    def test_live_round_preview_flags_the_provisional_leader_and_tiers(self) -> None:
+        created = self.client.post(
+            "/api/tournaments", json={"name": "Live Preview Cup"}
+        ).get_json()
+        tournament_id = created["competition"]["id"]
+        self.addCleanup(
+            lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close()
+        )
+        day1_heat = created["days"][0]["heats"][0]
+
+        # Nobody has raced yet -- no round is in progress, so nothing is
+        # flagged as a provisional leader or tier.
+        self.assertTrue(all(not racer["liveRoundLeader"] for racer in created["standings"]))
+        self.assertTrue(all(racer["liveTier"] is None for racer in created["standings"]))
+
+        partial = score_heat_sequentially(self.client, day1_heat).get_json()
+        by_place = {
+            entry["contestantId"]: index + 1
+            for index, entry in enumerate(day1_heat["entries"])
+        }
+        standings_by_id = {racer["id"]: racer for racer in partial["standings"]}
+        first_place_id = next(cid for cid, place in by_place.items() if place == 1)
+        second_place_id = next(cid for cid, place in by_place.items() if place == 2)
+        third_place_id = next(cid for cid, place in by_place.items() if place == 3)
+        fourth_place_id = next(cid for cid, place in by_place.items() if place == 4)
+
+        self.assertTrue(standings_by_id[first_place_id]["liveRoundLeader"])
+        self.assertEqual(standings_by_id[first_place_id]["liveTier"], "bye")
+        self.assertFalse(standings_by_id[second_place_id]["liveRoundLeader"])
+        self.assertEqual(standings_by_id[second_place_id]["liveTier"], "preliminary")
+        self.assertEqual(standings_by_id[third_place_id]["liveTier"], "wildcard")
+        self.assertEqual(standings_by_id[fourth_place_id]["liveTier"], "wildcard")
+        # Their round win/tier hasn't been finalized, so it isn't counted yet.
+        self.assertEqual(standings_by_id[first_place_id]["wins"], 0)
+
+        # Once the round fully completes, there's no round in progress
+        # anymore, so nobody is flagged as a live leader or tier.
+        day1_heats = created["days"][0]["heats"]
+        finished = score_all_heats_sequentially(self.client, day1_heats[1:])
+        self.assertTrue(all(not racer["liveRoundLeader"] for racer in finished["standings"]))
+        self.assertTrue(all(racer["liveTier"] is None for racer in finished["standings"]))
 
     def test_wildcard_seats_reach_past_excluded_finishers_and_stay_uncapped(self) -> None:
         created = self.client.post(
@@ -966,6 +1017,82 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertEqual(len(entries_by_racer[e]["marbles"]), 2)
         self.assertEqual(len(entries_by_racer[f]["marbles"]), 2)
         self.assertEqual(len(entries_by_racer[g]["marbles"]), 1)
+
+    def test_standings_rank_by_tier_not_raw_placement_count(self) -> None:
+        created = self.client.post(
+            "/api/tournaments", json={"name": "Tier Ranking Cup"}
+        ).get_json()
+        tournament_id = created["competition"]["id"]
+        self.addCleanup(
+            lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close()
+        )
+        contestant_ids = [racer["id"] for racer in created["contestants"]]
+        state = self.client.put(
+            f"/api/tournaments/{tournament_id}",
+            json={
+                "name": "Tier Ranking Cup",
+                "days": 3,
+                "heatsPerRacerPerDay": 1,
+                "maxMarblesPerHeat": 8,
+                "marblesPerRacer": 1,
+                "championshipMaxMarblesPerHeat": 24,
+                "maxByeMarblesPerRacer": 2,
+                "maxFinalRacers": 8,
+                "points": [10, 7, 5, 3, 2, 1, 0, 0],
+                "contestants": [
+                    {"name": racer["name"], "color": racer["color"]}
+                    for racer in created["contestants"]
+                ],
+            },
+        ).get_json()
+
+        # Same shape as the bye-ineligibility cascade scenario: A wins days
+        # 1-2, so day 3's raw 2nd place (also A) is bye-ineligible and its
+        # preliminary slot cascades to C (raw 3rd on day 3). That gives C
+        # one real preliminary promotion despite never placing 2nd, while E
+        # racks up two raw 3rd/4th finishes that both land as wildcard (E is
+        # never promoted to preliminary). Ranking by tier should put C
+        # (1 preliminary promotion) above E (0 promotions, 2 wildcard),
+        # even though a raw-placement count would rank E above C.
+        finish_orders = [
+            [0, 1, 4, 5, 6, 7, 2, 3],
+            [0, 1, 6, 7, 4, 5, 3, 2],
+            [3, 0, 2, 4, 5, 6, 7, 1],
+        ]
+        for day, order in zip(state["days"], finish_orders):
+            heat = day["heats"][0]
+            finishes = {
+                contestant_ids[racer_index]: place
+                for place, racer_index in enumerate(order, start=1)
+            }
+            results = [
+                {
+                    "contestantId": entry["contestantId"],
+                    "marbleNumber": entry["marbles"][0]["number"],
+                    "finish": finishes[entry["contestantId"]],
+                }
+                for entry in heat["entries"]
+            ]
+            start_heat(self.client, heat)
+            saved = self.client.put(f'/api/heats/{heat["id"]}/results', json={"results": results})
+            self.assertEqual(saved.status_code, 200)
+            state = saved.get_json()
+
+        a, b, c, d, e, f, g, h = contestant_ids
+        standings_by_id = {racer["id"]: racer for racer in state["standings"]}
+
+        self.assertEqual(standings_by_id[c]["preliminaryPromotions"], 1)
+        self.assertEqual(standings_by_id[e]["preliminaryPromotions"], 0)
+        self.assertEqual(standings_by_id[e]["wildcardAdvancements"], 2)
+        self.assertLess(standings_by_id[c]["rank"], standings_by_id[e]["rank"])
+
+        # Full priority order: wins, then preliminary promotions, then
+        # wildcard advancements.
+        ranks = {racer_id: standings_by_id[racer_id]["rank"] for racer_id in (a, d, b, c, e)}
+        self.assertEqual(
+            sorted(ranks, key=ranks.get),
+            [a, d, b, c, e],
+        )
 
     def test_wildcard_marbles_split_across_heats_when_too_many_for_one(self) -> None:
         created = self.client.post(

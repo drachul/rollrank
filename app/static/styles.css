@@ -223,7 +223,12 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible { 
 .standing-row { display:grid; grid-template-columns:24px 26px 1fr auto; align-items:center; min-height:48px; border-top:1px solid var(--line); }
 .standing-row .rank { color:var(--muted); font-size:11px; font-weight:800; }
 .standing-row strong { font-size:12px; }
-.standing-row>span:last-child { color:var(--muted); font-size:11px; font-weight:750; }
+.standing-stat-badges { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:4px; }
+.standing-stat-chip { display:inline-flex; align-items:baseline; gap:2px; padding:2px 6px; border-radius:999px; background:rgba(255,255,255,.08); color:var(--blue-light); font-size:10px; font-weight:800; }
+.standing-stat-chip small { font-size:7px; font-weight:800; letter-spacing:.02em; text-transform:uppercase; opacity:.85; }
+.standing-stat-chip.stat-b { background:rgba(244,197,66,.16); color:var(--yellow); }
+.standing-stat-chip.stat-p { background:rgba(201,213,220,.14); color:#cbd5df; }
+.standing-stat-chip.stat-wc { background:rgba(201,130,82,.16); color:#c98252; }
 .wide-link { display:flex; justify-content:space-between; width:100%; padding:15px 0 0; border:0; background:none; color:var(--blue-light); font-size:11px; font-weight:850; cursor:pointer; }
 .completion-callout { display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:15px; padding:24px; border-radius:12px; background:rgba(255,255,255,.045); }
 .completion-callout p { margin:3px 0 0; color:var(--muted); font-size:11px; }
@@ -479,13 +484,18 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible { 
 .kiosk-standings-panel>header h2 { margin:4px 0 0; color:#fff; font-size:clamp(18px,2vw,24px); letter-spacing:-.03em; }
 .kiosk-standings-panel>header>span { padding:8px 10px; border-radius:999px; background:rgba(244,197,66,.13); color:var(--yellow); font-size:9px; font-weight:900; text-transform:uppercase; }
 .kiosk-standing-list { display:grid; min-height:0; flex:1; grid-template-columns:repeat(2,minmax(0,1fr)); align-content:stretch; }
-.kiosk-standing-list article { display:grid; min-width:0; grid-template-columns:38px 30px minmax(0,1fr) 82px; align-items:center; gap:9px; padding:8px 18px; border-bottom:1px solid rgba(255,255,255,.1); }
+.kiosk-standing-list article { display:grid; min-width:0; grid-template-columns:38px 30px minmax(0,1fr) auto; align-items:center; gap:9px; padding:8px 18px; border-bottom:1px solid rgba(255,255,255,.1); }
 .kiosk-standing-list article:nth-child(odd) { border-right:1px solid rgba(255,255,255,.1); }
 .kiosk-standing-list article.qualifying { background:rgba(47,128,237,.12); }
 .kiosk-standing-list article.qualifying .kiosk-rank { background:var(--blue); color:#fff; }
 .kiosk-rank { display:grid; width:30px; height:30px; place-items:center; border-radius:50%; background:rgba(255,255,255,.1); color:var(--muted); font-size:11px; font-weight:900; }
 .kiosk-standing-list article>strong { overflow:hidden; font-size:clamp(11px,1.3vw,16px); text-overflow:ellipsis; white-space:nowrap; }
-.kiosk-standing-list article>b.kiosk-wins { color:var(--blue-light); font-size:clamp(14px,1.6vw,20px); text-align:right; }
+.kiosk-stat-badges { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:5px; }
+.kiosk-stat-chip { display:inline-flex; align-items:baseline; gap:2px; padding:3px 7px; border-radius:999px; background:rgba(255,255,255,.1); color:var(--blue-light); font-size:clamp(11px,1.3vw,15px); font-weight:850; }
+.kiosk-stat-chip small { font-size:8px; font-weight:800; letter-spacing:.03em; text-transform:uppercase; opacity:.85; }
+.kiosk-stat-chip.stat-b { background:rgba(244,197,66,.16); color:var(--yellow); }
+.kiosk-stat-chip.stat-p { background:rgba(201,213,220,.14); color:#cbd5df; }
+.kiosk-stat-chip.stat-wc { background:rgba(201,130,82,.16); color:#c98252; }
 .kiosk-standings-panel>footer { display:flex; min-height:35px; align-items:center; justify-content:space-between; padding:0 22px; border-top:1px solid rgba(255,255,255,.1); color:var(--muted); font-size:8px; font-weight:750; text-transform:uppercase; }
 .kiosk-final-dashboard { position:relative; overflow:hidden; }
 .kiosk-final-dashboard>:not(.kiosk-fireworks) { position:relative; z-index:2; }

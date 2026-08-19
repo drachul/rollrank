@@ -467,9 +467,13 @@ def standings(
 ) -> list[dict[str, Any]]:
     """Ranks racers by their placing within each staging round (1st, 2nd, ...)
     rather than by points accumulated across the whole tournament. A racer's
-    rank is decided by how many rounds they placed 1st, then 2nd, then 3rd/4th,
-    with the sum of their round placings (lower is better) as a final tiebreak
-    before falling back to seed order.
+    rank is decided by how many rounds they won, then how many rounds
+    promoted them to preliminary, then how many advanced them to wildcard --
+    the same bye/preliminary/wildcard tiers the championship field itself
+    uses, not raw 2nd/3rd/4th place counts, so cascading (e.g. a bye-
+    ineligible 2nd place bumping preliminary down to 3rd) is reflected in
+    the ranking too. The sum of their round placings (lower is better) is
+    the final tiebreak before falling back to seed order.
     """
     tournament = connection.execute(
         "SELECT days FROM tournaments WHERE id = ?", (tournament_id,)
@@ -488,39 +492,64 @@ def standings(
     for item in field["wildcardPool"]:
         day_tier.setdefault((item["originRound"], item["racerId"]), "wildcard")
 
+    preview = live_round_preview(connection, tournament_id)
+
     day_placements: dict[int, list[int | None]] = {row["id"]: [] for row in racers}
     day_tiers: dict[int, list[str | None]] = {row["id"]: [] for row in racers}
+    day_complete_flags: list[bool] = []
     for day in range(1, tournament["days"] + 1):
         ranking = round_standings(connection, tournament_id, day)
         day_complete = is_staging_day_complete(connection, tournament_id, day)
+        day_complete_flags.append(day_complete)
+        is_live_day = preview is not None and preview["day"] == day
         for row in ranking:
-            day_placements[row["id"]].append(row["rank"] if day_complete else None)
-            day_tiers[row["id"]].append(day_tier.get((day, row["id"])) if day_complete else None)
+            if day_complete:
+                day_placements[row["id"]].append(row["rank"])
+                day_tiers[row["id"]].append(day_tier.get((day, row["id"])))
+            elif is_live_day:
+                # Not finalized, but there's a real (partial) result to
+                # preview -- the frontend marks these provisional with an
+                # asterisk rather than showing "Pending". Kept out of the
+                # wins/preliminary/wildcard tallies below until it's real.
+                day_placements[row["id"]].append(row["rank"])
+                day_tiers[row["id"]].append(preview["tiers"].get(row["id"]))
+            else:
+                day_placements[row["id"]].append(None)
+                day_tiers[row["id"]].append(None)
 
     summaries = []
     for row in racers:
         placements = day_placements[row["id"]]
-        raced_placements = [place for place in placements if place is not None]
+        tiers = day_tiers[row["id"]]
+        finalized_placements = [
+            place for place, complete in zip(placements, day_complete_flags) if complete
+        ]
         summaries.append(
             {
                 "id": row["id"],
                 "name": row["name"],
                 "color": row["color"],
                 "sortOrder": row["sort_order"],
-                "wins": sum(1 for place in placements if place == 1),
-                "seconds": sum(1 for place in placements if place == 2),
-                "thirdFourth": sum(1 for place in placements if place in (3, 4)),
-                "placementSum": sum(raced_placements),
+                "wins": sum(1 for place in finalized_placements if place == 1),
+                "preliminaryPromotions": sum(
+                    1 for tier, complete in zip(tiers, day_complete_flags) if complete and tier == "preliminary"
+                ),
+                "wildcardAdvancements": sum(
+                    1 for tier, complete in zip(tiers, day_complete_flags) if complete and tier == "wildcard"
+                ),
+                "placementSum": sum(finalized_placements),
                 "dayPlacements": placements,
-                "dayChampionshipTiers": day_tiers[row["id"]],
+                "dayChampionshipTiers": tiers,
+                "liveRoundLeader": preview is not None and preview["leaderId"] == row["id"],
+                "liveTier": preview["tiers"].get(row["id"]) if preview is not None else None,
             }
         )
 
     summaries.sort(
         key=lambda s: (
             -s["wins"],
-            -s["seconds"],
-            -s["thirdFourth"],
+            -s["preliminaryPromotions"],
+            -s["wildcardAdvancements"],
             s["placementSum"],
             s["sortOrder"],
         )
@@ -715,8 +744,15 @@ def heat_top_n(connection: sqlite3.Connection, heat_id: int, n: int) -> list[int
     return [row["racer_id"] for row in rows[:n]]
 
 
-def championship_field(connection: sqlite3.Connection, tournament_id: int) -> dict[str, list[dict[str, Any]]]:
+def championship_field(
+    connection: sqlite3.Connection, tournament_id: int, live_day: int | None = None
+) -> dict[str, list[dict[str, Any]]]:
     """Pure computation over every staging round's round_standings().
+
+    live_day, when given, forces that one day's current (possibly partial)
+    round_standings() to be counted alongside every other already-complete
+    day, even though it isn't finished racing itself -- used to preview what
+    a round in progress would award if it ended right now.
 
     Tier priority is bye > preliminary > wildcard: a racer who ever wins a
     round (rank 1) is permanently ineligible for preliminary or wildcard,
@@ -752,8 +788,9 @@ def championship_field(connection: sqlite3.Connection, tournament_id: int) -> di
         # A day isn't done racing until every one of its heats is scored --
         # round_standings() for a day still in progress (or untouched, where
         # it falls back to sort_order) isn't a final result and shouldn't
-        # claim bye/preliminary/wildcard seats yet.
-        if not is_staging_day_complete(connection, tournament_id, day):
+        # claim bye/preliminary/wildcard seats yet, unless it's the day
+        # explicitly being previewed via live_day.
+        if day != live_day and not is_staging_day_complete(connection, tournament_id, day):
             continue
         ranking = round_standings(connection, tournament_id, day)
         rankings[day] = ranking
@@ -800,6 +837,50 @@ def championship_field(connection: sqlite3.Connection, tournament_id: int) -> di
             )
 
     return {"byes": byes, "preliminaryDirect": preliminary_direct, "wildcardPool": wildcard_pool}
+
+
+def find_in_progress_staging_day(connection: sqlite3.Connection, tournament_id: int) -> int | None:
+    """The one staging day, if any, that has some but not all of its heats
+    scored. Heats are locked to run in strict global order, so at most one
+    day can ever be in this state at a time."""
+    tournament = connection.execute(
+        "SELECT days FROM tournaments WHERE id = ?", (tournament_id,)
+    ).fetchone()
+    for day in range(1, tournament["days"] + 1):
+        if is_staging_day_complete(connection, tournament_id, day):
+            continue
+        ranking = round_standings(connection, tournament_id, day)
+        return day if any(row["totalPoints"] > 0 for row in ranking) else None
+    return None
+
+
+def live_round_preview(connection: sqlite3.Connection, tournament_id: int) -> dict[str, Any] | None:
+    """What the currently in-progress staging round would award if it ended
+    right now: who's provisionally leading it (drives a "wins" asterisk) and
+    who'd provisionally land in each championship tier (bye/preliminary/
+    wildcard), independent of whether the leader is capped out of an actual
+    bye marble. None if no staging round is in progress.
+    """
+    live_day = find_in_progress_staging_day(connection, tournament_id)
+    if live_day is None:
+        return None
+    ranking = round_standings(connection, tournament_id, live_day)
+    field = championship_field(connection, tournament_id, live_day=live_day)
+    tiers: dict[int, str] = {}
+    for item in field["byes"]:
+        if item["originRound"] == live_day:
+            tiers[item["racerId"]] = "bye"
+    for item in field["preliminaryDirect"]:
+        if item["originRound"] == live_day:
+            tiers.setdefault(item["racerId"], "preliminary")
+    for item in field["wildcardPool"]:
+        if item["originRound"] == live_day:
+            tiers.setdefault(item["racerId"], "wildcard")
+    return {
+        "day": live_day,
+        "leaderId": ranking[0]["id"],
+        "tiers": tiers,
+    }
 
 
 def interleave_groups(
