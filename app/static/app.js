@@ -15,6 +15,7 @@ let kioskLastUpdated = null;
 let kioskUsesBrowserFullscreen = false;
 let setupWizardStep = 0;
 let setupWizardDraft = null;
+let standingsTierView = "projected";
 if (kioskMode) activeView = "dashboard";
 
 const landingPage = document.querySelector("#landing-page");
@@ -597,22 +598,28 @@ function renderKioskFinalDashboard() {
 
 function racerStatBadges(racer) {
   const tiers = racer.dayChampionshipTiers || [];
+  const finalizedTiers = racer.dayChampionshipPreviousTiers || tiers;
+  const tierStat = (tier, label, title) => {
+    const count = tiers.filter((item) => item === tier).length;
+    const finalizedCount = finalizedTiers.filter((item) => item === tier).length;
+    return {label, title, count, finalizedCount, live:count !== finalizedCount, liveAlreadyCounted:true};
+  };
   const stats = [
     {label: "W", title: "Wins", count: racer.wins, live: racer.liveRoundLeader, liveAlreadyCounted: false},
-    {label: "B", title: "Byes", count: tiers.filter((tier) => tier === "bye").length, live: racer.liveTier === "bye", liveAlreadyCounted: true},
-    {label: "P", title: "Preliminary", count: tiers.filter((tier) => tier === "preliminary").length, live: racer.liveTier === "preliminary", liveAlreadyCounted: true},
-    {label: "WC", title: "Wildcard", count: tiers.filter((tier) => tier === "wildcard").length, live: racer.liveTier === "wildcard", liveAlreadyCounted: true},
+    tierStat("bye", "B", "Byes"),
+    tierStat("preliminary", "P", "Preliminary"),
+    tierStat("wildcard", "WC", "Wildcard"),
   ];
-  // Wins exclude the live round in the API and need a provisional +1. Live
-  // championship tiers are already present in dayChampionshipTiers, so their
-  // count only needs the asterisk and must not be incremented again.
+  // Wins exclude the live round and need a provisional +1. Championship
+  // counts already contain every projected reassignment, including removals,
+  // so they only need an asterisk and a comparison with the finalized count.
   return stats
     .map((stat) => ({...stat, displayCount: stat.live && !stat.liveAlreadyCounted ? stat.count + 1 : stat.count}))
-    .filter((stat) => stat.displayCount > 0);
+    .filter((stat) => stat.displayCount > 0 || (stat.live && stat.finalizedCount > 0));
 }
 
 function statBadgesMarkup(racer, wrapperClass, chipClass) {
-  return `<div class="${wrapperClass}">${racerStatBadges(racer).map((stat) => `<span class="${chipClass} stat-${stat.label.toLowerCase()}" title="${stat.title}${stat.live ? " · leading, not yet finalized" : ""}">${stat.displayCount}${stat.live ? "*" : ""}<small>${stat.label}</small></span>`).join("")}</div>`;
+  return `<div class="${wrapperClass}">${racerStatBadges(racer).map((stat) => `<span class="${chipClass} stat-${stat.label.toLowerCase()}" title="${stat.title}${stat.live ? stat.finalizedCount == null ? " · leading, not yet finalized" : ` · projected from ${stat.finalizedCount}` : ""}">${stat.displayCount}${stat.live ? "*" : ""}<small>${stat.label}</small></span>`).join("")}</div>`;
 }
 
 function kioskStatBadgesMarkup(racer) {
@@ -903,17 +910,44 @@ function renderChampionshipLadder() {
   </section>`;
 }
 
+function standingRoundCell(racer, place, index, liveRoundDay, mobile = false) {
+  const projectedTier = racer.dayChampionshipTiers[index];
+  const previousTier = (racer.dayChampionshipPreviousTiers || [])[index];
+  const showProjected = standingsTierView === "projected";
+  const tier = showProjected ? projectedTier : previousTier;
+  const provisional = showProjected && (racer.dayChampionshipTierProvisional || [])[index] === true;
+  let tierMarkup = tier ? `<small class="tier-tag">${tierLabel[tier]}</small>` : "";
+  if (provisional) {
+    const transition = tier && previousTier
+      ? `${tierLabel[previousTier]} → ${tierLabel[tier]}*`
+      : tier
+        ? `Projected ${tierLabel[tier]}*`
+        : `${tierLabel[previousTier]} → No seat*`;
+    tierMarkup = `<small class="tier-tag provisional" title="Provisional reassignment while round ${liveRoundDay} is in progress">${transition}</small>`;
+  }
+  const className = `${tierClass(tier)}${provisional ? ` tier-reassigned${tier ? "" : " tier-removed"}` : ""}`;
+  const placement = placeLabel(place, index + 1 === liveRoundDay);
+  return mobile
+    ? `<span class="${className}"><small>Round ${index + 1}</small><b>${placement}</b>${tierMarkup}</span>`
+    : `<td class="${className}">${placement}${tierMarkup}</td>`;
+}
+
+function standingsTierViewControl(liveRoundDay) {
+  const projected = standingsTierView === "projected";
+  return `<div class="provisional-tier-note"><span>${projected ? "*" : "●"}</span><div class="provisional-tier-copy"><strong>${projected ? "Projected qualification changes" : "Current qualification status"}</strong><small>${projected ? `Round ${liveRoundDay} is in progress. Arrows show earlier seats that would be reassigned if the round ended now.` : `Showing finalized qualification seats only. Round ${liveRoundDay} placements remain provisional until every heat is scored.`}</small></div><div class="standings-tier-toggle" role="group" aria-label="Qualification seat view"><button type="button" data-standings-tier-view="current" aria-pressed="${!projected}" class="${projected ? "" : "active"}">Current</button><button type="button" data-standings-tier-view="projected" aria-pressed="${projected}" class="${projected ? "active" : ""}">Projected</button></div></div>`;
+}
+
 function renderStandings() {
   const c = state.competition;
   return `${viewHeader("Live scoring", "Tournament standings", "Round placings update automatically whenever a heat result is saved.")}
     ${renderChampionshipLadder()}
-    <section class="panel table-panel"><div class="table-scroll"><table class="standings-table"><thead><tr><th>Racer</th>${Array.from({length:c.days}, (_, i) => `<th>Round ${i + 1}</th>`).join("")}</tr></thead><tbody>
-    ${state.standings.map((racer) => `<tr><td><span class="racer-cell">${marble(racer.color, "small")}<strong>${escapeHtml(racer.name)}</strong></span></td>${racer.dayPlacements.map((place, index) => `<td class="${tierClass(racer.dayChampionshipTiers[index])}">${placeLabel(place, index + 1 === c.liveRoundDay)}${racer.dayChampionshipTiers[index] ? `<small class="tier-tag">${tierLabel[racer.dayChampionshipTiers[index]]}</small>` : ""}</td>`).join("")}</tr>`).join("")}
+    <section class="panel table-panel">${c.liveRoundDay ? standingsTierViewControl(c.liveRoundDay) : ""}<div class="table-scroll"><table class="standings-table"><thead><tr><th>Racer</th>${Array.from({length:c.days}, (_, i) => `<th>Round ${i + 1}</th>`).join("")}</tr></thead><tbody>
+    ${state.standings.map((racer) => `<tr><td><span class="racer-cell">${marble(racer.color, "small")}<strong>${escapeHtml(racer.name)}</strong></span></td>${racer.dayPlacements.map((place, index) => standingRoundCell(racer, place, index, c.liveRoundDay)).join("")}</tr>`).join("")}
     </tbody></table></div>
     <div class="mobile-standings" aria-label="Mobile standings">
       ${state.standings.map((racer) => `<article class="mobile-standing-card">
         <div class="mobile-standing-lead">${marble(racer.color, "small")}<strong>${escapeHtml(racer.name)}</strong></div>
-        <div class="mobile-standing-stats">${racer.dayPlacements.map((place, index) => `<span class="${tierClass(racer.dayChampionshipTiers[index])}"><small>Round ${index + 1}</small><b>${placeLabel(place, index + 1 === c.liveRoundDay)}</b>${racer.dayChampionshipTiers[index] ? `<small class="tier-tag">${tierLabel[racer.dayChampionshipTiers[index]]}</small>` : ""}</span>`).join("")}</div>
+        <div class="mobile-standing-stats">${racer.dayPlacements.map((place, index) => standingRoundCell(racer, place, index, c.liveRoundDay, true)).join("")}</div>
       </article>`).join("")}
     </div></section>`;
 }
@@ -1100,6 +1134,20 @@ function wizardChampionshipImpact(projection) {
   return `<p class="eyebrow">Projected field</p><div class="wizard-impact-stats"><span><b>${projection.wildcardMarbles}</b> wildcard marbles</span><span><b>${projection.wildcard.count}</b> wildcard heats</span><span><b>${projection.preliminaryMarbles}</b> preliminary marbles</span><span><b>${projection.preliminary.count}</b> preliminary heats</span><span><b>${projection.finalists}</b> finalists</span></div><p class="wizard-caveat">Projections show the largest possible fields. Repeat racers and results can make stages smaller.</p>`;
 }
 
+function wizardCascadingMode(draft = setupWizardDraft) {
+  const values = [draft.allowCascadingFinalByeSelection, draft.allowCascadingPrelimPromotionSelection, draft.allowCascadingWildcardPromotionSelection];
+  if (values.every(Boolean)) return "spread";
+  if (values.every((value) => !value)) return "reward";
+  return "custom";
+}
+
+function wizardCascadingStatus() {
+  const mode = wizardCascadingMode();
+  if (mode === "custom") return `<div class="wizard-choice-status custom"><strong>Mixed expert settings</strong><span>The three cascading toggles currently differ. Choose an option above to turn all three on or off.</span></div>`;
+  const enabled = mode === "spread";
+  return `<div class="wizard-choice-status ${enabled ? "on" : "off"}"><strong>All cascading ${enabled ? "enabled" : "disabled"}</strong><span>Final byes · preliminary promotion · wildcard promotion</span></div>`;
+}
+
 function refreshSetupWizardFeedback() {
   const impact = document.querySelector("#setup-wizard .wizard-impact");
   if (!impact || !setupWizardDraft) return;
@@ -1137,6 +1185,7 @@ function renderSetupWizardStep() {
       ${wizardNumberControl("Track marble limit", "maxMarblesPerHeat", 2, 480, "The maximum number of marbles your track can handle safely.")}
       </div></div><aside class="wizard-impact ${projection.valid ? "" : "invalid"}">${wizardStagingImpact(projection)}</aside></div>`;
   } else if (setupWizardStep === 2) {
+    const cascadingMode = wizardCascadingMode();
     body.innerHTML = `<div class="wizard-layout championship"><div><p class="eyebrow">Championship ladder</p><h3>Control how racers advance</h3><p class="wizard-lead">Round winners receive final byes, runners-up enter the preliminary stage, and the next two places enter the wildcard stage.</p><div class="wizard-controls">
       ${wizardNumberControl("Wildcard marble limit / racer", "maxWildcardPromotionMarblesPerRacer", 0, 20, "Set to 0 to skip wildcard qualification; higher values reward repeat results.")}
       ${wizardNumberControl("Promoted / wildcard heat", "wildcardRacersPromotedPerHeat", 1, 24, "Top racers from each wildcard heat who reach the preliminary stage.")}
@@ -1145,10 +1194,13 @@ function renderSetupWizardStep() {
       ${wizardNumberControl("Promoted / preliminary heat", "preliminaryRacersPromotedPerHeat", 1, 24, "Top racers from each preliminary heat who reach the final.")}
       ${wizardNumberControl("Max marbles / preliminary heat", "preliminaryMaxMarblesPerHeat", 2, 480, "Lower limits can create more preliminary heats.")}
       ${wizardNumberControl("Max racers in final", "maxFinalRacers", 2, Math.min(24, projection.racerCount), "The final is trimmed to this many unique racers.")}
-      </div><fieldset class="wizard-choice"><legend>When the same racers keep placing</legend><label><input type="radio" name="wizard-repeat" value="spread" data-wizard-repeat ${setupWizardDraft.allowCascadingFinalByeSelection ? "checked" : ""}><span><strong>Spread opportunities</strong><small>Cascade capped seats down the standings to keep stages fuller.</small></span></label><label><input type="radio" name="wizard-repeat" value="reward" data-wizard-repeat ${setupWizardDraft.allowCascadingFinalByeSelection ? "" : "checked"}><span><strong>Reward repeat performers</strong><small>Forfeit capped seats instead of passing them down.</small></span></label></fieldset></div><aside class="wizard-impact">${wizardChampionshipImpact(projection)}</aside></div>`;
+      </div><fieldset class="wizard-choice"><legend>Qualification seat behavior</legend><label><input type="radio" name="wizard-repeat" value="spread" data-wizard-repeat ${cascadingMode === "spread" ? "checked" : ""}><span><strong>Spread opportunities <em>Cascading on</em></strong><small>When a racer is capped, pass final-bye, preliminary, and wildcard seats down the standings.</small></span></label><label><input type="radio" name="wizard-repeat" value="reward" data-wizard-repeat ${cascadingMode === "reward" ? "checked" : ""}><span><strong>Reward repeat performers <em>No cascading</em></strong><small>Disable all three cascading toggles. When a racer is capped, that qualification seat is forfeited.</small></span></label>${wizardCascadingStatus()}</fieldset></div><aside class="wizard-impact">${wizardChampionshipImpact(projection)}</aside></div>`;
   } else {
     const scoreLabels = {keep:"Keep current scoring", classic:"Classic 10–7–5 curve", balanced:"Every place scores", podium:"Podium-focused"};
-    body.innerHTML = `<div class="wizard-review"><div><p class="eyebrow">Review</p><h3>Your tournament at a glance</h3><p>Nothing changes until you apply this setup. You can still adjust every expert field before saving the tournament.</p></div><label class="wizard-scoring"><span>Scoring style</span><select data-wizard-setting="scoringStyle"><option value="keep" ${setupWizardDraft.scoringStyle === "keep" ? "selected" : ""}>Keep current points</option><option value="classic" ${setupWizardDraft.scoringStyle === "classic" ? "selected" : ""}>Classic · rewards the front</option><option value="balanced" ${setupWizardDraft.scoringStyle === "balanced" ? "selected" : ""}>Balanced · every place matters</option><option value="podium" ${setupWizardDraft.scoringStyle === "podium" ? "selected" : ""}>Podium-focused · top three matter most</option></select><small>${scoreLabels[setupWizardDraft.scoringStyle]}</small></label>${wizardStageMap(projection)}<div class="wizard-summary-grid"><article><small>Scale</small><strong>${projection.totalHeats} projected heats</strong><span>${projection.stagingHeats} staging + up to ${projection.championshipHeats} championship</span></article><article><small>Track load</small><strong>${projection.staging.size * setupWizardDraft.marblesPerRacer} marbles / staging heat</strong><span>${projection.staging.size} racers with ${setupWizardDraft.marblesPerRacer} marble${setupWizardDraft.marblesPerRacer === 1 ? "" : "s"} each</span></article><article><small>Final field</small><strong>Up to ${projection.finalists} racers</strong><span>The final always uses one marble per racer</span></article></div></div>`;
+    const cascadingMode = wizardCascadingMode();
+    const cascadingTitle = cascadingMode === "spread" ? "Spread opportunities" : cascadingMode === "reward" ? "Reward repeat performers" : "Mixed expert settings";
+    const cascadingDescription = cascadingMode === "spread" ? "Cascading enabled for all three qualification tiers" : cascadingMode === "reward" ? "No cascading; capped qualification seats are forfeited" : "Cascading toggles will retain their individual expert values";
+    body.innerHTML = `<div class="wizard-review"><div><p class="eyebrow">Review</p><h3>Your tournament at a glance</h3><p>Nothing changes until you apply this setup. You can still adjust every expert field before saving the tournament.</p></div><label class="wizard-scoring"><span>Scoring style</span><select data-wizard-setting="scoringStyle"><option value="keep" ${setupWizardDraft.scoringStyle === "keep" ? "selected" : ""}>Keep current points</option><option value="classic" ${setupWizardDraft.scoringStyle === "classic" ? "selected" : ""}>Classic · rewards the front</option><option value="balanced" ${setupWizardDraft.scoringStyle === "balanced" ? "selected" : ""}>Balanced · every place matters</option><option value="podium" ${setupWizardDraft.scoringStyle === "podium" ? "selected" : ""}>Podium-focused · top three matter most</option></select><small>${scoreLabels[setupWizardDraft.scoringStyle]}</small></label>${wizardStageMap(projection)}<div class="wizard-summary-grid"><article><small>Scale</small><strong>${projection.totalHeats} projected heats</strong><span>${projection.stagingHeats} staging + up to ${projection.championshipHeats} championship</span></article><article><small>Track load</small><strong>${projection.staging.size * setupWizardDraft.marblesPerRacer} marbles / staging heat</strong><span>${projection.staging.size} racers with ${setupWizardDraft.marblesPerRacer} marble${setupWizardDraft.marblesPerRacer === 1 ? "" : "s"} each</span></article><article><small>Final field</small><strong>Up to ${projection.finalists} racers</strong><span>The final always uses one marble per racer</span></article><article><small>Qualification seats</small><strong>${cascadingTitle}</strong><span>${cascadingDescription}</span></article></div></div>`;
   }
   footer.innerHTML = `<button type="button" class="secondary-button" data-wizard-back ${setupWizardStep === 0 ? "disabled" : ""}>Back</button><span>Step ${setupWizardStep + 1} of ${wizardSteps.length}</span>${setupWizardStep < wizardSteps.length - 1 ? `<button type="button" class="primary-button" data-wizard-next ${!projection.valid ? "disabled" : ""}>Continue <span aria-hidden="true">→</span></button>` : `<button type="button" class="primary-button" data-wizard-apply>Apply this setup</button>`}`;
 }
@@ -1363,6 +1415,8 @@ document.addEventListener("click", (event) => {
   if (event.target.closest("[data-wizard-apply]")) { applySetupWizard(); return; }
   if (event.target.closest("[data-enter-kiosk]")) { setKioskMode(true, true); return; }
   if (event.target.closest("[data-exit-kiosk]")) { setKioskMode(false); return; }
+  const standingsTierViewButton = event.target.closest("[data-standings-tier-view]");
+  if (standingsTierViewButton) { standingsTierView = standingsTierViewButton.dataset.standingsTierView; render(); return; }
   const viewButton = event.target.closest("[data-view]");
   if (viewButton) {
     activeView = viewButton.dataset.view;

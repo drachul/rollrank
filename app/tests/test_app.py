@@ -355,6 +355,12 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertIn("Live impact", frontend)
         self.assertIn("Championship ladder", frontend)
         self.assertIn("Spread opportunities", frontend)
+        self.assertIn("Reward repeat performers", frontend)
+        self.assertIn("No cascading", frontend)
+        self.assertIn("Disable all three cascading toggles", frontend)
+        self.assertIn("function wizardCascadingMode", frontend)
+        self.assertIn("Final byes · preliminary promotion · wildcard promotion", frontend)
+        self.assertIn("No cascading; capped qualification seats are forfeited", frontend)
         self.assertIn("Apply this setup", frontend)
         self.assertIn("Review the expert settings, then save the tournament", frontend)
         self.assertIn(".setup-wizard", styles)
@@ -368,6 +374,21 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertNotIn("Edit tournament", frontend)
         self.assertNotIn(">Print report</a>", frontend)
         self.assertIn("Tournament standings", frontend)
+        self.assertIn("Projected qualification changes", frontend)
+        self.assertIn("Current qualification status", frontend)
+        self.assertIn('data-standings-tier-view="current"', frontend)
+        self.assertIn('data-standings-tier-view="projected"', frontend)
+        self.assertIn('aria-label="Qualification seat view"', frontend)
+        self.assertIn("function standingsTierViewControl", frontend)
+        self.assertIn('let standingsTierView = "projected"', frontend)
+        self.assertIn("Arrows show earlier seats that would be reassigned", frontend)
+        self.assertIn("dayChampionshipPreviousTiers", frontend)
+        self.assertIn("dayChampionshipTierProvisional", frontend)
+        self.assertIn("No seat*", frontend)
+        self.assertIn("function standingRoundCell", frontend)
+        self.assertIn(".provisional-tier-note", styles)
+        self.assertIn(".standings-tier-toggle", styles)
+        self.assertIn(".tier-reassigned", styles)
         self.assertNotIn("Championship standings", frontend)
         self.assertNotIn("Race days", frontend)
         self.assertNotIn("Heats per racer / day", frontend)
@@ -885,6 +906,8 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertTrue(all(racer["wildcardAdvancements"] == 0 for racer in partial["standings"]))
         leader = next(racer for racer in partial["standings"] if racer["dayPlacements"][0] == 1)
         self.assertEqual(leader["dayChampionshipTiers"][0], "bye")
+        self.assertIsNone(leader["dayChampionshipPreviousTiers"][0])
+        self.assertTrue(leader["dayChampionshipTierProvisional"][0])
         self.assertTrue(leader["liveRoundLeader"])
 
         state = score_all_heats_sequentially(self.client, day1_heats[1:])
@@ -892,6 +915,12 @@ class MarbleRaceApiTest(unittest.TestCase):
         day1_placements = sorted(racer["dayPlacements"][0] for racer in state["standings"])
         self.assertEqual(day1_placements, list(range(1, 9)))
         self.assertTrue(any(racer["dayChampionshipTiers"][0] == "bye" for racer in state["standings"]))
+        self.assertTrue(
+            all(
+                not racer["dayChampionshipTierProvisional"][0]
+                for racer in state["standings"]
+            )
+        )
         self.assertTrue(any(racer["wins"] == 1 for racer in state["standings"]))
 
     def test_live_round_preview_flags_the_provisional_leader_and_tiers(self) -> None:
@@ -935,6 +964,95 @@ class MarbleRaceApiTest(unittest.TestCase):
         finished = score_all_heats_sequentially(self.client, day1_heats[1:])
         self.assertTrue(all(not racer["liveRoundLeader"] for racer in finished["standings"]))
         self.assertTrue(all(racer["liveTier"] is None for racer in finished["standings"]))
+
+    def test_live_round_preview_exposes_reassignments_in_earlier_rounds(self) -> None:
+        created = self.client.post(
+            "/api/tournaments", json={"name": "Provisional Reassignment Cup"}
+        ).get_json()
+        tournament_id = created["competition"]["id"]
+        self.addCleanup(
+            lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close()
+        )
+        contestant_ids = [racer["id"] for racer in created["contestants"]]
+        configured = self.client.put(
+            f"/api/tournaments/{tournament_id}",
+            json={
+                "name": "Provisional Reassignment Cup",
+                "days": 2,
+                "heatsPerRacerPerDay": 2,
+                "maxMarblesPerHeat": 8,
+                "marblesPerRacer": 1,
+                "wildcardMaxMarblesPerHeat": 8,
+                "preliminaryMaxMarblesPerHeat": 8,
+                "maxFinalByeMarblesPerRacer": 1,
+                "maxPrelimPromotionMarblesPerRacer": 1,
+                "maxWildcardPromotionMarblesPerRacer": 1,
+                "allowCascadingFinalByeSelection": True,
+                "allowCascadingPrelimPromotionSelection": True,
+                "allowCascadingWildcardPromotionSelection": True,
+                "wildcardRacersPromotedPerHeat": 2,
+                "preliminaryRacersPromotedPerHeat": 2,
+                "maxFinalRacers": 6,
+                "points": [8, 7, 6, 5, 4, 3, 2, 1],
+                "contestants": [
+                    {"name": racer["name"], "color": racer["color"]}
+                    for racer in created["contestants"]
+                ],
+            },
+        ).get_json()
+
+        def score_in_order(heat, ordered_ids):
+            finishes = {
+                racer_id: place
+                for place, racer_id in enumerate(ordered_ids, start=1)
+            }
+            start_heat(self.client, heat)
+            return self.client.put(
+                f'/api/heats/{heat["id"]}/results',
+                json={
+                    "results": [
+                        {
+                            "contestantId": entry["contestantId"],
+                            "marbleNumber": entry["marbles"][0]["number"],
+                            "finish": finishes[entry["contestantId"]],
+                        }
+                        for entry in heat["entries"]
+                    ]
+                },
+            ).get_json()
+
+        state = configured
+        for heat in state["days"][0]["heats"]:
+            state = score_in_order(heat, contestant_ids)
+
+        finalized = {racer["id"]: racer for racer in state["standings"]}
+        first, second, third, fourth, fifth = contestant_ids[:5]
+        self.assertEqual(finalized[first]["dayChampionshipTiers"][0], "bye")
+        self.assertEqual(finalized[second]["dayChampionshipTiers"][0], "preliminary")
+        self.assertEqual(finalized[third]["dayChampionshipTiers"][0], "wildcard")
+        self.assertEqual(finalized[fourth]["dayChampionshipTiers"][0], "wildcard")
+
+        # A partial second round makes the old runner-up a projected bye.
+        # That cascades the earlier preliminary and wildcard seats down the
+        # completed first-round standings, all of which the API now exposes.
+        partial = score_in_order(
+            state["days"][1]["heats"][0],
+            contestant_ids[1:] + contestant_ids[:1],
+        )
+        by_id = {racer["id"]: racer for racer in partial["standings"]}
+        self.assertEqual(by_id[second]["dayChampionshipPreviousTiers"][0], "preliminary")
+        self.assertIsNone(by_id[second]["dayChampionshipTiers"][0])
+        self.assertTrue(by_id[second]["dayChampionshipTierProvisional"][0])
+        self.assertEqual(by_id[third]["dayChampionshipPreviousTiers"][0], "wildcard")
+        self.assertEqual(by_id[third]["dayChampionshipTiers"][0], "preliminary")
+        self.assertTrue(by_id[third]["dayChampionshipTierProvisional"][0])
+        self.assertIsNone(by_id[fifth]["dayChampionshipPreviousTiers"][0])
+        self.assertEqual(by_id[fifth]["dayChampionshipTiers"][0], "wildcard")
+        self.assertTrue(by_id[fifth]["dayChampionshipTierProvisional"][0])
+        self.assertEqual(by_id[second]["dayChampionshipTiers"][1], "bye")
+        self.assertTrue(by_id[second]["dayChampionshipTierProvisional"][1])
+        # Finalized standings tallies remain official until the round ends.
+        self.assertEqual(by_id[second]["preliminaryPromotions"], 1)
 
     def test_wildcard_seats_reach_past_excluded_finishers_and_stay_uncapped(self) -> None:
         created = self.client.post(
