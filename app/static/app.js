@@ -273,12 +273,37 @@ function startKioskRaceResults(heat) {
   stopKioskRaceIntroduction();
   stopKioskCupPresentation();
   stopKioskRaceResults();
-  const results = heatMarblesInFinishOrder(heat).map((result, index) => ({
-    ...result,
-    dnfEffect: result.finish === 0 ? randomKioskDnfEffect() : null,
-    dnfExitY: index % 2 ? "78vh" : "-78vh",
-    dnfSpin: index % 2 ? "820deg" : "-820deg",
-  }));
+  const orderedResults = heatMarblesInFinishOrder(heat);
+  const finisherCount = orderedResults.filter((result) => result.finish > 0).length;
+  const dnfCount = orderedResults.length - finisherCount;
+  const finishGap = finisherCount > 1 ? Math.min(5.2, 33 / (finisherCount - 1)) : 0;
+  const dnfBandCount = Math.ceil(dnfCount / 2);
+  const dnfBandStep = dnfBandCount > 1 ? 20 / (dnfBandCount - 1) : 0;
+  let finisherIndex = 0;
+  let dnfIndex = 0;
+  const results = orderedResults.map((result) => {
+    if (result.finish > 0) {
+      const presentation = {
+        ...result,
+        finisherIndex,
+        finishStop: 90 - finisherIndex * finishGap,
+        resultY: 56,
+      };
+      finisherIndex += 1;
+      return presentation;
+    }
+    const dnfBandIndex = Math.floor(dnfIndex / 2);
+    const resultY = dnfIndex % 2 ? 84 - dnfBandIndex * dnfBandStep : 16 + dnfBandIndex * dnfBandStep;
+    const presentation = {
+      ...result,
+      dnfEffect: randomKioskDnfEffect(),
+      dnfExitY: dnfIndex % 2 ? "78vh" : "-78vh",
+      dnfSpin: dnfIndex % 2 ? "820deg" : "-820deg",
+      resultY,
+    };
+    dnfIndex += 1;
+    return presentation;
+  });
   const densityClass = results.length > 18 ? " crowded" : results.length > 10 ? " compact" : "";
   const resultDelayStep = Math.min(170, Math.floor(3500 / Math.max(1, results.length - 1)));
   const overlay = document.createElement("section");
@@ -291,7 +316,10 @@ function startKioskRaceResults(heat) {
     </header>
     <div class="kiosk-results-track">
       <i class="kiosk-results-finish-line" aria-hidden="true"><span>Finish</span></i>
-      ${results.map((result, index) => `<article class="kiosk-result-racer${result.finish === 0 ? ` dnf dnf-${result.dnfEffect}` : ""}" style="--result-y:${((index + .5) / results.length * 100).toFixed(3)}%;--result-delay:${index * resultDelayStep}ms;--dnf-exit-y:${result.dnfExitY};--dnf-spin:${result.dnfSpin}">
+      <div class="kiosk-results-chute-positions" aria-hidden="true">
+        ${results.filter((result) => result.finish > 0).map((result) => `<span style="--finish-stop:${result.finishStop.toFixed(3)}vw"><b>${result.finish}</b></span>`).join("")}
+      </div>
+      ${results.map((result, index) => `<article class="kiosk-result-racer${result.finish === 0 ? ` dnf dnf-${result.dnfEffect}` : ` finisher label-${result.finisherIndex % 2 ? "far" : "near"}`}" style="--result-y:${result.resultY.toFixed(3)}%;--result-delay:${index * resultDelayStep}ms;${result.finish > 0 ? `--finish-stop:${result.finishStop.toFixed(3)}vw` : `--dnf-exit-y:${result.dnfExitY};--dnf-spin:${result.dnfSpin}`}">
         ${marble(result.color)}
         <strong>${escapeHtml(result.name)}${result.showMarbleNumber ? ` <small>· Marble ${result.marbleNumber}</small>` : ""}</strong>
         <b>${result.finish === 0 ? "DNF" : ordinal(result.finish)}</b>
