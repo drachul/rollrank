@@ -1301,46 +1301,46 @@ function renderSetup() {
       <section class="panel config-panel"><div class="section-title"><span>01</span><div><h2>Tournament format</h2><p>Name the event and define its schedule.</p></div></div>
         <div class="setup-assistant"><div><span aria-hidden="true">✦</span><div><strong>New to tournament setup?</strong><small>Build a format step by step and preview how each choice affects the rounds and championship stages.</small></div></div><button type="button" class="primary-button" data-setup-wizard>Setup Wizard <span aria-hidden="true">→</span></button></div>
         <label class="field wide"><span>Tournament name</span><input name="name" value="${escapeHtml(c.name)}" maxlength="80" required></label>
-        <div class="config-group">
-          <h3 class="eyebrow">Staging rounds</h3>
+        <details class="config-group">
+          <summary class="eyebrow">Staging rounds</summary>
           <div class="field-grid"><label class="field"><span>Race rounds</span><input name="days" type="number" min="1" max="30" value="${c.days}" required></label><label class="field"><span>Heats per racer / round</span><input name="heatsPerRacerPerDay" type="number" min="1" max="20" value="${c.heatsPerRacerPerDay}" required></label><label class="field"><span>Max marbles per heat</span><input name="maxMarblesPerHeat" type="number" min="2" max="480" value="${c.maxMarblesPerHeat}" required><small>The app automatically chooses the largest full heat under this limit.</small></label><label class="field"><span>Marbles per racer / heat</span><input name="marblesPerRacer" type="number" min="1" max="20" value="${c.marblesPerRacer}" required><small>Applies to round heats only.</small></label></div>
           <div class="schedule-preview" id="schedule-preview"><strong>${c.heatsPerDay} heats per round · ${c.racersPerHeat} racers per heat</strong><span>Every racer appears ${c.heatsPerRacerPerDay} times each round; each heat uses ${c.marblesPerHeat} of the ${c.maxMarblesPerHeat} allowed marbles.</span></div>
           <label class="field wide"><span>Points by finishing place</span><input name="points" value="${state.points.join(", ")}" required><small>Comma-separated, starting with first place. Missing places receive zero points.</small></label>
-        </div>
-        <div class="config-group">
-          <h3 class="eyebrow">Championship round</h3>
+        </details>
+        <details class="config-group">
+          <summary class="eyebrow">Championship round</summary>
           <div class="field-grid">
             <label class="field"><span>Wildcard racers promoted / heat</span><input name="wildcardRacersPromotedPerHeat" type="number" min="1" max="24" value="${c.wildcardRacersPromotedPerHeat}" required><small>Top racers from each wildcard heat who advance to the preliminary stage.</small></label>
             <label class="field"><span>Preliminary racers promoted / heat</span><input name="preliminaryRacersPromotedPerHeat" type="number" min="1" max="24" value="${c.preliminaryRacersPromotedPerHeat}" required><small>Top racers from each preliminary heat who advance to the final.</small></label>
             <label class="field"><span>Max Racers in Final</span><input name="maxFinalRacers" type="number" min="2" max="24" value="${c.maxFinalRacers}" required><small>Trims the final field if byes and preliminary qualifiers exceed this.</small></label>
           </div>
-        </div>
-        <div class="config-group">
-          <h3 class="eyebrow">Bye to final</h3>
+        </details>
+        <details class="config-group">
+          <summary class="eyebrow">Bye to final</summary>
           <div class="field-grid">
             <label class="field"><span>Max final bye marbles per racer</span><input name="maxFinalByeMarblesPerRacer" type="number" min="0" max="20" value="${c.maxFinalByeMarblesPerRacer}" required><small>Caps how many round wins one racer can bank as byes into the final.</small></label>
             <label class="field"><span>Max prelim marbles for racer with final bye</span><input name="maxPrelimMarblesForRacerWithFinalBye" type="number" min="0" max="20" value="${c.maxPrelimMarblesForRacerWithFinalBye}" required><small>Extra preliminary marbles a racer may also hold once they have a final bye.</small></label>
             <label class="field"><span>Max wildcard marbles for racer with final bye</span><input name="maxWildcardMarblesForRacerWithFinalBye" type="number" min="0" max="20" value="${c.maxWildcardMarblesForRacerWithFinalBye}" required><small>Extra wildcard marbles a racer may also hold once they have a final bye.</small></label>
             <label class="field checkbox-field"><input name="allowCascadingFinalByeSelection" type="checkbox" ${c.allowCascadingFinalByeSelection ? "checked" : ""}><span>Allow cascading final bye selection</span><small>If the round's 1st place is already capped out, cascade the bye seat to 2nd, 3rd, etc.</small></label>
           </div>
-        </div>
-        <div class="config-group">
-          <h3 class="eyebrow">Promotion to preliminary</h3>
+        </details>
+        <details class="config-group">
+          <summary class="eyebrow">Promotion to preliminary</summary>
           <div class="field-grid">
             <label class="field"><span>Max prelim promotion marbles per racer</span><input name="maxPrelimPromotionMarblesPerRacer" type="number" min="0" max="20" value="${c.maxPrelimPromotionMarblesPerRacer}" required><small>Caps how many marbles per racer may get promoted to the preliminary stage.</small></label>
             <label class="field"><span>Max wildcard marbles for racer with prelim promotion</span><input name="maxWildcardMarblesForRacerWithPrelimPromotion" type="number" min="0" max="20" value="${c.maxWildcardMarblesForRacerWithPrelimPromotion}" required><small>Extra wildcard marbles a racer may also hold once they have a preliminary promotion.</small></label>
             <label class="field"><span>Max marbles per preliminary heat</span><input name="preliminaryMaxMarblesPerHeat" type="number" min="2" max="480" value="${c.preliminaryMaxMarblesPerHeat}" required><small>Sizes preliminary heats automatically.</small></label>
             <label class="field checkbox-field"><input name="allowCascadingPrelimPromotionSelection" type="checkbox" ${c.allowCascadingPrelimPromotionSelection ? "checked" : ""}><span>Allow cascading prelim promotion selection</span><small>If the round's 2nd place is already capped out, cascade the seat to 3rd, 4th, etc.</small></label>
           </div>
-        </div>
-        <div class="config-group">
-          <h3 class="eyebrow">Promotion to wildcard</h3>
+        </details>
+        <details class="config-group">
+          <summary class="eyebrow">Promotion to wildcard</summary>
           <div class="field-grid">
             <label class="field"><span>Max wildcard promotion marbles per racer</span><input name="maxWildcardPromotionMarblesPerRacer" type="number" min="0" max="20" value="${c.maxWildcardPromotionMarblesPerRacer}" required><small>Caps how many marbles per racer may get promoted to wildcard heats.</small></label>
             <label class="field"><span>Max marbles per wildcard heat</span><input name="wildcardMaxMarblesPerHeat" type="number" min="2" max="480" value="${c.wildcardMaxMarblesPerHeat}" required><small>Sizes wildcard heats automatically.</small></label>
             <label class="field checkbox-field"><input name="allowCascadingWildcardPromotionSelection" type="checkbox" ${c.allowCascadingWildcardPromotionSelection ? "checked" : ""}><span>Allow cascading wildcard promotion selection</span><small>If the round's 3rd place is already capped out, cascade the seat further down the standings.</small></label>
           </div>
-        </div>
+        </details>
       </section>
       <section class="panel config-panel"><div class="section-title"><span>02</span><div><h2>Racers</h2><p>Names and colors are used throughout the race sheets.</p></div></div><div id="contestant-list">${state.contestants.map(contestantRow).join("")}</div><button type="button" class="secondary-button full" data-add-contestant>+ Add racer</button></section>
       <section class="panel tournament-management"><div><p class="eyebrow">Tournament library</p><h2>Manage this tournament</h2><p>Create another tournament from the selector above, or permanently remove this one.</p></div><button type="button" class="danger-button" data-delete-tournament>Delete tournament</button></section>

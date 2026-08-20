@@ -440,7 +440,12 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible { 
 .section-title h2 { margin:0; font-size:18px; }
 .section-title p { margin:3px 0 0; color:var(--muted); font-size:10px; }
 .config-group { margin:18px 0; padding-top:18px; border-top:1px solid var(--line); }
-.config-group h3 { margin:0 0 12px; }
+.config-group summary { display:flex; align-items:center; justify-content:space-between; margin:0 0 12px; cursor:pointer; list-style:none; user-select:none; }
+.config-group summary::-webkit-details-marker { display:none; }
+.config-group summary::after { content:"\25BE"; color:var(--muted); font-size:11px; transition:transform .15s ease; }
+.config-group:not([open]) summary { margin-bottom:0; }
+.config-group:not([open]) summary::after { transform:rotate(-90deg); }
+.config-group summary:hover { color:var(--ink); }
 .config-group .schedule-preview { margin-bottom:0; }
 .field-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
 .field { display:flex; flex-direction:column; gap:6px; }
