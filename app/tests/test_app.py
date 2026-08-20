@@ -409,8 +409,15 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertNotIn("Updates automatically every 5 seconds", frontend)
         self.assertIn("function newlyStartedHeat(previousState, nextState)", frontend)
         self.assertIn("function startKioskRaceIntroduction(heat)", frontend)
+        self.assertIn("function randomizedKioskIntroDropRanks(entryCount)", frontend)
+        self.assertIn("Marbles to the gate", frontend)
+        self.assertIn("--intro-drop-delay", frontend)
+        self.assertNotIn("--intro-drop-drift", frontend)
         self.assertIn("function newlyCompletedHeat(previousState, nextState)", frontend)
         self.assertIn("function heatMarblesInFinishOrder(heat)", frontend)
+        self.assertIn("finishStop: 90 - finisherIndex * finishGap", frontend)
+        self.assertIn("kiosk-results-chute-positions", frontend)
+        self.assertIn("finisher label-", frontend)
         self.assertIn("function randomKioskDnfEffect()", frontend)
         self.assertIn("function startKioskRaceResults(heat)", frontend)
         self.assertIn("function startKioskCupPresentation(finalHeat, tournamentName)", frontend)
@@ -422,9 +429,16 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertIn("On your marks!", frontend)
         self.assertIn("kiosk-intro-go", frontend)
         self.assertIn('kiosk-intro-go">\n      <div class="kiosk-intro-flag"', frontend)
-        self.assertIn("@keyframes kiosk-intro-racer", styles)
+        self.assertIn("@keyframes kiosk-intro-marble-drop", styles)
+        self.assertIn("@keyframes kiosk-intro-marble-spin", styles)
+        self.assertIn("@keyframes kiosk-intro-impact-shadow", styles)
+        self.assertIn("@keyframes kiosk-intro-racer-label", styles)
+        self.assertNotIn("@keyframes kiosk-intro-racer {", styles)
         self.assertIn("@keyframes kiosk-intro-flag-wave", styles)
-        self.assertIn("@keyframes kiosk-result-race", styles)
+        self.assertIn("@keyframes kiosk-result-finish-chute", styles)
+        self.assertIn("@keyframes kiosk-result-finisher-spin", styles)
+        self.assertIn(".kiosk-results-track::after", styles)
+        self.assertIn(".kiosk-results-chute-positions", styles)
         self.assertIn("@keyframes kiosk-result-dnf", styles)
         self.assertIn("@keyframes kiosk-result-crash", styles)
         self.assertIn("@keyframes kiosk-result-fire-stop", styles)
@@ -443,12 +457,14 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertIn("function currentTournamentStatus()", frontend)
         self.assertIn('class="status-chip ${status.className}"', frontend)
         self.assertNotIn("Tournament in progress", frontend)
+
         self.assertIn(".status-chip.final-ready", styles)
         self.assertIn(".status-chip.complete", styles)
         self.assertIn("function renderKioskFinalDashboard()", frontend)
         self.assertIn('"Championship: Final"', frontend)
-        self.assertIn("Championship: Wildcard Heat ${nextWildcard.heatNumber}", frontend)
-        self.assertIn("Championship: Preliminary Heat ${nextPreliminary.heatNumber}", frontend)
+        self.assertIn('Championship: Wildcard ${championshipHeatLabel("wildcard", nextWildcard.heatNumber)}', frontend)
+        self.assertIn('Championship: Preliminary ${championshipHeatLabel("preliminary", nextPreliminary.heatNumber)}', frontend)
+        self.assertIn('function championshipHeatLabel(stage, heatNumber, prefix = "")', frontend)
         self.assertIn("function renderDashboardFinalSummary()", frontend)
         self.assertIn("if (state.championship.final.complete) return renderDashboardFinalSummary();", frontend)
         self.assertIn("function fireworksMarkup()", frontend)
@@ -476,6 +492,33 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertNotIn("saveChampionship", frontend)
         self.assertNotIn("data-champ-result", frontend)
         self.assertNotIn("function finalResultOptions", frontend)
+
+    def test_kiosk_animation_fonts_are_self_hosted(self) -> None:
+        index_response = self.client.get("/")
+        styles_response = self.client.get("/static/styles.css")
+        index = index_response.get_data(as_text=True)
+        styles = styles_response.get_data(as_text=True)
+        index_response.close()
+        styles_response.close()
+
+        expected_fonts = {
+            "racing-sans-one-latin.woff2": 'font-family:"Racing Sans One"',
+            "barlow-condensed-900-italic-latin.woff2": 'font-family:"Barlow Condensed"',
+            "lilita-one-latin.woff2": 'font-family:"Lilita One"',
+        }
+        for filename, family_rule in expected_fonts.items():
+            font_path = f"/static/fonts/{filename}"
+            self.assertIn(f'href="{font_path}"', index)
+            self.assertIn(f'url("{font_path}")', styles)
+            self.assertIn(family_rule, styles)
+            response = self.client.get(font_path)
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(response.data.startswith(b"wOF2"))
+            response.close()
+
+        self.assertIn('font-family:"Racing Sans One",Impact', styles)
+        self.assertIn('font-family:"Barlow Condensed",Impact', styles)
+        self.assertIn('font-family:"Lilita One",Impact', styles)
 
     def test_full_championship_workflow(self) -> None:
         created = self.client.post(
