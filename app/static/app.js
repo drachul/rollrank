@@ -165,9 +165,15 @@ function newlyCompletedHeat(previousState, nextState) {
     .sort((first, second) => first.globalNumber - second.globalNumber)[0] || null;
 }
 
+function championshipHeatLabel(stage, heatNumber, prefix = "") {
+  const heats = state.championship[stage] && state.championship[stage].heats;
+  const label = heats && heats.length > 1 ? `Heat ${heatNumber}` : "Heat";
+  return prefix ? `${prefix} ${label}` : label;
+}
+
 function kioskIntroductionHeatName(heat) {
-  if (heat.stage === "wildcard") return `Championship: Wildcard Heat ${heat.heatNumber}`;
-  if (heat.stage === "preliminary") return `Championship: Preliminary Heat ${heat.heatNumber}`;
+  if (heat.stage === "wildcard") return `Championship: Wildcard ${championshipHeatLabel("wildcard", heat.heatNumber)}`;
+  if (heat.stage === "preliminary") return `Championship: Preliminary ${championshipHeatLabel("preliminary", heat.heatNumber)}`;
   if (heat.stage === "final") return "Championship: Final";
   return `Round ${heat.day} · Heat ${heat.heatNumber}`;
 }
@@ -646,16 +652,16 @@ function renderKioskFinalDashboard() {
 function racerStatBadges(racer) {
   const tiers = racer.dayChampionshipTiers || [];
   const finalizedTiers = racer.dayChampionshipPreviousTiers || tiers;
-  const tierStat = (tier, label, title) => {
+  const tierStat = (tier, key, label, title) => {
     const count = tiers.filter((item) => item === tier).length;
     const finalizedCount = finalizedTiers.filter((item) => item === tier).length;
-    return {label, title, count, finalizedCount, live:count !== finalizedCount, liveAlreadyCounted:true};
+    return {key, label, title, count, finalizedCount, live:count !== finalizedCount, liveAlreadyCounted:true};
   };
   const stats = [
-    {label: "W", title: "Wins", count: racer.wins, live: racer.liveRoundLeader, liveAlreadyCounted: false},
-    tierStat("bye", "B", "Byes"),
-    tierStat("preliminary", "P", "Preliminary"),
-    tierStat("wildcard", "WC", "Wildcard"),
+    {key: "w", label: "W", title: "Wins", count: racer.wins, live: racer.liveRoundLeader, liveAlreadyCounted: false},
+    tierStat("bye", "b", "F", "Marbles promoted to the final"),
+    tierStat("preliminary", "p", "P", "Preliminary"),
+    tierStat("wildcard", "wc", "WC", "Wildcard"),
   ];
   // Wins exclude the live round and need a provisional +1. Championship
   // counts already contain every projected reassignment, including removals,
@@ -666,7 +672,7 @@ function racerStatBadges(racer) {
 }
 
 function statBadgesMarkup(racer, wrapperClass, chipClass) {
-  return `<div class="${wrapperClass}">${racerStatBadges(racer).map((stat) => `<span class="${chipClass} stat-${stat.label.toLowerCase()}" title="${stat.title}${stat.live ? stat.finalizedCount == null ? " · leading, not yet finalized" : ` · projected from ${stat.finalizedCount}` : ""}">${stat.displayCount}${stat.live ? "*" : ""}<small>${stat.label}</small></span>`).join("")}</div>`;
+  return `<div class="${wrapperClass}">${racerStatBadges(racer).map((stat) => `<span class="${chipClass} stat-${stat.key}" title="${stat.title}${stat.live ? stat.finalizedCount == null ? " · leading, not yet finalized" : ` · projected from ${stat.finalizedCount}` : ""}">${stat.displayCount}${stat.live ? "*" : ""}<small>${stat.label}</small></span>`).join("")}</div>`;
 }
 
 function kioskStatBadgesMarkup(racer) {
@@ -700,9 +706,9 @@ function renderKioskDashboard() {
   if (nextHeat) {
     nextContent = `<div class="kiosk-card-heading"><p class="kiosk-card-label">${nextHeat.started ? "In progress" : "Up next"}</p><b>Race #${nextHeat.globalNumber}</b></div><h2>Round ${nextHeat.day} · Heat ${nextHeat.heatNumber}</h2><div class="kiosk-next-racers">${nextHeat.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>`;
   } else if (nextWildcard) {
-    nextContent = `<div class="kiosk-card-heading"><p class="kiosk-card-label">${nextWildcard.started ? "In progress" : "Up next"}</p><b>Championship</b></div><h2>Championship: Wildcard Heat ${nextWildcard.heatNumber}</h2><div class="kiosk-next-racers">${nextWildcard.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>`;
+    nextContent = `<div class="kiosk-card-heading"><p class="kiosk-card-label">${nextWildcard.started ? "In progress" : "Up next"}</p><b>Championship</b></div><h2>Championship: Wildcard ${championshipHeatLabel("wildcard", nextWildcard.heatNumber)}</h2><div class="kiosk-next-racers">${nextWildcard.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>`;
   } else if (nextPreliminary) {
-    nextContent = `<div class="kiosk-card-heading"><p class="kiosk-card-label">${nextPreliminary.started ? "In progress" : "Up next"}</p><b>Championship</b></div><h2>Championship: Preliminary Heat ${nextPreliminary.heatNumber}</h2><div class="kiosk-next-racers">${nextPreliminary.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>`;
+    nextContent = `<div class="kiosk-card-heading"><p class="kiosk-card-label">${nextPreliminary.started ? "In progress" : "Up next"}</p><b>Championship</b></div><h2>Championship: Preliminary ${championshipHeatLabel("preliminary", nextPreliminary.heatNumber)}</h2><div class="kiosk-next-racers">${nextPreliminary.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>`;
   } else {
     nextContent = `<p class="kiosk-card-label">Up next</p><div class="kiosk-final-ready"><span>★</span><div><strong>Championship in progress</strong><p>Check the bracket for the current stage.</p></div></div>`;
   }
@@ -715,8 +721,8 @@ function renderKioskDashboard() {
     </header>
     <div class="kiosk-overview">
       <article class="kiosk-progress-card">
-        <div class="kiosk-card-heading"><p class="kiosk-card-label">Heat progress</p><b>${c.completedHeats}/${c.totalHeats}</b></div>
-        <div class="kiosk-progress-value"><strong>${progress}%</strong><span>${completedRounds} of ${c.days} rounds complete</span></div>
+        <div class="kiosk-card-heading"><p class="kiosk-card-label">Round progress</p></div>
+        <div class="kiosk-progress-value"><strong>${progress}%<small>[${c.completedHeats} / ${c.totalHeats}]</small></strong><span>${completedRounds} of ${c.days} rounds complete</span></div>
         <div class="kiosk-progress-track"><i style="width:${progress}%"></i>${roundDividers.map((pct) => `<span class="kiosk-progress-divider" style="left:${pct}%"></span>`).join("")}</div>
       </article>
       <article class="kiosk-next-card">${nextContent}</article>
@@ -761,10 +767,14 @@ function heatRacerPreview(heat) {
   return `<div class="racer-preview">${heat.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>`;
 }
 
+function heatTitleMarkup(heat) {
+  return `<div class="heat-title"><span>Heat</span><strong>${heat.heatNumber}</strong><small>Race #${heat.globalNumber}</small></div>`;
+}
+
 function lockedHeatCard(heat) {
   return `<article class="heat-card locked" id="heat-${heat.id}">
     <header class="heat-card-heading">
-      <div class="heat-title"><span>Heat</span><strong>${heat.heatNumber}</strong><small>Race #${heat.globalNumber}</small></div>
+      ${heatTitleMarkup(heat)}
       <div><span class="pending-chip">Locked</span></div>
       <span class="heat-locked-note">Complete the earlier rounds first</span>
     </header>
@@ -775,7 +785,7 @@ function lockedHeatCard(heat) {
 function readyToStartHeatCard(heat) {
   return `<article class="heat-card ready" id="heat-${heat.id}">
     <header class="heat-card-heading">
-      <div class="heat-title"><span>Heat</span><strong>${heat.heatNumber}</strong><small>Race #${heat.globalNumber}</small></div>
+      ${heatTitleMarkup(heat)}
       <div><span class="pending-chip">Ready to start</span></div>
       <button class="primary-button compact" data-start-heat="${heat.id}">Start heat</button>
     </header>
@@ -786,7 +796,7 @@ function readyToStartHeatCard(heat) {
 function editLockedHeatCard(heat) {
   return `<article class="heat-card complete locked" id="heat-${heat.id}">
     <header class="heat-card-heading">
-      <div class="heat-title"><span>Heat</span><strong>${heat.heatNumber}</strong><small>Race #${heat.globalNumber}</small></div>
+      ${heatTitleMarkup(heat)}
       <div><span class="complete-chip">Complete</span></div>
       <span class="heat-locked-note">Locked · a later heat has started</span>
     </header>
@@ -807,7 +817,7 @@ function heatEditor(heat) {
   const finishCount = heat.entries.reduce((total, entry) => total + entry.marbles.length, 0);
   return `<article class="heat-card ${heat.complete ? "complete" : ""}" id="heat-${heat.id}">
     <header class="heat-card-heading">
-      <div class="heat-title"><span>Heat</span><strong>${heat.heatNumber}</strong><small>Race #${heat.globalNumber}</small></div>
+      ${heatTitleMarkup(heat)}
       <div><span class="${heat.complete ? "complete-chip" : "pending-chip"}">${heat.complete ? "Complete" : "Awaiting results"}</span></div>
       <button class="save-heat-button" data-save-heat="${heat.id}">${heat.complete ? "Update results" : "Save results"}</button>
     </header>
@@ -858,9 +868,11 @@ function seedHeatTag(entry, sourceHeats, stageLabel) {
     .map((heat) => heat.heatNumber)
     .sort((a, b) => a - b);
   if (!heatNumbers.length) return "";
-  const label = heatNumbers.length === 1
-    ? `${stageLabel} Heat ${heatNumbers[0]}`
-    : `${stageLabel} Heats ${heatNumbers.join(", ")}`;
+  const label = sourceHeats.length === 1
+    ? `${stageLabel} Heat`
+    : heatNumbers.length === 1
+      ? `${stageLabel} Heat ${heatNumbers[0]}`
+      : `${stageLabel} Heats ${heatNumbers.join(", ")}`;
   return `<small class="seed-tag">${escapeHtml(label)}</small>`;
 }
 
@@ -871,13 +883,13 @@ function ladderEntryLabel(name, marbleCount, seedRounds, extraTag = "") {
   return `<div class="ladder-entry-info"><span>${escapeHtml(name)}${marbleCount > 1 ? ` <span class="marble-count">×${marbleCount}</span>` : ""}</span>${extraTag || seedRoundsTag(seedRounds)}</div>`;
 }
 
-function ladderProjectedRoster(entries, lockedLabel) {
+function ladderProjectedRoster(entries, lockedLabel, sourceStageLabel) {
   return `<div class="ladder-heat projected">
     <div class="ladder-heat-head"><span aria-hidden="true">🔒</span><span>Not yet locked in</span></div>
     <ul class="ladder-entries">
       ${entries.map((entry) => entry.decided
         ? `<li class="ladder-entry ${tierClass(entry.originStage === "wildcard" ? "wildcard" : entry.originStage === "bye" ? "bye" : "preliminary")}">${marble(entry.color, "small")}${ladderEntryLabel(entry.name, entry.marbleSlots || 1, entry.seedRounds)}</li>`
-        : `<li class="ladder-entry pending"><span class="tbd-marble" aria-hidden="true">?</span><span>Heat ${entry.heatNumber}${entry.qualifyingPlace ? ` · ${ordinal(entry.qualifyingPlace)} racer` : " winner"}</span><b>TBD</b></li>`
+        : `<li class="ladder-entry pending"><span class="tbd-marble" aria-hidden="true">?</span><span>${championshipHeatLabel(entry.originStage, entry.heatNumber, sourceStageLabel)}${entry.qualifyingPlace ? ` · ${ordinal(entry.qualifyingPlace)} racer` : " winner"}</span><b>TBD</b></li>`
       ).join("")}
     </ul>
     <p class="ladder-projected-note">${lockedLabel}</p>
@@ -896,9 +908,9 @@ function ladderPlaceLabel(entry) {
   return label === "-" ? "" : label;
 }
 
-function ladderHeatCard(heat, sourceHeats, sourceStageLabel) {
+function ladderHeatCard(heat, heatCount, sourceHeats, sourceStageLabel) {
   return `<article class="ladder-heat ${heat.complete ? "complete" : ""}">
-    <div class="ladder-heat-head"><span>Heat ${heat.heatNumber}</span><span class="${heat.complete ? "complete-chip" : "pending-chip"}">${heat.complete ? "Complete" : "In progress"}</span></div>
+    <div class="ladder-heat-head"><span>${heatCount > 1 ? `Heat ${heat.heatNumber}` : "Heat"}</span><span class="${heat.complete ? "complete-chip" : "pending-chip"}">${heat.complete ? "Complete" : "In progress"}</span></div>
     <ul class="ladder-entries">
       ${heat.entries.map((entry) => `<li class="ladder-entry${entry.finish === 0 ? " dnf" : ""}">
         ${marble(entry.color, "small")}${ladderEntryLabel(entry.name, entry.marbles.length, entry.seedRounds, seedHeatTag(entry, sourceHeats, sourceStageLabel))}<b>${ladderPlaceLabel(entry)}</b>
@@ -909,17 +921,17 @@ function ladderHeatCard(heat, sourceHeats, sourceStageLabel) {
 
 function ladderStageColumn(stage, lockedLabel, sourceHeats, sourceStageLabel) {
   if (!stage.ready) {
-    if (stage.projectedEntries && stage.projectedEntries.length) return ladderProjectedRoster(stage.projectedEntries, lockedLabel);
+    if (stage.projectedEntries && stage.projectedEntries.length) return ladderProjectedRoster(stage.projectedEntries, lockedLabel, sourceStageLabel);
     return ladderLockedPlaceholder(lockedLabel);
   }
   if (stage.skipped) return ladderSkippedPlaceholder(stage);
-  return `<div class="ladder-heats">${stage.heats.map((heat) => ladderHeatCard(heat, sourceHeats, sourceStageLabel)).join("")}</div>`;
+  return `<div class="ladder-heats">${stage.heats.map((heat) => ladderHeatCard(heat, stage.heats.length, sourceHeats, sourceStageLabel)).join("")}</div>`;
 }
 
 function ladderFinalColumn(finalStage, sourceHeats) {
   if (!finalStage.ready) {
     if (finalStage.projectedEntries && finalStage.projectedEntries.length) {
-      return ladderProjectedRoster(finalStage.projectedEntries, "Preliminary results decide the final field.");
+      return ladderProjectedRoster(finalStage.projectedEntries, "Preliminary results decide the final field.", "Preliminary");
     }
     return ladderLockedPlaceholder("Preliminary results decide the final field.");
   }
@@ -938,7 +950,7 @@ function ladderFinalColumn(finalStage, sourceHeats) {
 function renderChampionshipLadder() {
   const champ = state.championship;
   return `<section class="panel ladder-panel">
-    <div class="panel-heading"><div><p class="eyebrow">Championship bracket</p><h2>Championship ladder</h2></div></div>
+    <div class="panel-heading"><div><h2>Championship ladder</h2></div></div>
     <div class="ladder">
       <div class="ladder-column">
         <div class="ladder-column-heading"><span>Stage 1</span><h3>Wildcard</h3></div>
