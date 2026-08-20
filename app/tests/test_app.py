@@ -443,6 +443,7 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertIn("function currentTournamentStatus()", frontend)
         self.assertIn('class="status-chip ${status.className}"', frontend)
         self.assertNotIn("Tournament in progress", frontend)
+
         self.assertIn(".status-chip.final-ready", styles)
         self.assertIn(".status-chip.complete", styles)
         self.assertIn("function renderKioskFinalDashboard()", frontend)
@@ -476,6 +477,33 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertNotIn("saveChampionship", frontend)
         self.assertNotIn("data-champ-result", frontend)
         self.assertNotIn("function finalResultOptions", frontend)
+
+    def test_kiosk_animation_fonts_are_self_hosted(self) -> None:
+        index_response = self.client.get("/")
+        styles_response = self.client.get("/static/styles.css")
+        index = index_response.get_data(as_text=True)
+        styles = styles_response.get_data(as_text=True)
+        index_response.close()
+        styles_response.close()
+
+        expected_fonts = {
+            "racing-sans-one-latin.woff2": 'font-family:"Racing Sans One"',
+            "barlow-condensed-900-italic-latin.woff2": 'font-family:"Barlow Condensed"',
+            "lilita-one-latin.woff2": 'font-family:"Lilita One"',
+        }
+        for filename, family_rule in expected_fonts.items():
+            font_path = f"/static/fonts/{filename}"
+            self.assertIn(f'href="{font_path}"', index)
+            self.assertIn(f'url("{font_path}")', styles)
+            self.assertIn(family_rule, styles)
+            response = self.client.get(font_path)
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(response.data.startswith(b"wOF2"))
+            response.close()
+
+        self.assertIn('font-family:"Racing Sans One",Impact', styles)
+        self.assertIn('font-family:"Barlow Condensed",Impact', styles)
+        self.assertIn('font-family:"Lilita One",Impact', styles)
 
     def test_full_championship_workflow(self) -> None:
         created = self.client.post(

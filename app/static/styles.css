@@ -1,3 +1,52 @@
+@font-face {
+  font-family:"Barlow Condensed";
+  font-style:italic;
+  font-weight:900;
+  font-display:swap;
+  src:url("/static/fonts/barlow-condensed-900-italic-latin-ext.woff2") format("woff2");
+  unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF;
+}
+@font-face {
+  font-family:"Barlow Condensed";
+  font-style:italic;
+  font-weight:900;
+  font-display:swap;
+  src:url("/static/fonts/barlow-condensed-900-italic-latin.woff2") format("woff2");
+  unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+@font-face {
+  font-family:"Lilita One";
+  font-style:normal;
+  font-weight:400;
+  font-display:swap;
+  src:url("/static/fonts/lilita-one-latin-ext.woff2") format("woff2");
+  unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF;
+}
+@font-face {
+  font-family:"Lilita One";
+  font-style:normal;
+  font-weight:400;
+  font-display:swap;
+  src:url("/static/fonts/lilita-one-latin.woff2") format("woff2");
+  unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+@font-face {
+  font-family:"Racing Sans One";
+  font-style:normal;
+  font-weight:400;
+  font-display:swap;
+  src:url("/static/fonts/racing-sans-one-latin-ext.woff2") format("woff2");
+  unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF;
+}
+@font-face {
+  font-family:"Racing Sans One";
+  font-style:normal;
+  font-weight:400;
+  font-display:swap;
+  src:url("/static/fonts/racing-sans-one-latin.woff2") format("woff2");
+  unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+
 :root {
   --ink:#e9f1fa; --navy:#183550; --navy-2:#214664; --blue:#2f80ed; --blue-dark:#1f69cf; --blue-light:#8fbdfb;
   --sky:#12314f; --yellow:#f4c542; --paper:#0a1e30; --line:rgba(255,255,255,.14); --muted:#93aec2;
@@ -564,7 +613,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible { 
 .kiosk-race-intro::after { animation-delay:-1.3s; transform:rotate(-24deg); }
 .kiosk-intro-stage { position:absolute; inset:0; display:flex; align-items:center; flex-direction:column; justify-content:center; padding:clamp(24px,5vw,80px); text-align:center; }
 .kiosk-intro-stage p { margin:0 0 14px; color:var(--yellow); font-size:clamp(11px,1.4vw,18px); font-weight:950; letter-spacing:.28em; text-transform:uppercase; }
-.kiosk-intro-stage h2 { margin:0; color:#fff; font-family:Impact,"Arial Black",sans-serif; font-size:clamp(46px,8vw,116px); font-style:italic; font-weight:900; letter-spacing:-.035em; line-height:.94; text-shadow:0 8px 0 rgba(2,15,26,.42),0 20px 42px rgba(0,0,0,.42); text-transform:uppercase; }
+.kiosk-intro-stage h2 { margin:0; color:#fff; font-family:"Racing Sans One",Impact,"Arial Black",sans-serif; font-size:clamp(46px,8vw,116px); font-style:normal; font-weight:400; letter-spacing:-.035em; line-height:.94; text-shadow:0 8px 0 rgba(2,15,26,.42),0 20px 42px rgba(0,0,0,.42); text-transform:uppercase; }
 .kiosk-intro-title { animation:kiosk-intro-title 2.45s .2s cubic-bezier(.2,.8,.2,1) both; }
 .kiosk-intro-title h2 { max-width:1400px; }
 .kiosk-intro-lineup { animation:kiosk-intro-lineup 3.45s 2.05s ease both; }
@@ -593,7 +642,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible { 
 .kiosk-race-results::before { position:absolute; inset:0; background:repeating-linear-gradient(115deg,transparent 0 80px,rgba(255,255,255,.025) 80px 82px); content:""; }
 .kiosk-race-results>header { position:absolute; z-index:4; top:clamp(20px,4vh,42px); left:clamp(22px,4vw,64px); max-width:65vw; animation:kiosk-results-heading 1.15s .15s cubic-bezier(.2,.8,.2,1) both; }
 .kiosk-race-results>header p { margin:0 0 6px; color:var(--yellow); font-size:clamp(9px,1.2vw,15px); font-weight:950; letter-spacing:.25em; text-transform:uppercase; }
-.kiosk-race-results>header h2 { overflow:hidden; margin:0; color:#fff; font-family:Impact,"Arial Black",sans-serif; font-size:clamp(27px,4vw,60px); font-style:italic; letter-spacing:-.025em; line-height:1; text-overflow:ellipsis; text-shadow:0 7px 0 rgba(0,0,0,.28); text-transform:uppercase; white-space:nowrap; }
+.kiosk-race-results>header h2 { overflow:hidden; margin:0; color:#fff; font-family:"Barlow Condensed",Impact,"Arial Black",sans-serif; font-size:clamp(27px,4vw,60px); font-style:italic; font-weight:900; letter-spacing:-.025em; line-height:1; text-overflow:ellipsis; text-shadow:0 7px 0 rgba(0,0,0,.28); text-transform:uppercase; white-space:nowrap; }
 .kiosk-results-track { position:absolute; z-index:2; inset:18vh 0 4vh; overflow:hidden; background:repeating-linear-gradient(0deg,rgba(255,255,255,.025) 0 1px,transparent 1px 11.111%); border-block:1px solid rgba(255,255,255,.12); box-shadow:inset 0 24px 60px rgba(0,0,0,.2); }
 .kiosk-results-finish-line { position:absolute; z-index:2; top:0; bottom:0; left:78vw; width:clamp(16px,2vw,30px); background:repeating-conic-gradient(#fff 0 25%,#102c41 0 50%) 0 0/100% clamp(22px,4vh,48px); box-shadow:0 0 0 3px rgba(255,255,255,.18),0 0 45px rgba(255,255,255,.18); }
 .kiosk-results-finish-line span { position:absolute; top:0; left:50%; padding:6px 8px; background:var(--yellow); color:var(--navy); font-size:9px; font-style:normal; font-weight:950; letter-spacing:.16em; text-transform:uppercase; transform:translate(-50%,-100%); }
@@ -640,8 +689,8 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible { 
 .kiosk-cup-presentation>header p { margin:0 0 5px; color:var(--yellow); font-size:clamp(8px,1vw,13px); font-weight:950; letter-spacing:.24em; text-transform:uppercase; }
 .kiosk-cup-presentation>header strong { max-width:50vw; overflow:hidden; font-size:clamp(15px,2vw,27px); letter-spacing:-.025em; text-overflow:ellipsis; white-space:nowrap; }
 .kiosk-cup-announcement { position:absolute; z-index:8; top:clamp(82px,13vh,135px); right:3vw; left:3vw; text-align:center; opacity:0; animation:kiosk-cup-announcement 4.15s var(--announcement-delay) ease both; }
-.kiosk-cup-announcement p { margin:0 0 8px; color:#fff; font-family:Impact,"Arial Black",sans-serif; font-size:clamp(28px,5vw,72px); font-style:italic; letter-spacing:-.025em; line-height:.95; text-shadow:0 7px 0 rgba(0,0,0,.34); text-transform:uppercase; opacity:0; animation:kiosk-cup-announcement-line 2.1s var(--announcement-delay) cubic-bezier(.18,.78,.2,1) both; }
-.kiosk-cup-announcement h2 { margin:0; color:var(--yellow); font-family:Impact,"Arial Black",sans-serif; font-size:clamp(45px,8.7vw,132px); font-style:italic; letter-spacing:-.04em; line-height:.88; text-shadow:0 9px 0 #765a05,0 26px 55px rgba(0,0,0,.48); text-transform:uppercase; opacity:0; animation:kiosk-cup-announcement-name 2.7s calc(var(--announcement-delay) + 1.05s) cubic-bezier(.18,.78,.2,1) both; }
+.kiosk-cup-announcement p { margin:0 0 8px; color:#fff; font-family:"Lilita One",Impact,"Arial Black",sans-serif; font-size:clamp(28px,5vw,72px); font-style:normal; font-weight:400; letter-spacing:-.025em; line-height:.95; text-shadow:0 7px 0 rgba(0,0,0,.34); text-transform:uppercase; opacity:0; animation:kiosk-cup-announcement-line 2.1s var(--announcement-delay) cubic-bezier(.18,.78,.2,1) both; }
+.kiosk-cup-announcement h2 { margin:0; color:var(--yellow); font-family:"Lilita One",Impact,"Arial Black",sans-serif; font-size:clamp(45px,8.7vw,132px); font-style:normal; font-weight:400; letter-spacing:-.04em; line-height:.88; text-shadow:0 9px 0 #765a05,0 26px 55px rgba(0,0,0,.48); text-transform:uppercase; opacity:0; animation:kiosk-cup-announcement-name 2.7s calc(var(--announcement-delay) + 1.05s) cubic-bezier(.18,.78,.2,1) both; }
 .kiosk-cup-announcement.champion p { font-size:clamp(23px,4.3vw,61px); }
 .kiosk-cup-announcement.champion h2 { color:#fff1a5; }
 .kiosk-cup-stage { position:absolute; z-index:3; inset:28vh 0 0; display:flex; align-items:flex-end; justify-content:center; background:linear-gradient(0deg,rgba(1,8,14,.7),transparent 42%); }
@@ -653,7 +702,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible { 
 .kiosk-cup-step { position:relative; z-index:2; display:flex; width:100%; height:var(--step-height); align-items:center; flex-direction:column; justify-content:flex-start; padding-top:clamp(17px,3vh,29px); border:1px solid rgba(255,255,255,.22); border-radius:14px 14px 0 0; background:linear-gradient(145deg,#8b562f,#4d2c1b); box-shadow:inset 0 3px 0 rgba(255,255,255,.16),0 -15px 38px rgba(0,0,0,.28); }
 .kiosk-cup-place.silver .kiosk-cup-step { background:linear-gradient(145deg,#dce5ec,#758593); color:#102638; }
 .kiosk-cup-place.gold .kiosk-cup-step { background:linear-gradient(145deg,#ffe37a,#b78108); color:#412d00; box-shadow:inset 0 3px 0 rgba(255,255,255,.34),0 -18px 48px rgba(244,197,66,.2); }
-.kiosk-cup-step b { font-family:Impact,"Arial Black",sans-serif; font-size:clamp(54px,8vh,88px); line-height:.86; text-shadow:0 4px 0 rgba(0,0,0,.17); }
+.kiosk-cup-step b { font-family:"Lilita One",Impact,"Arial Black",sans-serif; font-size:clamp(54px,8vh,88px); font-weight:400; line-height:.86; text-shadow:0 4px 0 rgba(0,0,0,.17); }
 .kiosk-cup-step span { margin-top:7px; font-size:clamp(7px,1vw,11px); font-weight:950; letter-spacing:.15em; text-transform:uppercase; }
 .kiosk-cup-place.empty .kiosk-cup-step { filter:saturate(.35); opacity:.4; }
 .kiosk-cup-racer { position:absolute; z-index:5; bottom:calc(var(--step-height) - 4px); left:50%; display:flex; width:min(220px,92%); align-items:center; flex-direction:column; opacity:0; text-align:center; transform:translateX(-50%); animation:kiosk-cup-racer-climb 2.5s var(--racer-delay) cubic-bezier(.18,.77,.2,1) both; }
