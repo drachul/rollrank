@@ -196,11 +196,24 @@ function stopKioskRaceAnimations() {
   stopKioskCupPresentation();
 }
 
+function randomizedKioskIntroDropRanks(entryCount) {
+  const entryIndexes = Array.from({length:entryCount}, (_value, index) => index);
+  for (let index = entryIndexes.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [entryIndexes[index], entryIndexes[swapIndex]] = [entryIndexes[swapIndex], entryIndexes[index]];
+  }
+  const dropRanks = Array(entryCount);
+  entryIndexes.forEach((entryIndex, dropRank) => { dropRanks[entryIndex] = dropRank; });
+  return dropRanks;
+}
+
 function startKioskRaceIntroduction(heat) {
   if (!kioskMode || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
   stopKioskRaceResults();
   stopKioskCupPresentation();
   stopKioskRaceIntroduction();
+  const dropRanks = randomizedKioskIntroDropRanks(heat.entries.length);
+  const dropStagger = heat.entries.length > 1 ? Math.min(.105, .78 / (heat.entries.length - 1)) : 0;
   const overlay = document.createElement("section");
   overlay.className = "kiosk-race-intro";
   overlay.setAttribute("aria-label", `Race introduction for ${kioskIntroductionHeatName(heat)}`);
@@ -209,15 +222,21 @@ function startKioskRaceIntroduction(heat) {
       <p>Now racing</p>
       <h2>${escapeHtml(kioskIntroductionHeatName(heat))}</h2>
     </div>
-    <div class="kiosk-intro-stage kiosk-intro-lineup">
-      <p>Racers to the line</p>
-      <div class="kiosk-intro-racers">
-        ${heat.entries.map((entry, index) => `<article style="--intro-index:${index}">${marble(entry.color)}<strong>${escapeHtml(entry.name)}</strong></article>`).join("")}
-      </div>
-      <i class="kiosk-intro-start-line" aria-hidden="true"></i>
-    </div>
     <div class="kiosk-intro-stage kiosk-intro-marks">
       <h2>On your marks!</h2>
+    </div>
+    <div class="kiosk-intro-stage kiosk-intro-lineup">
+      <p>Marbles to the gate</p>
+      <div class="kiosk-intro-racers">
+        ${heat.entries.map((entry, index) => {
+          const direction = Math.random() < .5 ? -1 : 1;
+          const spin = Math.round((420 + Math.random() * 360) * direction);
+          const firstBounce = (18 + Math.random() * 13).toFixed(1);
+          const secondBounce = (5 + Math.random() * 7).toFixed(1);
+          return `<article style="--intro-drop-delay:${(dropRanks[index] * dropStagger).toFixed(3)}s;--intro-drop-spin:${spin}deg;--intro-first-bounce:-${firstBounce}px;--intro-second-bounce:-${secondBounce}px"><span class="kiosk-intro-marble-drop">${marble(entry.color)}</span><strong>${escapeHtml(entry.name)}</strong></article>`;
+        }).join("")}
+      </div>
+      <i class="kiosk-intro-start-line" aria-hidden="true"></i>
     </div>
     <div class="kiosk-intro-stage kiosk-intro-go">
       <div class="kiosk-intro-flag" aria-hidden="true"><i></i><span></span></div>
