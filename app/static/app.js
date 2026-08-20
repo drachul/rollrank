@@ -685,10 +685,15 @@ function renderKioskDashboard() {
   const nextHeat = state.days.flatMap((day) => day.heats).find((heat) => !heat.complete);
   const nextWildcard = championship.wildcard.heats.find((heat) => !heat.complete);
   const nextPreliminary = championship.preliminary.heats.find((heat) => !heat.complete);
-  const leader = state.standings[0];
   const visibleStandings = state.standings.slice(0, 8);
   const completedRounds = state.days.filter((day) => day.heats.every((heat) => heat.complete)).length;
   const progress = progressPercent();
+  const roundDividers = [];
+  let heatsSoFar = 0;
+  for (let i = 0; i < state.days.length - 1; i++) {
+    heatsSoFar += state.days[i].heats.length;
+    if (c.totalHeats) roundDividers.push(Math.round((heatsSoFar / c.totalHeats) * 100));
+  }
   const liveStatus = kioskRefreshFailed ? "Reconnecting…" : kioskTimestamp();
   let nextContent = "";
 
@@ -709,14 +714,10 @@ function renderKioskDashboard() {
       <div class="kiosk-controls"><span class="kiosk-live-status${kioskRefreshFailed ? " stale" : ""}"><i></i>${liveStatus}</span><button type="button" data-exit-kiosk aria-label="Exit fullscreen display">Exit <span aria-hidden="true">×</span></button></div>
     </header>
     <div class="kiosk-overview">
-      <article class="kiosk-leader-card">
-        <p class="kiosk-card-label">Live leader</p>
-        <div class="kiosk-leader-racer">${marble(leader.color)}<div><strong>${escapeHtml(leader.name)}</strong><span>Round leader</span></div><b>${leader.wins}<small> win${leader.wins === 1 ? "" : "s"}</small></b></div>
-      </article>
       <article class="kiosk-progress-card">
         <div class="kiosk-card-heading"><p class="kiosk-card-label">Heat progress</p><b>${c.completedHeats}/${c.totalHeats}</b></div>
         <div class="kiosk-progress-value"><strong>${progress}%</strong><span>${completedRounds} of ${c.days} rounds complete</span></div>
-        <div class="kiosk-progress-track"><i style="width:${progress}%"></i></div>
+        <div class="kiosk-progress-track"><i style="width:${progress}%"></i>${roundDividers.map((pct) => `<span class="kiosk-progress-divider" style="left:${pct}%"></span>`).join("")}</div>
       </article>
       <article class="kiosk-next-card">${nextContent}</article>
     </div>

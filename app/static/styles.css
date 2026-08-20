@@ -761,24 +761,16 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible { 
 @keyframes kiosk-cup-trophy-handoff { 0%,53% { opacity:1; transform:translate(0,0) rotate(-8deg) scale(1); } 66% { opacity:1; transform:translate(24px,-22px) rotate(5deg) scale(.85); } 70%,100% { opacity:0; transform:translate(34px,-30px) scale(.55); } }
 @keyframes kiosk-cup-trophy-received { 0% { opacity:0; transform:translate(-28px,30px) rotate(-30deg) scale(.2); } 62% { opacity:1; transform:translate(4px,-5px) rotate(7deg) scale(1.25); } 100% { opacity:1; transform:translate(0,0) rotate(0) scale(1); } }
 @keyframes kiosk-cup-fireworks-reveal { 0% { opacity:0; } 8%,92% { opacity:1; } 100% { opacity:0; } }
-.kiosk-overview { display:grid; grid-template-columns:1fr .88fr 1.35fr; gap:clamp(12px,1.5vw,21px); }
+.kiosk-overview { display:grid; grid-template-columns:.88fr 1.35fr; gap:clamp(12px,1.5vw,21px); }
 .kiosk-overview>article { min-width:0; min-height:clamp(160px,21vh,220px); padding:clamp(18px,2vw,27px); border:1px solid rgba(255,255,255,.13); border-radius:18px; background:linear-gradient(145deg,rgba(24,58,85,.96),rgba(8,34,55,.96)); box-shadow:0 18px 42px rgba(0,0,0,.2); }
-.kiosk-leader-card { background:linear-gradient(145deg,#236fce,#174d91)!important; }
-.kiosk-leader-card .kiosk-card-label { color:#dcecff; }
-.kiosk-leader-racer { display:grid; grid-template-columns:52px minmax(0,1fr) auto; align-items:center; gap:13px; margin-top:clamp(23px,4vh,43px); }
-.kiosk-leader-racer>.marble { width:48px; height:48px; }
-.kiosk-leader-racer>div { display:flex; min-width:0; flex-direction:column; }
-.kiosk-leader-racer>div strong { overflow:hidden; font-size:clamp(17px,2vw,25px); letter-spacing:-.025em; text-overflow:ellipsis; white-space:nowrap; }
-.kiosk-leader-racer>div span { margin-top:4px; color:#d4e6f8; font-size:9px; text-transform:uppercase; }
-.kiosk-leader-racer>b { display:flex; align-items:baseline; color:var(--yellow); font-size:clamp(31px,3.7vw,50px); letter-spacing:-.055em; }
-.kiosk-leader-racer>b small { margin-left:4px; color:#d8e9f8; font-size:9px; letter-spacing:0; text-transform:uppercase; }
 .kiosk-card-heading { display:flex; align-items:center; justify-content:space-between; gap:15px; }
 .kiosk-card-heading>b { color:#bcd3e5; font-size:11px; }
 .kiosk-progress-value { display:flex; align-items:flex-end; justify-content:space-between; gap:12px; margin-top:clamp(20px,3vh,32px); }
 .kiosk-progress-value strong { color:#fff; font-size:clamp(40px,5vw,66px); line-height:.85; letter-spacing:-.07em; }
 .kiosk-progress-value span { max-width:90px; color:#9fbbd0; font-size:10px; line-height:1.35; text-align:right; }
-.kiosk-progress-track { height:9px; margin-top:clamp(22px,3vh,32px); overflow:hidden; border-radius:999px; background:rgba(255,255,255,.12); }
+.kiosk-progress-track { position:relative; height:9px; margin-top:clamp(22px,3vh,32px); overflow:hidden; border-radius:999px; background:rgba(255,255,255,.12); }
 .kiosk-progress-track i { display:block; height:100%; border-radius:inherit; background:var(--yellow); transition:width .35s ease; }
+.kiosk-progress-divider { position:absolute; inset-block:0; width:2px; background:rgba(8,34,55,.55); }
 .kiosk-next-card h2 { overflow:hidden; margin:13px 0 15px; color:#fff; font-size:clamp(19px,2.2vw,28px); letter-spacing:-.035em; text-overflow:ellipsis; white-space:nowrap; }
 .kiosk-next-racers { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:9px 13px; }
 .kiosk-next-racers span { display:flex; min-width:0; align-items:center; gap:7px; color:#dfeaf3; }
@@ -1090,8 +1082,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible { 
   .kiosk-title { grid-column:1/-1; grid-row:2; text-align:left; }
   .kiosk-title h1 { font-size:34px; }
   .kiosk-controls { justify-content:flex-end; }
-  .kiosk-overview { grid-template-columns:1fr 1fr; }
-  .kiosk-next-card { grid-column:1/-1; min-height:150px!important; }
+  .kiosk-overview>article { min-height:150px!important; }
   .kiosk-next-racers { grid-template-columns:repeat(4,minmax(0,1fr)); }
   .kiosk-final-racers { grid-template-columns:repeat(3,minmax(0,1fr)); }
 }
@@ -1126,8 +1117,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible { 
   .kiosk-cup-presenter-trophy { right:-25%; font-size:30px; }
   .kiosk-cup-step span { letter-spacing:.06em; }
   .kiosk-overview { grid-template-columns:1fr; }
-  .kiosk-overview>article,.kiosk-next-card { min-height:150px!important; }
-  .kiosk-next-card { grid-column:1; }
+  .kiosk-overview>article { min-height:150px!important; }
   .kiosk-next-racers { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .kiosk-standing-list { grid-template-columns:1fr; }
   .kiosk-standing-list article:nth-child(odd) { border-right:0; }
