@@ -509,9 +509,12 @@ def standings(
         day_tier.setdefault((item["originRound"], item["racerId"]), "wildcard")
 
     preview = live_round_preview(connection, tournament_id)
+    projected_day_tier = preview["dayTiers"] if preview is not None else day_tier
 
     day_placements: dict[int, list[int | None]] = {row["id"]: [] for row in racers}
     day_tiers: dict[int, list[str | None]] = {row["id"]: [] for row in racers}
+    previous_day_tiers: dict[int, list[str | None]] = {row["id"]: [] for row in racers}
+    provisional_day_tiers: dict[int, list[bool]] = {row["id"]: [] for row in racers}
     day_complete_flags: list[bool] = []
     for day in range(1, tournament["days"] + 1):
         ranking = round_standings(connection, tournament_id, day)
@@ -521,22 +524,30 @@ def standings(
         for row in ranking:
             if day_complete:
                 day_placements[row["id"]].append(row["rank"])
-                day_tiers[row["id"]].append(day_tier.get((day, row["id"])))
+                previous_tier = day_tier.get((day, row["id"]))
+                displayed_tier = projected_day_tier.get((day, row["id"]))
             elif is_live_day:
                 # Not finalized, but there's a real (partial) result to
-                # preview -- the frontend marks these provisional with an
-                # asterisk rather than showing "Pending". Kept out of the
-                # wins/preliminary/wildcard tallies below until it's real.
+                # preview -- including any earlier-round tiers that would
+                # be reassigned if the live round ended now. The frontend
+                # compares displayed and previous tiers so those cascading
+                # changes are visible instead of silently changing history.
                 day_placements[row["id"]].append(row["rank"])
-                day_tiers[row["id"]].append(preview["tiers"].get(row["id"]))
+                previous_tier = None
+                displayed_tier = projected_day_tier.get((day, row["id"]))
             else:
                 day_placements[row["id"]].append(None)
-                day_tiers[row["id"]].append(None)
+                previous_tier = None
+                displayed_tier = None
+            day_tiers[row["id"]].append(displayed_tier)
+            previous_day_tiers[row["id"]].append(previous_tier)
+            provisional_day_tiers[row["id"]].append(displayed_tier != previous_tier)
 
     summaries = []
     for row in racers:
         placements = day_placements[row["id"]]
         tiers = day_tiers[row["id"]]
+        previous_tiers = previous_day_tiers[row["id"]]
         finalized_placements = [
             place for place, complete in zip(placements, day_complete_flags) if complete
         ]
@@ -548,14 +559,20 @@ def standings(
                 "sortOrder": row["sort_order"],
                 "wins": sum(1 for place in finalized_placements if place == 1),
                 "preliminaryPromotions": sum(
-                    1 for tier, complete in zip(tiers, day_complete_flags) if complete and tier == "preliminary"
+                    1
+                    for tier, complete in zip(previous_tiers, day_complete_flags)
+                    if complete and tier == "preliminary"
                 ),
                 "wildcardAdvancements": sum(
-                    1 for tier, complete in zip(tiers, day_complete_flags) if complete and tier == "wildcard"
+                    1
+                    for tier, complete in zip(previous_tiers, day_complete_flags)
+                    if complete and tier == "wildcard"
                 ),
                 "placementSum": sum(finalized_placements),
                 "dayPlacements": placements,
                 "dayChampionshipTiers": tiers,
+                "dayChampionshipPreviousTiers": previous_tiers,
+                "dayChampionshipTierProvisional": provisional_day_tiers[row["id"]],
                 "liveRoundLeader": preview is not None and preview["leaderId"] == row["id"],
                 "liveTier": preview["tiers"].get(row["id"]) if preview is not None else None,
             }
@@ -916,20 +933,23 @@ def live_round_preview(connection: sqlite3.Connection, tournament_id: int) -> di
         return None
     ranking = round_standings(connection, tournament_id, live_day)
     field = championship_field(connection, tournament_id, live_day=live_day)
-    tiers: dict[int, str] = {}
+    day_tiers: dict[tuple[int, int], str] = {}
     for item in field["byes"]:
-        if item["originRound"] == live_day:
-            tiers[item["racerId"]] = "bye"
+        day_tiers[(item["originRound"], item["racerId"])] = "bye"
     for item in field["preliminaryDirect"]:
-        if item["originRound"] == live_day:
-            tiers.setdefault(item["racerId"], "preliminary")
+        day_tiers.setdefault((item["originRound"], item["racerId"]), "preliminary")
     for item in field["wildcardPool"]:
-        if item["originRound"] == live_day:
-            tiers.setdefault(item["racerId"], "wildcard")
+        day_tiers.setdefault((item["originRound"], item["racerId"]), "wildcard")
+    tiers = {
+        racer_id: tier
+        for (day, racer_id), tier in day_tiers.items()
+        if day == live_day
+    }
     return {
         "day": live_day,
         "leaderId": ranking[0]["id"],
         "tiers": tiers,
+        "dayTiers": day_tiers,
     }
 
 
