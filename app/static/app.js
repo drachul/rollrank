@@ -50,15 +50,26 @@ const fieldHelp = (bodyHtml) => {
   return `<span class="field-help-wrap"><button type="button" class="field-help-toggle" data-help-toggle="${id}" aria-expanded="false" aria-label="More information" aria-describedby="${id}">?</button><div class="field-help-popover" id="${id}" role="tooltip" hidden>${bodyHtml}</div></span>`;
 };
 
-function tiePopoverMarkup(id, racer, index, place, tiedWith, isCollapsed) {
+function formatResolvedDate(resolvedAt) {
+  if (!resolvedAt) return "";
+  const date = new Date(`${resolvedAt.replace(" ", "T")}Z`);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString(undefined, {month: "short", day: "numeric", year: "numeric"});
+}
+
+function tiePopoverMarkup(id, racer, index, place, tiedWith, isCollapsed, isResolved, resolvedAt) {
   const otherRacers = tiedWith
     .map((other) => `<span class="tie-popover-racer">${marble(other.color, "small")}${escapeHtml(other.name)}</span>`)
     .join("");
   const otherCount = tiedWith.length === 1 ? "1 other racer" : `${tiedWith.length} other racers`;
+  const resolvedDate = formatResolvedDate(resolvedAt);
   const footer = isCollapsed
     ? "No promotion seat depends on the order between them this round, so they're simply shown tied rather than split by an arbitrary order."
-    : "This placement is provisional -- ordered by roster order until an organizer resolves the tie.";
-  return `<div class="tie-popover" id="${id}" role="tooltip" hidden><strong>Tied for ${ordinal(place)} in Round ${index + 1}</strong><p>${escapeHtml(racer.name)} matched ${otherCount} exactly on points and placement this round.</p><div class="tie-popover-racers">${otherRacers}</div><small>${footer}</small></div>`;
+    : isResolved
+      ? `An organizer manually resolved this tie${resolvedDate ? ` on ${resolvedDate}` : ""}, placing ${escapeHtml(racer.name)} ${ordinal(place)}.`
+      : "This placement is provisional -- ordered by roster order until an organizer resolves the tie.";
+  const heading = isResolved ? `Tiebreak resolved for ${ordinal(place)} in Round ${index + 1}` : `Tied for ${ordinal(place)} in Round ${index + 1}`;
+  return `<div class="tie-popover" id="${id}" role="tooltip" hidden><strong>${heading}</strong><p>${escapeHtml(racer.name)} matched ${otherCount} exactly on points and placement this round.</p><div class="tie-popover-racers">${otherRacers}</div><small>${footer}</small></div>`;
 }
 
 function pendingTieBreakCallout() {
@@ -1100,10 +1111,14 @@ function standingRoundCell(racer, place, index, liveRoundDay, mobile = false) {
       : `<td class="${className}">${placement}${tierMarkup}</td>`;
   }
   const id = `tie-popover-${racer.id}-${index}-${mobile ? "mobile" : "desktop"}`;
-  const flag = `<sup class="tie-flag" aria-hidden="true">!</sup>`;
   const isCollapsed = (racer.dayTieCollapsed || [])[index] === true;
-  const popover = tiePopoverMarkup(id, racer, index, place, tiedWith, isCollapsed);
-  const buttonAttrs = `type="button" class="tie-cell-toggle" data-tie-toggle="${id}" aria-expanded="false" aria-describedby="${id}" aria-label="Tied placement, view details"`;
+  const isResolved = (racer.dayTieResolved || [])[index] === true;
+  const resolvedAt = (racer.dayTieResolvedAt || [])[index];
+  const flag = isResolved
+    ? `<sup class="tie-flag tie-flag-resolved" aria-hidden="true">&#10003;</sup>`
+    : `<sup class="tie-flag" aria-hidden="true">!</sup>`;
+  const popover = tiePopoverMarkup(id, racer, index, place, tiedWith, isCollapsed, isResolved, resolvedAt);
+  const buttonAttrs = `type="button" class="tie-cell-toggle" data-tie-toggle="${id}" aria-expanded="false" aria-describedby="${id}" aria-label="${isResolved ? "Manually resolved placement" : "Tied placement"}, view details"`;
   return mobile
     ? `<span class="${className} tie-target"><button ${buttonAttrs}><small>Round ${index + 1}</small><b>${placement}${flag}</b>${tierMarkup}</button>${popover}</span>`
     : `<td class="${className} tie-target"><button ${buttonAttrs}>${placement}${flag}${tierMarkup}</button>${popover}</td>`;
@@ -1430,7 +1445,7 @@ function renderSetup() {
           <div class="schedule-preview" id="schedule-preview"><strong>${c.heatsPerDay} heats per round · ${c.racersPerHeat} racers per heat</strong><span>Every racer appears ${c.heatsPerRacerPerDay} times each round; each heat uses ${c.marblesPerHeat} of the ${c.maxMarblesPerHeat} allowed marbles.</span></div>
           <label class="field wide"><span class="field-label-text">Points by finishing place${fieldHelp("Comma-separated points awarded for 1st, 2nd, 3rd, etc. within a heat; any place beyond the list scores zero, and DNFs always score zero. These points sum across a round's heats into that round's standings, which decide who wins the round's bye/preliminary/wildcard seats &mdash; so changing the point spread can change who qualifies for the championship without changing a single finishing order.")}</span><input name="points" value="${state.points.join(", ")}" required></label>
         </details>
-        <div class="config-callout" id="tiebreak-callout" hidden><span aria-hidden="true">&#9432;</span><div><strong>How ties are broken</strong><small>A round's standings are ranked by points, then by how many times each racer placed 1st, then 2nd, then 3rd, and so on through every placement reached that round (a DNF counts as worse than any real placement) &mdash; so most ties resolve on their own from the actual results. If racers still match exactly on every level <em>and</em> the order between them would change who gets a bye, preliminary, or wildcard seat, that round pauses: racing can't continue until an organizer manually picks the order from a prompt on the Dashboard, Standings, or Rounds view. Ties that don't affect a seat (e.g. two racers tied for last) are simply shown tied &mdash; both display the same place, no prompt needed.</small></div></div>
+        <div class="config-callout" id="tiebreak-callout" hidden><span aria-hidden="true">&#9432;</span><div><strong>How ties are broken</strong><small>A round's standings are ranked by points, then by how many times each racer placed 1st, then 2nd, then 3rd, and so on through every placement reached that round (a DNF counts as worse than any real placement) &mdash; so most ties resolve on their own from the actual results. If racers still match exactly on every level <em>and</em> the order between them would change who gets a bye, preliminary, or wildcard seat, that round pauses: racing can't continue until an organizer manually picks the order from a prompt on the Dashboard, Standings, or Rounds view. Ties that don't affect a seat (e.g. two racers tied for last) are simply shown tied &mdash; both display the same place, no prompt needed. Once an organizer resolves a tie, that placement keeps a blue &#10003; marker in the standings (instead of the amber !) so it stays clear the order was a manual call, not a result decided by the racing itself.</small></div></div>
         <details class="config-group" id="championship-round-group">
           <summary class="eyebrow">Championship round</summary>
           <div class="field-grid">

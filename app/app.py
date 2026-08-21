@@ -1227,7 +1227,8 @@ def resolve_round_tiebreak(tournament_id: int, day: int):
             (tournament_id, day),
         )
         connection.executemany(
-            "INSERT INTO round_tiebreaks (tournament_id, day, racer_id, resolved_rank) VALUES (?, ?, ?, ?)",
+            "INSERT INTO round_tiebreaks (tournament_id, day, racer_id, resolved_rank, resolved_at) "
+            "VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
             [(tournament_id, day, racer_id, rank) for rank, racer_id in enumerate(racer_ids)],
         )
         return jsonify(build_state(connection, tournament_id))

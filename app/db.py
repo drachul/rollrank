@@ -143,6 +143,7 @@ SCHEMA = [
         day INTEGER NOT NULL,
         racer_id INTEGER NOT NULL REFERENCES racers(id) ON DELETE CASCADE,
         resolved_rank INTEGER NOT NULL,
+        resolved_at TEXT,
         PRIMARY KEY (tournament_id, day, racer_id)
     )
     """,
@@ -527,6 +528,8 @@ def standings(
     provisional_day_tiers: dict[int, list[bool]] = {row["id"]: [] for row in racers}
     day_tied_with: dict[int, list[list[dict[str, Any]] | None]] = {row["id"]: [] for row in racers}
     day_tie_collapsed: dict[int, list[bool]] = {row["id"]: [] for row in racers}
+    day_tie_resolved: dict[int, list[bool]] = {row["id"]: [] for row in racers}
+    day_tie_resolved_at: dict[int, list[str | None]] = {row["id"]: [] for row in racers}
     day_complete_flags: list[bool] = []
     for day in range(1, tournament["days"] + 1):
         ranking = round_standings(connection, tournament_id, day)
@@ -543,13 +546,12 @@ def standings(
             day_tie_groups.setdefault(
                 (row["totalPoints"], row["placementVector"]), []
             ).append(row)
-        existing_day_override = {
-            resolved_row["racer_id"]: resolved_row["resolved_rank"]
-            for resolved_row in connection.execute(
-                "SELECT racer_id, resolved_rank FROM round_tiebreaks WHERE tournament_id = ? AND day = ?",
-                (tournament_id, day),
-            )
-        }
+        day_tiebreak_rows = connection.execute(
+            "SELECT racer_id, resolved_rank, resolved_at FROM round_tiebreaks WHERE tournament_id = ? AND day = ?",
+            (tournament_id, day),
+        ).fetchall()
+        existing_day_override = {row["racer_id"]: row["resolved_rank"] for row in day_tiebreak_rows}
+        day_resolved_at = next((row["resolved_at"] for row in day_tiebreak_rows), None)
         resolved_racer_ids = set(existing_day_override)
         # A tie that doesn't actually change who gets a bye/preliminary/
         # wildcard seat -- checked cluster by cluster, since one day can hold
@@ -620,7 +622,8 @@ def standings(
                 displayed_tier = None
             group = day_tie_groups[(row["totalPoints"], row["placementVector"])]
             group_racer_ids = {other["id"] for other in group}
-            if (day_complete or is_live_day) and not resolved_racer_ids.issuperset(group_racer_ids):
+            group_resolved = len(group) > 1 and resolved_racer_ids.issuperset(group_racer_ids)
+            if (day_complete or is_live_day) and len(group) > 1:
                 tied_with = [
                     {"id": other["id"], "name": other["name"], "color": other["color"]}
                     for other in group
@@ -638,6 +641,8 @@ def standings(
             previous_day_tiers[row["id"]].append(previous_tier)
             provisional_day_tiers[row["id"]].append(displayed_tier != previous_tier)
             day_tied_with[row["id"]].append(tied_with)
+            day_tie_resolved[row["id"]].append(group_resolved)
+            day_tie_resolved_at[row["id"]].append(day_resolved_at if group_resolved else None)
 
     summaries = []
     for row in racers:
@@ -672,6 +677,8 @@ def standings(
                 "dayChampionshipTierProvisional": provisional_day_tiers[row["id"]],
                 "dayTiedWith": day_tied_with[row["id"]],
                 "dayTieCollapsed": day_tie_collapsed[row["id"]],
+                "dayTieResolved": day_tie_resolved[row["id"]],
+                "dayTieResolvedAt": day_tie_resolved_at[row["id"]],
                 "liveRoundLeader": preview is not None and preview["leaderId"] == row["id"],
                 "liveTier": preview["tiers"].get(row["id"]) if preview is not None else None,
             }
