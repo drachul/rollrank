@@ -478,6 +478,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible { 
 .field-help-popover { position:absolute; z-index:60; top:calc(100% + 8px); left:0; width:260px; max-width:min(260px,calc(100vw - 40px)); padding:11px 13px; border:1px solid var(--line); border-radius:10px; background:var(--panel-solid); box-shadow:var(--shadow); color:var(--ink); font-size:10.5px; line-height:1.55; font-weight:400; text-transform:none; letter-spacing:normal; }
 .field-help-popover strong { color:var(--yellow); }
 .field-help-popover em { color:var(--blue-light); font-style:normal; }
+.field-help-popover .live-value { color:var(--blue-light); font-weight:700; }
 .config-callout { display:flex; align-items:flex-start; gap:10px; margin:0 0 18px; padding:12px 14px; border:1px solid rgba(244,197,66,.35); border-radius:10px; background:rgba(244,197,66,.08); }
 .config-callout>span { color:var(--yellow); font-size:14px; line-height:1; }
 .config-callout strong { display:block; margin-bottom:3px; font-size:11px; color:var(--yellow); }

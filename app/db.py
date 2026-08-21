@@ -82,6 +82,9 @@ SCHEMA = [
         max_wildcard_marbles_for_racer_with_prelim_promotion INTEGER NOT NULL DEFAULT 0 CHECK (max_wildcard_marbles_for_racer_with_prelim_promotion BETWEEN 0 AND 20),
         max_wildcard_promotion_marbles_per_racer INTEGER NOT NULL DEFAULT 2 CHECK (max_wildcard_promotion_marbles_per_racer BETWEEN 0 AND 20),
         allow_cascading_wildcard_promotion_selection INTEGER NOT NULL DEFAULT 1 CHECK (allow_cascading_wildcard_promotion_selection IN (0, 1)),
+        final_racers_promoted_per_round INTEGER NOT NULL DEFAULT 1 CHECK (final_racers_promoted_per_round BETWEEN 1 AND 24),
+        preliminary_racers_promoted_per_round INTEGER NOT NULL DEFAULT 1 CHECK (preliminary_racers_promoted_per_round BETWEEN 1 AND 24),
+        wildcard_racers_promoted_per_round INTEGER NOT NULL DEFAULT 2 CHECK (wildcard_racers_promoted_per_round BETWEEN 1 AND 24),
         wildcard_racers_promoted_per_heat INTEGER NOT NULL DEFAULT 2 CHECK (wildcard_racers_promoted_per_heat BETWEEN 1 AND 24),
         preliminary_racers_promoted_per_heat INTEGER NOT NULL DEFAULT 2 CHECK (preliminary_racers_promoted_per_heat BETWEEN 1 AND 24),
         max_final_racers INTEGER NOT NULL CHECK (max_final_racers >= 2),
@@ -1013,21 +1016,26 @@ def championship_field(
     completed results. Each tier has its own per-racer marble cap and its
     own cascade toggle:
 
-    - Bye: one seat per round, normally its rank-1 finisher. If they're
-      already at max_final_bye_marbles_per_racer and cascading is on, the
-      seat cascades down the round's standings to the first racer under
-      cap; with cascading off the seat is simply forfeited.
-    - Preliminary: one seat per round from rank 2 down (rank 1 is always
-      excluded, reserved for the bye seat above, and whoever actually won
-      that round's bye seat -- which cascading can push below rank 1 -- is
-      excluded too), capped at max_prelim_promotion_marbles_per_racer --
-      except a bye-tier racer's preliminary capacity is instead
-      max_prelim_marbles_for_racer_with_final_bye (0 by default, i.e. still
-      excluded unless raised).
-    - Wildcard: two seats per round from rank 2 down (again excluding
-      whoever actually won that same round's bye and preliminary seats),
-      capped at max_wildcard_promotion_marbles_per_racer -- except a
-      bye-tier racer's wildcard capacity is
+    - Bye: final_racers_promoted_per_round seats per round (default 1),
+      normally its top finishers by rank. If a candidate is already at
+      max_final_bye_marbles_per_racer and cascading is on, that seat
+      cascades down the round's standings to the first racer under cap;
+      with cascading off the seat is simply forfeited -- and either way,
+      the rank position it was reserved for is never handed to a lower
+      tier.
+    - Preliminary: preliminary_racers_promoted_per_round seats per round
+      (default 1) from the next ranks down (every rank reserved for bye
+      above is always excluded, whether or not that bye seat was actually
+      won there, and whoever actually won it -- which cascading can push
+      further down -- is excluded too), capped at
+      max_prelim_promotion_marbles_per_racer -- except a bye-tier racer's
+      preliminary capacity is instead max_prelim_marbles_for_racer_with_final_bye
+      (0 by default, i.e. still excluded unless raised).
+    - Wildcard: wildcard_racers_promoted_per_round seats per round
+      (default 2) from the next ranks down (again excluding every rank
+      reserved for bye, plus whoever actually won that same round's bye
+      and preliminary seats), capped at max_wildcard_promotion_marbles_per_racer
+      -- except a bye-tier racer's wildcard capacity is
       max_wildcard_marbles_for_racer_with_final_bye, and a preliminary-tier
       racer's is max_wildcard_marbles_for_racer_with_prelim_promotion (both
       0 by default).
@@ -1055,6 +1063,9 @@ def championship_field(
     prelim_wildcard_bonus = tournament["max_wildcard_marbles_for_racer_with_prelim_promotion"]
     wildcard_cap = tournament["max_wildcard_promotion_marbles_per_racer"]
     cascade_wildcard = bool(tournament["allow_cascading_wildcard_promotion_selection"])
+    final_count = tournament["final_racers_promoted_per_round"]
+    preliminary_count = tournament["preliminary_racers_promoted_per_round"]
+    wildcard_count = tournament["wildcard_racers_promoted_per_round"]
 
     rankings: dict[int, list[dict[str, Any]]] = {}
     for day in range(1, tournament["days"] + 1):
@@ -1071,34 +1082,40 @@ def championship_field(
 
     byes: list[dict[str, Any]] = []
     bye_counts: dict[int, int] = {}
-    day_bye_winner: dict[int, int] = {}
+    day_reserved_bye_ranks: dict[int, set[int]] = {}
+    day_bye_winners: dict[int, set[int]] = {}
     for day in sorted(rankings):
+        day_reserved_bye_ranks[day] = {row["id"] for row in rankings[day][:final_count]}
+        winners: set[int] = set()
         for rank_row in _cascade_select(
-            rankings[day], 1, cascade_bye, lambda _rid: bye_cap, bye_counts
+            rankings[day], final_count, cascade_bye, lambda _rid: bye_cap, bye_counts
         ):
-            day_bye_winner[day] = rank_row["id"]
+            winners.add(rank_row["id"])
             byes.append({"racerId": rank_row["id"], "originRound": day})
+        day_bye_winners[day] = winners
     bye_racer_ids = {racer_id for racer_id, count in bye_counts.items() if count > 0}
 
     # A racer already claiming a higher tier this round is never a candidate
     # for a lower tier from the same round -- the bonus capacity settings
     # (bye_prelim_bonus etc.) only govern how many extra marbles a racer may
-    # pick up across *other* rounds, not a second seat in this one. Rank 1 is
-    # excluded outright since it's reserved for the bye seat even when that
-    # seat is forfeited (capped with no cascade).
+    # pick up across *other* rounds, not a second seat in this one. Every
+    # rank reserved for bye is excluded outright since it's never handed to
+    # a lower tier even when that seat is forfeited (capped with no
+    # cascade).
     preliminary_direct: list[dict[str, Any]] = []
     prelim_counts: dict[int, int] = {}
-    day_prelim_winner: dict[int, int] = {}
+    day_prelim_winners: dict[int, set[int]] = {}
     prelim_capacity = lambda rid: bye_prelim_bonus if rid in bye_racer_ids else prelim_cap
     for day in sorted(rankings):
-        rank_one_id = rankings[day][0]["id"]
-        exclude = {rank_one_id, day_bye_winner.get(day)}
+        exclude = day_reserved_bye_ranks[day] | day_bye_winners[day]
         pool = [row for row in rankings[day] if row["id"] not in exclude]
-        for rank_row in _cascade_select(pool, 1, cascade_prelim, prelim_capacity, prelim_counts):
-            day_prelim_winner[day] = rank_row["id"]
+        winners: set[int] = set()
+        for rank_row in _cascade_select(pool, preliminary_count, cascade_prelim, prelim_capacity, prelim_counts):
+            winners.add(rank_row["id"])
             preliminary_direct.append(
                 {"racerId": rank_row["id"], "originRound": day, "points": rank_row["totalPoints"]}
             )
+        day_prelim_winners[day] = winners
     prelim_racer_ids = {racer_id for racer_id, count in prelim_counts.items() if count > 0}
 
     wildcard_pool: list[dict[str, Any]] = []
@@ -1112,10 +1129,9 @@ def championship_field(
         return wildcard_cap
 
     for day in sorted(rankings):
-        rank_one_id = rankings[day][0]["id"]
-        exclude = {rank_one_id, day_bye_winner.get(day), day_prelim_winner.get(day)}
+        exclude = day_reserved_bye_ranks[day] | day_bye_winners[day] | day_prelim_winners[day]
         pool = [row for row in rankings[day] if row["id"] not in exclude]
-        for rank_row in _cascade_select(pool, 2, cascade_wildcard, wildcard_capacity, wildcard_counts):
+        for rank_row in _cascade_select(pool, wildcard_count, cascade_wildcard, wildcard_capacity, wildcard_counts):
             wildcard_pool.append(
                 {"racerId": rank_row["id"], "originRound": day, "points": rank_row["totalPoints"]}
             )
