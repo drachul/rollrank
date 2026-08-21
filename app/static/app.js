@@ -1099,7 +1099,7 @@ function renderChampionshipStages() {
 }
 
 function contestantRow(contestant = {name:"", color:"#2F80ED"}) {
-  return `<div class="contestant-config-row"><span class="drag-handle" aria-hidden="true">⋮⋮</span><input type="color" value="${escapeHtml(contestant.color)}" aria-label="Marble color"><input type="text" value="${escapeHtml(contestant.name)}" maxlength="50" aria-label="Racer name" required><button type="button" data-remove-contestant aria-label="Remove racer">×</button></div>`;
+  return `<div class="contestant-config-row"><span class="drag-handle" aria-hidden="true">⋮⋮</span><span class="contestant-color-marble">${marble(contestant.color)}<input type="color" value="${escapeHtml(contestant.color)}" aria-label="Marble color"></span><input type="text" value="${escapeHtml(contestant.name)}" maxlength="50" aria-label="Racer name" required><button type="button" data-remove-contestant aria-label="Remove racer">×</button></div>`;
 }
 
 const wizardSteps = ["Format", "Rounds", "Championship", "Review"];
@@ -1551,6 +1551,7 @@ document.addEventListener("input", (event) => {
     return;
   }
   if (event.target.closest("#config-form") && ["days", "heatsPerRacerPerDay", "maxMarblesPerHeat", "marblesPerRacer"].includes(event.target.name)) updateSchedulePreview();
+  if (event.target.matches('.contestant-color-marble input[type="color"]')) event.target.previousElementSibling?.style.setProperty("--marble-color", event.target.value);
 });
 
 document.addEventListener("change", (event) => {
