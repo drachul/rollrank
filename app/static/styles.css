@@ -527,6 +527,10 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible { 
 .tie-break-pick { display:flex; align-items:center; gap:10px; padding:10px 12px; border:1px solid var(--line); border-radius:9px; background:rgba(255,255,255,.03); color:var(--ink); font-size:12px; font-weight:800; text-align:left; cursor:pointer; }
 .tie-break-pick:hover { border-color:var(--blue); background:rgba(47,128,237,.1); }
 .tie-break-pick small { margin-left:auto; color:var(--muted); font-size:9px; font-weight:750; text-transform:uppercase; letter-spacing:.03em; }
+.tie-break-warning { display:flex; align-items:flex-start; gap:10px; margin:0 0 14px; padding:12px 14px; border:1px solid rgba(230,104,95,.4); border-radius:10px; background:rgba(230,104,95,.1); }
+.tie-break-warning>span { display:grid; width:20px; height:20px; flex:0 0 auto; place-items:center; border-radius:50%; background:var(--red); color:#fff; font-size:11px; font-weight:900; }
+.tie-break-warning strong { display:block; margin-bottom:3px; font-size:11px; color:#ff9d95; }
+.tie-break-warning p { margin:0; color:var(--muted); font-size:10px; line-height:1.5; }
 .setup-assistant { display:flex; align-items:center; justify-content:space-between; gap:16px; margin:0 0 18px; padding:14px; border:1px solid rgba(47,128,237,.42); border-radius:11px; background:linear-gradient(120deg,rgba(47,128,237,.18),rgba(47,128,237,.06)); }
 .setup-assistant>div { display:flex; min-width:0; align-items:center; gap:11px; }
 .setup-assistant>div>span { display:grid; width:34px; height:34px; flex:0 0 auto; place-items:center; border-radius:9px; background:var(--blue); color:#fff; font-size:16px; box-shadow:0 8px 20px rgba(47,128,237,.24); }

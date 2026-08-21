@@ -28,6 +28,7 @@ from db import (
     stage_has_results,
     standings,
     sync_championship,
+    tiebreak_earlier_round_impact,
     transaction,
     wildcard_field,
 )
@@ -1199,6 +1200,7 @@ def save_heat_results(heat_id: int):
 def resolve_round_tiebreak(tournament_id: int, day: int):
     payload = request.get_json(silent=True) or {}
     order = payload.get("order")
+    confirm_earlier_impact = bool(payload.get("confirmEarlierImpact"))
     if not isinstance(order, list) or not order:
         raise ApiError("Supply the tied racers in the order they should rank.")
     try:
@@ -1214,6 +1216,12 @@ def resolve_round_tiebreak(tournament_id: int, day: int):
             raise ApiError("There is no pending tie to resolve for this round.", status=409)
         if set(racer_ids) != {racer["id"] for racer in pending["racers"]}:
             raise ApiError("The submitted racers do not match the tied racers for this round.")
+
+        if not confirm_earlier_impact:
+            affected_days = tiebreak_earlier_round_impact(connection, tournament_id, day, racer_ids)
+            if affected_days:
+                return jsonify({"needsConfirmation": True, "affectedDays": affected_days})
+
         connection.execute(
             "DELETE FROM round_tiebreaks WHERE tournament_id = ? AND day = ?",
             (tournament_id, day),
