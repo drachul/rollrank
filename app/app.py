@@ -22,6 +22,7 @@ from db import (
     is_heat_edit_locked,
     is_heat_locked,
     is_stage_complete,
+    pending_round_tiebreak,
     preliminary_field,
     rebuild_schedule,
     stage_has_results,
@@ -210,21 +211,31 @@ def shape_heats(heat_rows) -> list[dict[str, Any]]:
     return heats
 
 
-def apply_heat_locks(heats: list[dict[str, Any]]) -> None:
+def apply_heat_locks(
+    heats: list[dict[str, Any]], tie_locked_after_global: int | None = None
+) -> None:
     """Sets `locked` (blocked from starting until earlier heats are scored)
     and `editLocked` (blocked from re-scoring once a later heat has started)
     on every heat, using the tournament-wide global_number order that spans
     staging and every championship stage.
+
+    tie_locked_after_global, when given, is the highest global_number
+    belonging to a staging day with an unresolved promotion tie -- every
+    heat after it is locked too, mirroring is_heat_locked() in db.py so the
+    UI doesn't show a heat as startable that the server would reject.
     """
     ordered = sorted(heats, key=lambda heat: heat["globalNumber"])
     started_globals = [heat["globalNumber"] for heat in ordered if heat["started"]]
     latest_started_global = max(started_globals) if started_globals else None
     blocked = False
     for heat in ordered:
+        tie_blocked = (
+            tie_locked_after_global is not None and heat["globalNumber"] > tie_locked_after_global
+        )
         if heat["complete"]:
             heat["locked"] = False
         else:
-            heat["locked"] = blocked
+            heat["locked"] = blocked or tie_blocked
             blocked = True
         heat["editLocked"] = (
             latest_started_global is not None and heat["globalNumber"] < latest_started_global
@@ -502,10 +513,18 @@ def build_state(connection, tournament_id: int) -> dict[str, Any]:
     staging_ready = total_heats > 0 and completed_heats == total_heats
     championship = build_championship_state(connection, tournament_id, staging_ready)
 
+    pending_tie_break = pending_round_tiebreak(connection, tournament_id)
+    tie_lock_boundary = None
+    if pending_tie_break is not None:
+        tie_lock_boundary = connection.execute(
+            "SELECT MAX(global_number) AS max_global FROM heats WHERE tournament_id = ? AND day = ?",
+            (tournament_id, pending_tie_break["day"]),
+        ).fetchone()["max_global"]
+
     all_heats = list(staging_heats) + championship["wildcard"]["heats"] + championship["preliminary"]["heats"]
     if championship["final"]["heat"] is not None:
         all_heats.append(championship["final"]["heat"])
-    apply_heat_locks(all_heats)
+    apply_heat_locks(all_heats, tie_locked_after_global=tie_lock_boundary)
 
     days = []
     for day in range(1, tournament["days"] + 1):
@@ -567,6 +586,7 @@ def build_state(connection, tournament_id: int) -> dict[str, Any]:
         "days": days,
         "standings": table,
         "championship": championship,
+        "pendingTieBreak": pending_tie_break,
     }
 
 
@@ -1172,6 +1192,36 @@ def save_heat_results(heat_id: int):
                 ),
             )
         sync_championship(connection, tournament_id)
+        return jsonify(build_state(connection, tournament_id))
+
+
+@app.put("/api/tournaments/<int:tournament_id>/staging/<int:day>/tiebreak")
+def resolve_round_tiebreak(tournament_id: int, day: int):
+    payload = request.get_json(silent=True) or {}
+    order = payload.get("order")
+    if not isinstance(order, list) or not order:
+        raise ApiError("Supply the tied racers in the order they should rank.")
+    try:
+        racer_ids = [int(racer_id) for racer_id in order]
+    except (TypeError, ValueError) as exc:
+        raise ApiError("Every entry in the order must be a racer id.") from exc
+    if len(set(racer_ids)) != len(racer_ids):
+        raise ApiError("Each tied racer can only appear once in the order.")
+    with transaction() as connection:
+        tournament_id = resolve_tournament_id(connection, tournament_id)
+        pending = pending_round_tiebreak(connection, tournament_id)
+        if pending is None or pending["day"] != day:
+            raise ApiError("There is no pending tie to resolve for this round.", status=409)
+        if set(racer_ids) != {racer["id"] for racer in pending["racers"]}:
+            raise ApiError("The submitted racers do not match the tied racers for this round.")
+        connection.execute(
+            "DELETE FROM round_tiebreaks WHERE tournament_id = ? AND day = ?",
+            (tournament_id, day),
+        )
+        connection.executemany(
+            "INSERT INTO round_tiebreaks (tournament_id, day, racer_id, resolved_rank) VALUES (?, ?, ?, ?)",
+            [(tournament_id, day, racer_id, rank) for rank, racer_id in enumerate(racer_ids)],
+        )
         return jsonify(build_state(connection, tournament_id))
 
 

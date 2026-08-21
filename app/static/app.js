@@ -16,6 +16,8 @@ let kioskUsesBrowserFullscreen = false;
 let setupWizardStep = 0;
 let setupWizardDraft = null;
 let standingsTierView = "projected";
+let tieBreakOrder = [];
+let tieBreakKey = null;
 if (kioskMode) activeView = "dashboard";
 
 const landingPage = document.querySelector("#landing-page");
@@ -25,6 +27,7 @@ const app = document.querySelector("#app");
 const toast = document.querySelector("#toast");
 const tournamentSwitcher = document.querySelector("#tournament-switcher");
 const tournamentDialog = document.querySelector("#new-tournament-dialog");
+const tieBreakDialog = document.querySelector("#tie-break-dialog");
 
 const escapeHtml = (value) => String(value ?? "")
   .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
@@ -45,6 +48,80 @@ const fieldHelp = (bodyHtml) => {
   const id = `field-help-${fieldHelpCounter++}`;
   return `<span class="field-help-wrap"><button type="button" class="field-help-toggle" data-help-toggle="${id}" aria-expanded="false" aria-label="More information" aria-describedby="${id}">?</button><div class="field-help-popover" id="${id}" role="tooltip" hidden>${bodyHtml}</div></span>`;
 };
+
+function tiePopoverMarkup(id, racer, index, place, tiedWith) {
+  const otherRacers = tiedWith
+    .map((other) => `<span class="tie-popover-racer">${marble(other.color, "small")}${escapeHtml(other.name)}</span>`)
+    .join("");
+  return `<div class="tie-popover" id="${id}" role="tooltip" hidden><strong>Tied for ${ordinal(place)} in Round ${index + 1}</strong><p>${escapeHtml(racer.name)} matched ${tiedWith.length === 1 ? "1 other racer" : `${tiedWith.length} other racers`} on points and wins this round.</p><div class="tie-popover-racers">${otherRacers}</div><small>Order between tied racers was decided by roster order, not race results.</small></div>`;
+}
+
+function pendingTieBreakCallout() {
+  const pending = state?.pendingTieBreak;
+  if (!pending || kioskMode) return "";
+  const names = pending.racers.map((racer) => escapeHtml(racer.name)).join(", ");
+  return `<div class="config-callout tie-break-callout"><span aria-hidden="true">!</span><div><strong>Round ${pending.day} needs a tiebreak</strong><small>${names} finished this round tied on points, wins, and placement -- and how that's ordered decides who gets promoted. Racing can't continue until it's resolved.</small></div><button type="button" class="primary-button compact" data-open-tie-break>Resolve tie</button></div>`;
+}
+
+function kioskPendingTieBreakBanner() {
+  const pending = state?.pendingTieBreak;
+  if (!pending) return "";
+  const names = pending.racers.map((racer) => escapeHtml(racer.name)).join(", ");
+  return `<div class="kiosk-tiebreak-banner"><span aria-hidden="true">!</span><div><strong>Round ${pending.day} tiebreak pending</strong><p>${names} finished tied on points, wins, and placement. Racing is paused until it's resolved from the scoring device.</p></div></div>`;
+}
+
+function tieBreakDialogBody() {
+  const pending = state?.pendingTieBreak;
+  if (!pending) return "";
+  const picked = new Set(tieBreakOrder);
+  const remaining = pending.racers.filter((racer) => !picked.has(racer.id));
+  const seatNoun = pending.racers.length > 2 ? "seats" : "seat";
+  const orderMarkup = tieBreakOrder.length
+    ? `<ol class="tie-break-order">${tieBreakOrder
+        .map((id) => pending.racers.find((racer) => racer.id === id))
+        .map((racer) => `<li>${marble(racer.color, "small")}<span>${escapeHtml(racer.name)}</span></li>`)
+        .join("")}</ol>`
+    : "";
+  const picksMarkup = remaining.length
+    ? `<div class="tie-break-picks">${remaining
+        .map((racer) => `<button type="button" class="tie-break-pick" data-tie-pick="${racer.id}">${marble(racer.color, "small")}<span>${escapeHtml(racer.name)}</span><small>${racer.currentTier ? `Currently ${tierLabel[racer.currentTier]}` : "Currently no seat"}</small></button>`)
+        .join("")}</div>`
+    : "";
+  return `<header><div><p class="eyebrow">Round ${pending.day} tiebreak</p><h2 id="tie-break-dialog-title">Resolve the tie for Round ${pending.day}</h2></div><button type="button" data-close-tie-break aria-label="Close">×</button></header><p>These racers matched on points, wins, and placement this round. Click them below in the order they should rank, highest first, to decide who wins the ${seatNoun} on the line.</p>${orderMarkup}${picksMarkup}<div class="dialog-actions"><button type="button" class="secondary-button" data-tie-break-reset ${tieBreakOrder.length ? "" : "disabled"}>Reset</button><button type="button" class="primary-button" data-tie-break-confirm ${tieBreakOrder.length === pending.racers.length ? "" : "disabled"}>Confirm order</button></div>`;
+}
+
+function syncTieBreakDialog() {
+  if (!tieBreakDialog) return;
+  const pending = state?.pendingTieBreak;
+  const body = tieBreakDialog.querySelector("#tie-break-dialog-body");
+  if (!pending) {
+    tieBreakOrder = [];
+    tieBreakKey = null;
+    if (tieBreakDialog.open) tieBreakDialog.close();
+    body.innerHTML = "";
+    return;
+  }
+  const key = `${pending.day}:${pending.racers.map((racer) => racer.id).sort().join(",")}`;
+  if (key !== tieBreakKey) {
+    tieBreakOrder = [];
+    tieBreakKey = key;
+  }
+  body.innerHTML = tieBreakDialogBody();
+}
+
+async function confirmTieBreak() {
+  const pending = state?.pendingTieBreak;
+  if (!pending || tieBreakOrder.length !== pending.racers.length) return;
+  try {
+    applyState(
+      await api(`/api/tournaments/${state.competition.id}/staging/${pending.day}/tiebreak`, {
+        method: "PUT",
+        body: JSON.stringify({order: tieBreakOrder}),
+      })
+    );
+    notify("Tie resolved.");
+  } catch (error) { notify(error.message, true); }
+}
 
 function notify(message, isError = false) {
   toast.textContent = message;
@@ -90,6 +167,7 @@ function applyState(nextState) {
   kioskRefreshFailed = false;
   kioskLastUpdated = new Date();
   syncTournamentChrome();
+  syncTieBreakDialog();
   render();
   if (completedHeat?.stage === "final") startKioskCupPresentation(completedHeat, state.competition.name);
   else if (completedHeat) startKioskRaceResults(completedHeat);
@@ -571,6 +649,7 @@ function renderDashboard() {
   const nextHeat = state.days.flatMap((day) => day.heats).find((heat) => !heat.complete);
   const topRacers = state.standings.slice(0, 5);
   return `
+    ${pendingTieBreakCallout()}
     <section class="dashboard-hero">
       <div class="hero-copy">
         <div class="dashboard-status-row"><span class="status-chip ${status.className}"><i></i>${status.label}</span><button type="button" class="kiosk-launch-button" data-enter-kiosk><span aria-hidden="true">⛶</span> Fullscreen display</button></div>
@@ -591,7 +670,7 @@ function renderDashboard() {
         ${nextHeat ? `<div class="next-heat">
           <div class="heat-flag"><small>Race</small><strong>#${nextHeat.globalNumber}</strong></div>
           <div class="racer-preview">${nextHeat.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>
-          ${nextHeat.started === false ? `<button class="primary-button compact" data-start-heat="${nextHeat.id}">Start heat</button>` : `<button class="primary-button compact" data-score-heat="${nextHeat.id}">Score heat</button>`}
+          ${nextHeat.locked ? `<span class="heat-locked-note">Resolve the pending tiebreak first</span>` : nextHeat.started === false ? `<button class="primary-button compact" data-start-heat="${nextHeat.id}">Start heat</button>` : `<button class="primary-button compact" data-score-heat="${nextHeat.id}">Score heat</button>`}
         </div>` : `<div class="completion-callout"><div class="trophy">★</div><div><strong>Championship bracket underway</strong><p>Wildcard, preliminary, and final heats build automatically as each stage finishes.</p></div><button class="primary-button compact" data-view="heats" data-day="championship">Open bracket</button></div>`}
       </article>
       <article class="panel standings-preview">
@@ -709,7 +788,9 @@ function renderKioskDashboard() {
   const liveStatus = kioskRefreshFailed ? "Reconnecting…" : kioskTimestamp();
   let nextContent = "";
 
-  if (nextHeat) {
+  if (state.pendingTieBreak && nextHeat?.locked) {
+    nextContent = `<p class="kiosk-card-label">Paused</p><div class="kiosk-final-ready"><span aria-hidden="true">!</span><div><strong>Round ${state.pendingTieBreak.day} tiebreak pending</strong><p>Racing resumes once it's resolved from the scoring device.</p></div></div>`;
+  } else if (nextHeat) {
     nextContent = `<div class="kiosk-card-heading"><p class="kiosk-card-label">${nextHeat.started ? "In progress" : "Up next"}</p><b>Race #${nextHeat.globalNumber}</b></div><h2>Round ${nextHeat.day} · Heat ${nextHeat.heatNumber}</h2><div class="kiosk-next-racers">${nextHeat.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>`;
   } else if (nextWildcard) {
     nextContent = `<div class="kiosk-card-heading"><p class="kiosk-card-label">${nextWildcard.started ? "In progress" : "Up next"}</p><b>Championship</b></div><h2>Championship: Wildcard ${championshipHeatLabel("wildcard", nextWildcard.heatNumber)}</h2><div class="kiosk-next-racers">${nextWildcard.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>`;
@@ -725,6 +806,7 @@ function renderKioskDashboard() {
       <div class="kiosk-title"><p>${status.label}</p><h1>${escapeHtml(c.name)}</h1></div>
       <div class="kiosk-controls"><span class="kiosk-live-status${kioskRefreshFailed ? " stale" : ""}"><i></i>${liveStatus}</span><button type="button" data-exit-kiosk aria-label="Exit fullscreen display">Exit <span aria-hidden="true">×</span></button></div>
     </header>
+    ${kioskPendingTieBreakBanner()}
     <div class="kiosk-overview">
       <article class="kiosk-progress-card">
         <div class="kiosk-card-heading"><p class="kiosk-card-label">Round progress</p></div>
@@ -848,6 +930,7 @@ function renderHeats() {
   const onChampionship = activeDay === "championship";
   const selectedDay = onChampionship ? null : state.days.find((day) => day.day === activeDay) || state.days[0];
   return `${viewHeader("Results desk", "Rounds", "Choose a round, then record a unique finishing position for every marble.")}
+    ${pendingTieBreakCallout()}
     <div class="day-tabs" role="tablist">${state.days.map((day) => {
       const complete = day.heats.filter((heat) => heat.complete).length;
       return `<button role="tab" aria-selected="${day.day === activeDay}" class="${day.day === activeDay ? "active" : ""}" data-day="${day.day}"><span>Round ${day.day}</span><small>${complete}/${day.heats.length} complete</small></button>`;
@@ -993,9 +1076,19 @@ function standingRoundCell(racer, place, index, liveRoundDay, mobile = false) {
   }
   const className = `${tierClass(tier)}${provisional ? ` tier-reassigned${tier ? "" : " tier-removed"}` : ""}`;
   const placement = placeLabel(place, index + 1 === liveRoundDay);
+  const tiedWith = place != null ? (racer.dayTiedWith || [])[index] : null;
+  if (!tiedWith || tiedWith.length === 0) {
+    return mobile
+      ? `<span class="${className}"><small>Round ${index + 1}</small><b>${placement}</b>${tierMarkup}</span>`
+      : `<td class="${className}">${placement}${tierMarkup}</td>`;
+  }
+  const id = `tie-popover-${racer.id}-${index}-${mobile ? "mobile" : "desktop"}`;
+  const flag = `<sup class="tie-flag" aria-hidden="true">!</sup>`;
+  const popover = tiePopoverMarkup(id, racer, index, place, tiedWith);
+  const buttonAttrs = `type="button" class="tie-cell-toggle" data-tie-toggle="${id}" aria-expanded="false" aria-describedby="${id}" aria-label="Tied placement, view details"`;
   return mobile
-    ? `<span class="${className}"><small>Round ${index + 1}</small><b>${placement}</b>${tierMarkup}</span>`
-    : `<td class="${className}">${placement}${tierMarkup}</td>`;
+    ? `<span class="${className} tie-target"><button ${buttonAttrs}><small>Round ${index + 1}</small><b>${placement}${flag}</b>${tierMarkup}</button>${popover}</span>`
+    : `<td class="${className} tie-target"><button ${buttonAttrs}>${placement}${flag}${tierMarkup}</button>${popover}</td>`;
 }
 
 function standingsTierViewControl(liveRoundDay) {
@@ -1006,6 +1099,7 @@ function standingsTierViewControl(liveRoundDay) {
 function renderStandings() {
   const c = state.competition;
   return `${viewHeader("Live scoring", "Tournament standings", "Round placings update automatically whenever a heat result is saved.")}
+    ${pendingTieBreakCallout()}
     ${renderChampionshipLadder()}
     <section class="panel table-panel">${c.liveRoundDay ? standingsTierViewControl(c.liveRoundDay) : ""}<div class="table-scroll"><table class="standings-table"><thead><tr><th>Racer</th>${Array.from({length:c.days}, (_, i) => `<th>Round ${i + 1}</th>`).join("")}</tr></thead><tbody>
     ${state.standings.map((racer) => `<tr><td><span class="racer-cell">${marble(racer.color, "small")}<strong>${escapeHtml(racer.name)}</strong></span></td>${racer.dayPlacements.map((place, index) => standingRoundCell(racer, place, index, c.liveRoundDay)).join("")}</tr>`).join("")}
@@ -1307,7 +1401,7 @@ function renderSetup() {
       <section class="panel config-panel"><div class="section-title"><span>01</span><div><h2>Tournament format</h2><p>Name the event and define its schedule.</p></div></div>
         <div class="setup-assistant"><div><span aria-hidden="true">✦</span><div><strong>New to tournament setup?</strong><small>Build a format step by step and preview how each choice affects the rounds and championship stages.</small></div></div><button type="button" class="primary-button" data-setup-wizard>Setup Wizard <span aria-hidden="true">→</span></button></div>
         <label class="field wide"><span>Tournament name</span><input name="name" value="${escapeHtml(c.name)}" maxlength="80" required></label>
-        <details class="config-group">
+        <details class="config-group" id="staging-rounds-group">
           <summary class="eyebrow">Staging rounds</summary>
           <div class="field-grid">
             <label class="field"><span class="field-label-text">Race rounds${fieldHelp("How many staging rounds run before the championship stage. Each round is its own self-contained pool: the bye/preliminary/wildcard tiers award one seat (or up to two, for wildcard) per round, so more rounds means more separate chances for every racer to qualify, and more marbles the top performers can stack up across rounds via the cross-round bonus caps.")}</span><input name="days" type="number" min="1" max="30" value="${c.days}" required></label>
@@ -1318,6 +1412,7 @@ function renderSetup() {
           <div class="schedule-preview" id="schedule-preview"><strong>${c.heatsPerDay} heats per round · ${c.racersPerHeat} racers per heat</strong><span>Every racer appears ${c.heatsPerRacerPerDay} times each round; each heat uses ${c.marblesPerHeat} of the ${c.maxMarblesPerHeat} allowed marbles.</span></div>
           <label class="field wide"><span class="field-label-text">Points by finishing place${fieldHelp("Comma-separated points awarded for 1st, 2nd, 3rd, etc. within a heat; any place beyond the list scores zero, and DNFs always score zero. These points sum across a round's heats into that round's standings, which decide who wins the round's bye/preliminary/wildcard seats &mdash; so changing the point spread can change who qualifies for the championship without changing a single finishing order.")}</span><input name="points" value="${state.points.join(", ")}" required></label>
         </details>
+        <div class="config-callout" id="tiebreak-callout" hidden><span aria-hidden="true">&#9432;</span><div><strong>How ties are broken</strong><small>A round's standings are ranked by points, then wins, then the sum of each racer's literal finishing positions &mdash; so most ties resolve on their own from the actual results. If racers still match exactly on all three <em>and</em> the order between them would change who gets a bye, preliminary, or wildcard seat, that round pauses: racing can't continue until an organizer manually picks the order from a prompt on the Dashboard, Standings, or Rounds view. Ties that don't affect a seat (e.g. two racers tied for last) are left to resolve on their own by roster order, no prompt needed.</small></div></div>
         <details class="config-group" id="championship-round-group">
           <summary class="eyebrow">Championship round</summary>
           <div class="field-grid">
@@ -1478,8 +1573,8 @@ async function deleteCurrentTournament() {
 }
 
 const closeFieldHelpPopovers = () => {
-  document.querySelectorAll(".field-help-popover:not([hidden])").forEach((popover) => { popover.hidden = true; });
-  document.querySelectorAll('[data-help-toggle][aria-expanded="true"]').forEach((button) => button.setAttribute("aria-expanded", "false"));
+  document.querySelectorAll(".field-help-popover:not([hidden]), .tie-popover:not([hidden])").forEach((popover) => { popover.hidden = true; });
+  document.querySelectorAll('[data-help-toggle][aria-expanded="true"], [data-tie-toggle][aria-expanded="true"]').forEach((button) => button.setAttribute("aria-expanded", "false"));
 };
 
 document.addEventListener("click", (event) => {
@@ -1491,7 +1586,23 @@ document.addEventListener("click", (event) => {
     if (popover && !isOpen) { popover.hidden = false; helpToggle.setAttribute("aria-expanded", "true"); }
     return;
   }
-  if (!event.target.closest(".field-help-popover")) closeFieldHelpPopovers();
+  const tieToggle = event.target.closest("[data-tie-toggle]");
+  if (tieToggle) {
+    const popover = document.getElementById(tieToggle.dataset.tieToggle);
+    const isOpen = popover && !popover.hidden;
+    closeFieldHelpPopovers();
+    if (popover && !isOpen) {
+      popover.hidden = false;
+      tieToggle.setAttribute("aria-expanded", "true");
+      const anchor = tieToggle.getBoundingClientRect();
+      const width = popover.offsetWidth;
+      const left = Math.min(Math.max(12, anchor.left), window.innerWidth - width - 12);
+      popover.style.left = `${left}px`;
+      popover.style.top = `${Math.min(anchor.bottom + 8, window.innerHeight - popover.offsetHeight - 12)}px`;
+    }
+    return;
+  }
+  if (!event.target.closest(".field-help-popover") && !event.target.closest(".tie-popover")) closeFieldHelpPopovers();
   if (event.target.closest("[data-setup-wizard]")) { openSetupWizard(); return; }
   if (event.target.closest("[data-close-setup-wizard]")) { document.querySelector("#setup-wizard")?.close(); return; }
   const wizardPresetButton = event.target.closest("[data-wizard-preset]");
@@ -1514,6 +1625,12 @@ document.addEventListener("click", (event) => {
   if (event.target.closest("[data-new-tournament]")) { tournamentDialog.showModal(); requestAnimationFrame(() => tournamentDialog.querySelector('input[name="name"]').focus()); return; }
   if (event.target.closest("[data-close-tournament-dialog]")) { tournamentDialog.close(); return; }
   if (event.target.closest("[data-delete-tournament]")) { deleteCurrentTournament(); return; }
+  if (event.target.closest("[data-open-tie-break]")) { syncTieBreakDialog(); tieBreakDialog.showModal(); return; }
+  if (event.target.closest("[data-close-tie-break]")) { tieBreakDialog.close(); return; }
+  const tiePickButton = event.target.closest("[data-tie-pick]");
+  if (tiePickButton) { tieBreakOrder = [...tieBreakOrder, Number(tiePickButton.dataset.tiePick)]; syncTieBreakDialog(); return; }
+  if (event.target.closest("[data-tie-break-reset]")) { tieBreakOrder = []; syncTieBreakDialog(); return; }
+  if (event.target.closest("[data-tie-break-confirm]")) { confirmTieBreak(); return; }
   const dayButton = event.target.closest("[data-day]");
   if (dayButton) { activeDay = dayButton.dataset.day === "championship" ? "championship" : Number(dayButton.dataset.day); render(); return; }
   const scoreButton = event.target.closest("[data-score-heat]");
@@ -1584,8 +1701,9 @@ document.addEventListener("keydown", (event) => {
 
 // "toggle" doesn't bubble, so this has to listen during the capture phase.
 document.addEventListener("toggle", (event) => {
-  if (event.target.id !== "championship-round-group") return;
-  const callout = document.querySelector("#tier-callout");
+  const calloutId = {"championship-round-group": "tier-callout", "staging-rounds-group": "tiebreak-callout"}[event.target.id];
+  if (!calloutId) return;
+  const callout = document.querySelector(`#${calloutId}`);
   if (callout) callout.hidden = !event.target.open;
 }, true);
 

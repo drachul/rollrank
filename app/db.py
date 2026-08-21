@@ -137,6 +137,15 @@ SCHEMA = [
         UNIQUE (heat_id, racer_id, marble_number)
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS round_tiebreaks (
+        tournament_id INTEGER NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
+        day INTEGER NOT NULL,
+        racer_id INTEGER NOT NULL REFERENCES racers(id) ON DELETE CASCADE,
+        resolved_rank INTEGER NOT NULL,
+        PRIMARY KEY (tournament_id, day, racer_id)
+    )
+    """,
     "CREATE INDEX IF NOT EXISTS idx_heats_day ON heats (tournament_id, day, heat_number)",
     "CREATE INDEX IF NOT EXISTS idx_heats_stage ON heats (tournament_id, stage)",
     "CREATE INDEX IF NOT EXISTS idx_heat_entries_racer ON heat_entries (racer_id)",
@@ -515,12 +524,29 @@ def standings(
     day_tiers: dict[int, list[str | None]] = {row["id"]: [] for row in racers}
     previous_day_tiers: dict[int, list[str | None]] = {row["id"]: [] for row in racers}
     provisional_day_tiers: dict[int, list[bool]] = {row["id"]: [] for row in racers}
+    day_tied_with: dict[int, list[list[dict[str, Any]] | None]] = {row["id"]: [] for row in racers}
     day_complete_flags: list[bool] = []
     for day in range(1, tournament["days"] + 1):
         ranking = round_standings(connection, tournament_id, day)
         day_complete = is_staging_day_complete(connection, tournament_id, day)
         day_complete_flags.append(day_complete)
         is_live_day = preview is not None and preview["day"] == day
+        # Racers who match on points, wins, and finish sum for this round are
+        # only separated by seed order in round_standings() -- group them
+        # here so the standings table can flag exactly which round's
+        # placement was a tiebreak rather than a clear result.
+        day_tie_groups: dict[tuple[int, int, int], list[dict[str, Any]]] = {}
+        for row in ranking:
+            day_tie_groups.setdefault(
+                (row["totalPoints"], row["wins"], row["finishSum"]), []
+            ).append(row)
+        resolved_racer_ids = {
+            resolved_row["racer_id"]
+            for resolved_row in connection.execute(
+                "SELECT racer_id FROM round_tiebreaks WHERE tournament_id = ? AND day = ?",
+                (tournament_id, day),
+            )
+        }
         for row in ranking:
             if day_complete:
                 day_placements[row["id"]].append(row["rank"])
@@ -539,9 +565,20 @@ def standings(
                 day_placements[row["id"]].append(None)
                 previous_tier = None
                 displayed_tier = None
+            group = day_tie_groups[(row["totalPoints"], row["wins"], row["finishSum"])]
+            group_racer_ids = {other["id"] for other in group}
+            if (day_complete or is_live_day) and not resolved_racer_ids.issuperset(group_racer_ids):
+                tied_with = [
+                    {"id": other["id"], "name": other["name"], "color": other["color"]}
+                    for other in group
+                    if other["id"] != row["id"]
+                ]
+            else:
+                tied_with = None
             day_tiers[row["id"]].append(displayed_tier)
             previous_day_tiers[row["id"]].append(previous_tier)
             provisional_day_tiers[row["id"]].append(displayed_tier != previous_tier)
+            day_tied_with[row["id"]].append(tied_with)
 
     summaries = []
     for row in racers:
@@ -573,6 +610,7 @@ def standings(
                 "dayChampionshipTiers": tiers,
                 "dayChampionshipPreviousTiers": previous_tiers,
                 "dayChampionshipTierProvisional": provisional_day_tiers[row["id"]],
+                "dayTiedWith": day_tied_with[row["id"]],
                 "liveRoundLeader": preview is not None and preview["leaderId"] == row["id"],
                 "liveTier": preview["tiers"].get(row["id"]) if preview is not None else None,
             }
@@ -596,23 +634,64 @@ def standings(
 
 
 def round_standings(
-    connection: sqlite3.Connection, tournament_id: int, day: int
+    connection: sqlite3.Connection,
+    tournament_id: int,
+    day: int,
+    tie_override: dict[int, int] | None = None,
 ) -> list[dict[str, Any]]:
-    """Same shape/tiebreak as standings(), scoped to a single staging day."""
+    """Same shape/tiebreak as standings(), scoped to a single staging day.
+
+    Points and wins equal, racers are next ranked by the sum of their literal
+    heat finishes (lower is better) -- so a racer who finished 3rd/4th/5th
+    ahead of another still outranks them even when a heat's point spread
+    happens to score those places the same. DNFs (finish 0) are excluded
+    from that sum in favor of a fixed penalty worse than any real finish,
+    since a 0 there means "did not finish," not "finished 0th."
+
+    Only once that's tied too does a manual resolution decide it -- an
+    organizer's saved answer to "who wins this tie," looked up from
+    round_tiebreaks and applied here as a racer_id -> rank mapping (lower
+    wins). `tie_override`, when given explicitly, is used in place of that
+    lookup instead -- this lets callers test a hypothetical resolution
+    without writing it to the database, which is how pending_round_tiebreak()
+    determines whether a given tie actually changes anything. Seed order is
+    the final fallback for racers this override doesn't mention.
+    """
     rows = connection.execute(
         """
         SELECT r.id, r.name, r.color, r.sort_order,
                COALESCE(SUM(he.points), 0) AS total_points,
-               COALESCE(SUM(CASE WHEN he.finish = 1 THEN 1 ELSE 0 END), 0) AS wins
+               COALESCE(SUM(CASE WHEN he.finish = 1 THEN 1 ELSE 0 END), 0) AS wins,
+               COALESCE(SUM(CASE WHEN he.finish > 0 THEN he.finish ELSE 1000 END), 0) AS finish_sum
         FROM racers r
         LEFT JOIN heats h ON h.tournament_id = r.tournament_id AND h.stage = 'staging' AND h.day = ?
         LEFT JOIN heat_entries he ON he.heat_id = h.id AND he.racer_id = r.id
         WHERE r.tournament_id = ?
         GROUP BY r.id
-        ORDER BY total_points DESC, wins DESC, r.sort_order ASC
         """,
         (day, tournament_id),
     ).fetchall()
+
+    if tie_override is None:
+        tie_override = {
+            row["racer_id"]: row["resolved_rank"]
+            for row in connection.execute(
+                "SELECT racer_id, resolved_rank FROM round_tiebreaks WHERE tournament_id = ? AND day = ?",
+                (tournament_id, day),
+            )
+        }
+    unresolved = len(rows) + 1  # sorts after every real manual rank
+
+    ordered = sorted(
+        rows,
+        key=lambda row: (
+            -row["total_points"],
+            -row["wins"],
+            row["finish_sum"],
+            tie_override.get(row["id"], unresolved),
+            row["sort_order"],
+        ),
+    )
     return [
         {
             "rank": rank,
@@ -621,8 +700,9 @@ def round_standings(
             "color": row["color"],
             "totalPoints": row["total_points"],
             "wins": row["wins"],
+            "finishSum": row["finish_sum"],
         }
-        for rank, row in enumerate(rows, start=1)
+        for rank, row in enumerate(ordered, start=1)
     ]
 
 
@@ -698,7 +778,9 @@ def stage_has_results(connection: sqlite3.Connection, tournament_id: int, stage:
 def is_heat_locked(connection: sqlite3.Connection, tournament_id: int, global_number: int) -> bool:
     """A heat is locked while any earlier heat in the tournament (by
     global_number, the canonical race order spanning every stage) still has
-    unscored entries."""
+    unscored entries -- or while an earlier staging day has a promotion tie
+    still waiting on the organizer to resolve it, since that day's results
+    aren't really final yet either."""
     row = connection.execute(
         """
         SELECT 1
@@ -709,7 +791,17 @@ def is_heat_locked(connection: sqlite3.Connection, tournament_id: int, global_nu
         """,
         (tournament_id, global_number),
     ).fetchone()
-    return row is not None
+    if row is not None:
+        return True
+
+    pending = pending_round_tiebreak(connection, tournament_id)
+    if pending is None:
+        return False
+    last_heat_of_pending_day = connection.execute(
+        "SELECT MAX(global_number) AS max_global FROM heats WHERE tournament_id = ? AND day = ?",
+        (tournament_id, pending["day"]),
+    ).fetchone()
+    return global_number > last_heat_of_pending_day["max_global"]
 
 
 def is_heat_edit_locked(connection: sqlite3.Connection, tournament_id: int, global_number: int) -> bool:
@@ -805,7 +897,10 @@ def _cascade_select(
 
 
 def championship_field(
-    connection: sqlite3.Connection, tournament_id: int, live_day: int | None = None
+    connection: sqlite3.Connection,
+    tournament_id: int,
+    live_day: int | None = None,
+    tie_overrides: dict[int, dict[int, int]] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """Pure computation over every staging round's round_standings().
 
@@ -813,6 +908,12 @@ def championship_field(
     round_standings() to be counted alongside every other already-complete
     day, even though it isn't finished racing itself -- used to preview what
     a round in progress would award if it ended right now.
+
+    tie_overrides, when given, maps a day to a racer_id -> rank override for
+    round_standings() on that day only -- every other day still uses its own
+    persisted resolution (or seed order) as usual. This is how
+    pending_round_tiebreak() tests a hypothetical resolution for one day's
+    tie without writing anything to the database.
 
     Tier priority is bye > preliminary > wildcard, resolved in three full
     passes over every day (ascending), each seeing the previous pass's
@@ -871,7 +972,9 @@ def championship_field(
         # explicitly being previewed via live_day.
         if day != live_day and not is_staging_day_complete(connection, tournament_id, day):
             continue
-        rankings[day] = round_standings(connection, tournament_id, day)
+        rankings[day] = round_standings(
+            connection, tournament_id, day, tie_override=(tie_overrides or {}).get(day)
+        )
 
     byes: list[dict[str, Any]] = []
     bye_counts: dict[int, int] = {}
@@ -925,6 +1028,106 @@ def championship_field(
             )
 
     return {"byes": byes, "preliminaryDirect": preliminary_direct, "wildcardPool": wildcard_pool}
+
+
+def _championship_tier_snapshot(
+    connection: sqlite3.Connection,
+    tournament_id: int,
+    tie_overrides: dict[int, dict[int, int]] | None = None,
+) -> frozenset[tuple[str, int, int]]:
+    """(tier, originRound, racerId) triples for every seat currently
+    awarded. Diffing two of these -- one computed normally, one with a
+    day's tied cluster hypothetically reordered -- is how
+    pending_round_tiebreak() tells whether that tie actually changes who
+    gets promoted, without having to reason by hand about how far a same-day
+    tie's ripple effects (via the cross-round bonus-capacity caps) might
+    reach into other rounds."""
+    field = championship_field(connection, tournament_id, tie_overrides=tie_overrides)
+    return frozenset(
+        (tier, item["originRound"], item["racerId"])
+        for tier, items in (
+            ("bye", field["byes"]),
+            ("preliminary", field["preliminaryDirect"]),
+            ("wildcard", field["wildcardPool"]),
+        )
+        for item in items
+    )
+
+
+def pending_round_tiebreak(
+    connection: sqlite3.Connection, tournament_id: int
+) -> dict[str, Any] | None:
+    """The earliest staging day, if any, with a genuine tie (equal points,
+    wins, and finish sum) that would actually change who gets a
+    bye/preliminary/wildcard seat depending on how it's broken -- one that
+    currently falls back to roster order via round_standings() rather than
+    to something the organizer chose.
+
+    Days race in strict order and later heats stay locked while this is
+    pending (see is_heat_locked()), so there's only ever one day to worry
+    about at a time: nothing beyond it has raced yet, so there's nothing for
+    this day's resolution to interact with beyond itself.
+
+    Returns None once nothing is pending -- including when every remaining
+    tie is one that doesn't matter (e.g. two racers tied for a place with no
+    seat on the line), which is left to resolve via seed order same as
+    before, no prompt needed.
+    """
+    tournament = connection.execute(
+        "SELECT days FROM tournaments WHERE id = ?", (tournament_id,)
+    ).fetchone()
+    for day in range(1, tournament["days"] + 1):
+        if not is_staging_day_complete(connection, tournament_id, day):
+            break
+
+        ranking = round_standings(connection, tournament_id, day)
+        groups: dict[tuple[int, int, int], list[dict[str, Any]]] = {}
+        for row in ranking:
+            groups.setdefault((row["totalPoints"], row["wins"], row["finishSum"]), []).append(row)
+        candidate_groups = [group for group in groups.values() if len(group) > 1]
+        if not candidate_groups:
+            continue
+
+        resolved_racer_ids = {
+            row["racer_id"]
+            for row in connection.execute(
+                "SELECT racer_id FROM round_tiebreaks WHERE tournament_id = ? AND day = ?",
+                (tournament_id, day),
+            )
+        }
+        base_snapshot: frozenset[tuple[str, int, int]] | None = None
+        for group in candidate_groups:
+            racer_ids = [row["id"] for row in group]
+            if resolved_racer_ids.issuperset(racer_ids):
+                continue
+            if base_snapshot is None:
+                base_snapshot = _championship_tier_snapshot(connection, tournament_id)
+            hypothetical = {day: {rid: i for i, rid in enumerate(reversed(racer_ids))}}
+            alt_snapshot = _championship_tier_snapshot(
+                connection, tournament_id, tie_overrides=hypothetical
+            )
+            if base_snapshot == alt_snapshot:
+                continue
+
+            current_tier = {
+                racer_id: tier
+                for tier, origin_round, racer_id in base_snapshot
+                if origin_round == day and racer_id in racer_ids
+            }
+            return {
+                "day": day,
+                "racers": [
+                    {
+                        "id": row["id"],
+                        "name": row["name"],
+                        "color": row["color"],
+                        "currentTier": current_tier.get(row["id"]),
+                    }
+                    for row in group
+                ],
+            }
+
+    return None
 
 
 def find_in_progress_staging_day(connection: sqlite3.Connection, tournament_id: int) -> int | None:

@@ -655,6 +655,20 @@ class MarbleRaceApiTest(unittest.TestCase):
                 [heat["entries"][0]["contestantId"], heat["entries"][1]["contestantId"]],
             )
 
+        # Every heat that day used the same "1st entry wins" pattern, so the
+        # top racer of heat 0 and the top racer of heat 1 end up with
+        # identical points/wins/finish-sum for the day -- a genuine tie for
+        # the bye seat that needs resolving before the wildcard stage opens.
+        pending = state["pendingTieBreak"]
+        self.assertIsNotNone(pending)
+        resolved = self.client.put(
+            f"/api/tournaments/{tournament_id}/staging/1/tiebreak",
+            json={"order": [racer["id"] for racer in pending["racers"]]},
+        )
+        self.assertEqual(resolved.status_code, 200)
+        state = resolved.get_json()
+        self.assertIsNone(state["pendingTieBreak"])
+
         self.assertTrue(state["championship"]["wildcard"]["ready"])
         self.assertEqual(
             [racer["dayPlacements"][0] for racer in state["standings"]],
@@ -2526,6 +2540,124 @@ class MarbleRaceApiTest(unittest.TestCase):
         )
         self.assertEqual(blocked.status_code, 409)
         self.assertIn("later heat has already started", blocked.get_json()["error"])
+
+    def _configure_tiebreak_cup(self, name: str) -> tuple[dict, list[int]]:
+        """Two-day, single-heat-per-day, two-marbles-per-racer tournament
+        with a linear points curve (points[p] = 17 - p) so that two racers'
+        point totals tie exactly when the sum of their two literal finishes
+        ties -- lets a test construct an exact points/wins/finish-sum tie by
+        just picking finish pairs that sum the same."""
+        created = self.client.post("/api/tournaments", json={"name": name}).get_json()
+        tournament_id = created["competition"]["id"]
+        self.addCleanup(lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close())
+        contestant_ids = [racer["id"] for racer in created["contestants"]]
+        configured = self.client.put(
+            f"/api/tournaments/{tournament_id}",
+            json={
+                "name": name,
+                "days": 2,
+                "heatsPerRacerPerDay": 1,
+                "maxMarblesPerHeat": 16,
+                "marblesPerRacer": 2,
+                "wildcardMaxMarblesPerHeat": 6,
+                "preliminaryMaxMarblesPerHeat": 6,
+                "maxFinalByeMarblesPerRacer": 1,
+                "maxPrelimPromotionMarblesPerRacer": 1,
+                "maxFinalRacers": 6,
+                "points": list(range(16, 0, -1)),
+                "contestants": [
+                    {"name": racer["name"], "color": racer["color"]}
+                    for racer in created["contestants"]
+                ],
+            },
+        ).get_json()
+        return configured, contestant_ids
+
+    def _score_day_one(self, state: dict, contestant_ids: list[int], finish_pairs: list[tuple[int, int]]) -> dict:
+        heat = state["days"][0]["heats"][0]
+        finishes = dict(zip(contestant_ids, finish_pairs))
+        results = [
+            {"contestantId": entry["contestantId"], "marbleNumber": marble_number, "finish": finish}
+            for entry in heat["entries"]
+            for marble_number, finish in zip((1, 2), finishes[entry["contestantId"]])
+        ]
+        start_heat(self.client, heat)
+        saved = self.client.put(f'/api/heats/{heat["id"]}/results', json={"results": results})
+        self.assertEqual(saved.status_code, 200)
+        return saved.get_json()
+
+    def test_promotion_tie_blocks_progress_until_resolved(self) -> None:
+        state, contestant_ids = self._configure_tiebreak_cup("Manual Tiebreak Cup")
+        # racer[0] wins outright (bye); racer[1] is a clear preliminary;
+        # racers 2/3/4 tie exactly for the two remaining wildcard seats;
+        # racers 5/6/7 are clear non-qualifiers.
+        state = self._score_day_one(
+            state,
+            contestant_ids,
+            [(1, 2), (4, 7), (3, 12), (5, 10), (6, 9), (8, 11), (13, 14), (15, 16)],
+        )
+        tied_ids = {contestant_ids[2], contestant_ids[3], contestant_ids[4]}
+
+        pending = state["pendingTieBreak"]
+        self.assertIsNotNone(pending)
+        self.assertEqual(pending["day"], 1)
+        self.assertEqual({racer["id"] for racer in pending["racers"]}, tied_ids)
+        self.assertEqual(
+            {racer["id"] for racer in pending["racers"] if racer["currentTier"] == "wildcard"},
+            {contestant_ids[2], contestant_ids[3]},
+        )
+        self.assertIsNone(
+            next(racer for racer in pending["racers"] if racer["id"] == contestant_ids[4])["currentTier"]
+        )
+
+        day_two_heat = state["days"][1]["heats"][0]
+        blocked = self.client.put(f'/api/heats/{day_two_heat["id"]}/start')
+        self.assertEqual(blocked.status_code, 409)
+
+        tournament_id = state["competition"]["id"]
+        mismatched = self.client.put(
+            f"/api/tournaments/{tournament_id}/staging/1/tiebreak",
+            json={"order": [contestant_ids[2], contestant_ids[3]]},
+        )
+        self.assertEqual(mismatched.status_code, 400)
+
+        # Rank racer[4] (currently unpromoted) ahead of racer[3] (currently
+        # wildcard) -- if the resolution is actually applied, this should
+        # flip who gets the second wildcard seat.
+        resolved = self.client.put(
+            f"/api/tournaments/{tournament_id}/staging/1/tiebreak",
+            json={"order": [contestant_ids[2], contestant_ids[4], contestant_ids[3]]},
+        )
+        self.assertEqual(resolved.status_code, 200)
+        resolved_state = resolved.get_json()
+        self.assertIsNone(resolved_state["pendingTieBreak"])
+
+        connection = connect()
+        try:
+            field = championship_field(connection, tournament_id)
+        finally:
+            connection.close()
+        wildcard_ids = {item["racerId"] for item in field["wildcardPool"]}
+        self.assertEqual(wildcard_ids, {contestant_ids[2], contestant_ids[4]})
+
+        unblocked = self.client.put(f'/api/heats/{day_two_heat["id"]}/start')
+        self.assertEqual(unblocked.status_code, 200)
+
+    def test_tie_with_no_seat_at_stake_does_not_block_progress(self) -> None:
+        state, contestant_ids = self._configure_tiebreak_cup("Harmless Tiebreak Cup")
+        # racer[4] and racer[5] tie exactly (10 points, 0 wins, finish-sum
+        # 24 apiece) but both rank well below the two wildcard seats already
+        # claimed by racer[2]/racer[3] -- their order can't change anything.
+        state = self._score_day_one(
+            state,
+            contestant_ids,
+            [(1, 2), (3, 4), (5, 6), (7, 8), (9, 15), (10, 14), (11, 16), (12, 13)],
+        )
+        self.assertIsNone(state["pendingTieBreak"])
+
+        day_two_heat = state["days"][1]["heats"][0]
+        unblocked = self.client.put(f'/api/heats/{day_two_heat["id"]}/start')
+        self.assertEqual(unblocked.status_code, 200)
 
 
 if __name__ == "__main__":
