@@ -824,15 +824,24 @@ def championship_field(
       seat cascades down the round's standings to the first racer under
       cap; with cascading off the seat is simply forfeited.
     - Preliminary: one seat per round from rank 2 down (rank 1 is always
-      reserved for the bye seat above), capped at
-      max_prelim_promotion_marbles_per_racer -- except a bye-tier racer's
-      preliminary capacity is instead max_prelim_marbles_for_racer_with_
-      final_bye (0 by default, i.e. still excluded unless raised).
-    - Wildcard: two seats per round from rank 2 down, capped at
-      max_wildcard_promotion_marbles_per_racer -- except a bye-tier racer's
-      wildcard capacity is max_wildcard_marbles_for_racer_with_final_bye,
-      and a preliminary-tier racer's is max_wildcard_marbles_for_racer_
-      with_prelim_promotion (both 0 by default).
+      excluded, reserved for the bye seat above, and whoever actually won
+      that round's bye seat -- which cascading can push below rank 1 -- is
+      excluded too), capped at max_prelim_promotion_marbles_per_racer --
+      except a bye-tier racer's preliminary capacity is instead
+      max_prelim_marbles_for_racer_with_final_bye (0 by default, i.e. still
+      excluded unless raised).
+    - Wildcard: two seats per round from rank 2 down (again excluding
+      whoever actually won that same round's bye and preliminary seats),
+      capped at max_wildcard_promotion_marbles_per_racer -- except a
+      bye-tier racer's wildcard capacity is
+      max_wildcard_marbles_for_racer_with_final_bye, and a preliminary-tier
+      racer's is max_wildcard_marbles_for_racer_with_prelim_promotion (both
+      0 by default).
+
+    A racer can never hold two tiers from the same round -- the bonus caps
+    above only let a racer who earned a bye/preliminary seat in one round
+    pick up additional marbles in a lower tier from a *different* round, up
+    to that bonus cap across the tournament as a whole.
 
     In the shared-pool model every racer competes in every round, so the
     same racer can qualify for the same tier in more than one round. Rather
@@ -866,20 +875,31 @@ def championship_field(
 
     byes: list[dict[str, Any]] = []
     bye_counts: dict[int, int] = {}
+    day_bye_winner: dict[int, int] = {}
     for day in sorted(rankings):
         for rank_row in _cascade_select(
             rankings[day], 1, cascade_bye, lambda _rid: bye_cap, bye_counts
         ):
+            day_bye_winner[day] = rank_row["id"]
             byes.append({"racerId": rank_row["id"], "originRound": day})
     bye_racer_ids = {racer_id for racer_id, count in bye_counts.items() if count > 0}
 
+    # A racer already claiming a higher tier this round is never a candidate
+    # for a lower tier from the same round -- the bonus capacity settings
+    # (bye_prelim_bonus etc.) only govern how many extra marbles a racer may
+    # pick up across *other* rounds, not a second seat in this one. Rank 1 is
+    # excluded outright since it's reserved for the bye seat even when that
+    # seat is forfeited (capped with no cascade).
     preliminary_direct: list[dict[str, Any]] = []
     prelim_counts: dict[int, int] = {}
+    day_prelim_winner: dict[int, int] = {}
     prelim_capacity = lambda rid: bye_prelim_bonus if rid in bye_racer_ids else prelim_cap
     for day in sorted(rankings):
-        for rank_row in _cascade_select(
-            rankings[day][1:], 1, cascade_prelim, prelim_capacity, prelim_counts
-        ):
+        rank_one_id = rankings[day][0]["id"]
+        exclude = {rank_one_id, day_bye_winner.get(day)}
+        pool = [row for row in rankings[day] if row["id"] not in exclude]
+        for rank_row in _cascade_select(pool, 1, cascade_prelim, prelim_capacity, prelim_counts):
+            day_prelim_winner[day] = rank_row["id"]
             preliminary_direct.append(
                 {"racerId": rank_row["id"], "originRound": day, "points": rank_row["totalPoints"]}
             )
@@ -896,9 +916,10 @@ def championship_field(
         return wildcard_cap
 
     for day in sorted(rankings):
-        for rank_row in _cascade_select(
-            rankings[day][1:], 2, cascade_wildcard, wildcard_capacity, wildcard_counts
-        ):
+        rank_one_id = rankings[day][0]["id"]
+        exclude = {rank_one_id, day_bye_winner.get(day), day_prelim_winner.get(day)}
+        pool = [row for row in rankings[day] if row["id"] not in exclude]
+        for rank_row in _cascade_select(pool, 2, cascade_wildcard, wildcard_capacity, wildcard_counts):
             wildcard_pool.append(
                 {"racerId": rank_row["id"], "originRound": day, "points": rank_row["totalPoints"]}
             )
