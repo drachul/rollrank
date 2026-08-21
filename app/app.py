@@ -22,6 +22,7 @@ from db import (
     is_heat_edit_locked,
     is_heat_locked,
     is_stage_complete,
+    is_staging_day_complete,
     pending_round_tiebreak,
     preliminary_field,
     rebuild_schedule,
@@ -368,44 +369,103 @@ def build_championship_state(connection, tournament_id: int, staging_ready: bool
         else (len(preliminary_field(connection, tournament_id)) if preliminary_ready else 0)
     )
 
-    racer_lookup: dict[int, dict[str, Any]] = {}
-    field = None
+    # Pure computation over whatever staging rounds are already complete --
+    # safe (and cheap) to run from the very first round onward, not just
+    # once every round has finished, so the ladder can preview each stage's
+    # field progressively instead of staying locked the whole time staging
+    # is still underway.
+    racer_lookup = {
+        row["id"]: {"name": row["name"], "color": row["color"]}
+        for row in connection.execute("SELECT id, name, color FROM racers WHERE tournament_id = ?", (tournament_id,))
+    }
+    field = championship_field(connection, tournament_id)
+
+    wildcard_projected: list[dict[str, Any]] = []
+    if not staging_ready:
+        wildcard_projected = [
+            {
+                "contestantId": item["racerId"],
+                "name": racer_lookup[item["racerId"]]["name"],
+                "color": racer_lookup[item["racerId"]]["color"],
+                "originStage": "wildcard",
+                "originRound": item["originRound"],
+                "marbleSlots": item["marbleSlots"],
+                "seedRounds": sorted(
+                    {origin["originRound"] for origin in item["marbleOrigins"] if origin["originRound"] is not None}
+                ),
+                "decided": True,
+            }
+            for item in consolidate_by_racer(field["wildcardPool"])
+        ]
+        for day in range(1, tournament["days"] + 1):
+            if is_staging_day_complete(connection, tournament_id, day):
+                continue
+            for qualifying_place in (3, 4):
+                wildcard_projected.append(
+                    {
+                        "originStage": "staging-round",
+                        "originRound": day,
+                        "qualifyingPlace": qualifying_place,
+                        "decided": False,
+                    }
+                )
+
     preliminary_projected: list[dict[str, Any]] = []
-    final_projected: list[dict[str, Any]] = []
-    if staging_ready:
-        racer_lookup = {
-            row["id"]: {"name": row["name"], "color": row["color"]}
-            for row in connection.execute("SELECT id, name, color FROM racers WHERE tournament_id = ?", (tournament_id,))
-        }
-        field = championship_field(connection, tournament_id)
-        if not preliminary_ready:
-            known_preliminary = [
+    if not preliminary_ready:
+        preliminary_projected = [
+            {
+                "contestantId": item["racerId"],
+                "name": racer_lookup[item["racerId"]]["name"],
+                "color": racer_lookup[item["racerId"]]["color"],
+                "originStage": "staging-round",
+                "originRound": item["originRound"],
+                "marbleSlots": item["marbleSlots"],
+                "seedRounds": sorted(
+                    {origin["originRound"] for origin in item["marbleOrigins"] if origin["originRound"] is not None}
+                ),
+                "decided": True,
+            }
+            for item in consolidate_by_racer(field["preliminaryDirect"])
+        ]
+        for day in range(1, tournament["days"] + 1):
+            if is_staging_day_complete(connection, tournament_id, day):
+                continue
+            preliminary_projected.append(
                 {
-                    "contestantId": item["racerId"],
-                    "name": racer_lookup[item["racerId"]]["name"],
-                    "color": racer_lookup[item["racerId"]]["color"],
                     "originStage": "staging-round",
-                    "originRound": item["originRound"],
-                    "marbleSlots": item["marbleSlots"],
-                    "seedRounds": sorted(
-                        {origin["originRound"] for origin in item["marbleOrigins"] if origin["originRound"] is not None}
-                    ),
+                    "originRound": day,
+                    "qualifyingPlace": 2,
+                    "decided": False,
                 }
-                for item in consolidate_by_racer(field["preliminaryDirect"])
-            ]
-            preliminary_projected = _projected_roster(
+            )
+        if wildcard_heats:
+            preliminary_projected += _projected_roster(
                 connection,
-                known_preliminary,
+                [],
                 wildcard_heats,
                 "wildcard",
                 qualifiers_per_heat=tournament["wildcard_racers_promoted_per_heat"],
             )
+        else:
+            # Wildcard heats don't exist yet -- their exact count depends on
+            # the final wildcard pool size, only known once staging wraps up
+            # -- but the per-heat qualifier count is fixed, so show that many
+            # generic placeholders now instead of nothing.
+            for qualifying_place in range(1, tournament["wildcard_racers_promoted_per_heat"] + 1):
+                preliminary_projected.append(
+                    {
+                        "originStage": "wildcard",
+                        "qualifyingPlace": qualifying_place,
+                        "decided": False,
+                    }
+                )
 
     final_ready = preliminary_ready and preliminary_complete
-    if staging_ready and not final_ready:
+    final_projected: list[dict[str, Any]] = []
+    if not final_ready:
         # The final always races one marble per racer even if a racer
         # banked multiple bye rounds, so the preview shows them once.
-        known_final = [
+        final_projected = [
             {
                 "contestantId": item["racerId"],
                 "name": racer_lookup[item["racerId"]]["name"],
@@ -415,16 +475,40 @@ def build_championship_state(connection, tournament_id: int, staging_ready: bool
                 "seedRounds": sorted(
                     {origin["originRound"] for origin in item["marbleOrigins"] if origin["originRound"] is not None}
                 ),
+                "decided": True,
             }
             for item in consolidate_by_racer(field["byes"])
         ]
-        final_projected = _projected_roster(
-            connection,
-            known_final,
-            preliminary_heats,
-            "preliminary",
-            qualifiers_per_heat=tournament["preliminary_racers_promoted_per_heat"],
-        )
+        for day in range(1, tournament["days"] + 1):
+            if is_staging_day_complete(connection, tournament_id, day):
+                continue
+            final_projected.append(
+                {
+                    "originStage": "staging-round",
+                    "originRound": day,
+                    "decided": False,
+                }
+            )
+        if preliminary_heats:
+            final_projected += _projected_roster(
+                connection,
+                [],
+                preliminary_heats,
+                "preliminary",
+                qualifiers_per_heat=tournament["preliminary_racers_promoted_per_heat"],
+            )
+        else:
+            # Same reasoning as the wildcard-heat placeholders above: the
+            # preliminary heats themselves don't exist yet, but the per-heat
+            # qualifier count is fixed.
+            for qualifying_place in range(1, tournament["preliminary_racers_promoted_per_heat"] + 1):
+                final_projected.append(
+                    {
+                        "originStage": "preliminary",
+                        "qualifyingPlace": qualifying_place,
+                        "decided": False,
+                    }
+                )
 
     final_heats = shape_heats(fetch_heat_rows(connection, tournament_id, "final")) if final_ready else []
     attach_seed_rounds(connection, final_heats)
@@ -456,6 +540,7 @@ def build_championship_state(connection, tournament_id: int, staging_ready: bool
             "heats": wildcard_heats,
             "fieldSize": wildcard_field_size,
             "skipped": staging_ready and not wildcard_heats,
+            "projectedEntries": wildcard_projected,
         },
         "preliminary": {
             "ready": preliminary_ready,

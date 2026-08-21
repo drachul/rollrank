@@ -1006,7 +1006,7 @@ function ladderProjectedRoster(entries, lockedLabel, sourceStageLabel) {
     <ul class="ladder-entries">
       ${entries.map((entry) => entry.decided
         ? `<li class="ladder-entry ${tierClass(entry.originStage === "wildcard" ? "wildcard" : entry.originStage === "bye" ? "bye" : "preliminary")}">${marble(entry.color, "small")}${ladderEntryLabel(entry.name, entry.marbleSlots || 1, entry.seedRounds)}</li>`
-        : `<li class="ladder-entry pending"><span class="tbd-marble" aria-hidden="true">?</span><span>${championshipHeatLabel(entry.originStage, entry.heatNumber, sourceStageLabel)}${entry.qualifyingPlace ? ` · ${ordinal(entry.qualifyingPlace)} racer` : " winner"}</span><b>TBD</b></li>`
+        : `<li class="ladder-entry pending"><span class="tbd-marble" aria-hidden="true">?</span><span>${entry.originRound != null && entry.heatNumber == null ? `Round ${entry.originRound}` : championshipHeatLabel(entry.originStage, entry.heatNumber, sourceStageLabel)}${entry.qualifyingPlace ? ` · ${ordinal(entry.qualifyingPlace)} racer` : " winner"}</span><b>TBD</b></li>`
       ).join("")}
     </ul>
     <p class="ladder-projected-note">${lockedLabel}</p>
