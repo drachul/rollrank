@@ -348,7 +348,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible { 
 .standings-table td .tier-tag.provisional,.mobile-standing-stats span .tier-tag.provisional { color:var(--yellow); opacity:1; }
 .racer-cell { display:flex; align-items:center; gap:9px; color:var(--ink); }
 .tie-flag { display:inline-flex; width:12px; height:12px; align-items:center; justify-content:center; margin-left:3px; border-radius:50%; background:var(--yellow); color:#2b2100; font-size:8px; font-weight:900; line-height:1; vertical-align:middle; }
-.tie-flag-resolved { background:var(--blue); color:#fff; }
+.tie-flag-info { background:var(--blue); color:#fff; font-style:normal; }
 .tie-cell-toggle { display:block; width:100%; padding:0; border:0; background:none; color:inherit; font:inherit; text-align:inherit; cursor:pointer; }
 .tie-cell-toggle:hover,.tie-cell-toggle:focus-visible,.tie-cell-toggle[aria-expanded="true"] { background:rgba(244,197,66,.12); }
 .standings-table td.tie-target { padding:0; }
