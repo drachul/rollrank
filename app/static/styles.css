@@ -479,6 +479,10 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible { 
 .field-help-popover strong { color:var(--yellow); }
 .field-help-popover em { color:var(--blue-light); font-style:normal; }
 .field-help-popover .live-value { color:var(--blue-light); font-weight:700; }
+.field-help-jump { display:inline; padding:0; border:0; background:none; color:var(--blue-light); font:inherit; text-decoration:underline; text-underline-offset:2px; cursor:pointer; }
+.field-help-jump:hover,.field-help-jump:focus-visible { color:var(--yellow); }
+@keyframes field-jump-highlight { 0%,100% { box-shadow:none; } 25%,75% { box-shadow:0 0 0 3px rgba(244,197,66,.55); } }
+.field-jump-highlight { animation:field-jump-highlight 1.2s ease; border-radius:6px; }
 .config-callout { display:flex; align-items:flex-start; gap:10px; margin:0 0 18px; padding:12px 14px; border:1px solid rgba(244,197,66,.35); border-radius:10px; background:rgba(244,197,66,.08); }
 .config-callout>span { color:var(--yellow); font-size:14px; line-height:1; }
 .config-callout strong { display:block; margin-bottom:3px; font-size:11px; color:var(--yellow); }

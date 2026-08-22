@@ -55,18 +55,10 @@ const fieldHelp = (bodyHtml) => {
 // actually typed into that field right now, not just what was last saved.
 const liveValue = (fieldName, currentValue) => `<span class="live-value" data-live-value-for="${fieldName}">${escapeHtml(currentValue)}</span>`;
 
-// A bonus-cap field (e.g. "max wildcard marbles for racer with final bye")
-// defaults to 0, i.e. disabled -- describing it as "currently 0, raise it to
-// enable" stops being true the moment someone actually raises it. This picks
-// the right phrasing for whatever the field holds right now, and stays live
-// the same way liveValue does.
-const bonusCapPhrase = (value) => {
-  const n = Number(value);
-  return Number.isFinite(n) && n > 0
-    ? `currently ${n}, so they can already collect up to ${n} this way`
-    : "currently 0 -- raise it if you want them to also collect wildcard marbles";
-};
-const liveBonusCapPhrase = (fieldName, currentValue) => `<span class="live-value" data-live-phrase-for="${fieldName}">${bonusCapPhrase(currentValue)}</span>`;
+// Wraps a help-tip mention of another config field so clicking it opens that
+// field's section (if collapsed), scrolls to it, and focuses it -- so a
+// dependency mentioned in a tooltip is one click away instead of a search.
+const fieldLink = (fieldName, labelHtml) => `<button type="button" class="field-help-jump" data-goto-field="${fieldName}">${labelHtml}</button>`;
 
 function formatResolvedDate(resolvedAt) {
   if (!resolvedAt) return "";
@@ -1018,14 +1010,48 @@ function ladderEntryLabel(name, marbleCount, seedRounds, extraTag = "") {
   return `<div class="ladder-entry-info"><span>${escapeHtml(name)}${marbleCount > 1 ? ` <span class="marble-count">×${marbleCount}</span>` : ""}</span>${extraTag || seedRoundsTag(seedRounds)}</div>`;
 }
 
+function pendingHeatName(sourceHeatNumber, sourceStageLabel, sourceHeatCount) {
+  const label = sourceHeatCount > 1 ? `Heat ${sourceHeatNumber}` : "Heat";
+  return sourceStageLabel ? `${sourceStageLabel} ${label}` : label;
+}
+
+function pendingHeatLabel(entry, sourceStageLabel, sourceHeatCount) {
+  if (entry.originRound != null) return `Round ${entry.originRound}`;
+  return pendingHeatName(entry.sourceHeatNumber, sourceStageLabel, sourceHeatCount);
+}
+
+function pendingEntryMarkup(entry, sourceStageLabel, sourceHeatCount) {
+  return entry.decided
+    ? `<li class="ladder-entry ${tierClass(entry.originStage === "wildcard" ? "wildcard" : entry.originStage === "bye" ? "bye" : "preliminary")}">${marble(entry.color, "small")}${ladderEntryLabel(entry.name, entry.marbleSlots || 1, entry.seedRounds)}</li>`
+    : `<li class="ladder-entry pending"><span class="tbd-marble" aria-hidden="true">?</span><span>${pendingHeatLabel(entry, sourceStageLabel, sourceHeatCount)}${entry.qualifyingPlace ? ` · ${ordinal(entry.qualifyingPlace)} racer` : " winner"}</span><b>TBD</b></li>`;
+}
+
 function ladderProjectedRoster(entries, lockedLabel, sourceStageLabel) {
+  // heatNumber (when present on every entry) means "which of this stage's
+  // own heats this lands in" -- used purely to split the card, never for
+  // row text. sourceHeatNumber means "which upstream heat this came from"
+  // -- used only for row text (e.g. "Wildcard Heat 2"), never for grouping.
+  const destinationHeatNumbers = [...new Set(entries.filter((entry) => entry.heatNumber != null).map((entry) => entry.heatNumber))].sort((a, b) => a - b);
+  const sourceHeatCount = new Set(entries.filter((entry) => entry.sourceHeatNumber != null).map((entry) => entry.sourceHeatNumber)).size;
+  // A field bound for multiple heats (e.g. a wildcard/preliminary pool too
+  // big for one heat under the max-marbles-per-heat setting) previews as
+  // separate cards, one per heat -- the same way real heats each get their
+  // own card once built, instead of one flat list that reads as a single
+  // heat even when individual rows say otherwise.
+  if (destinationHeatNumbers.length > 1) {
+    const cards = destinationHeatNumbers.map((heatNumber) => {
+      const heatEntries = entries.filter((entry) => entry.heatNumber === heatNumber);
+      return `<div class="ladder-heat projected">
+        <div class="ladder-heat-head"><span aria-hidden="true">🔒</span><span>Heat ${heatNumber} &middot; not yet locked in</span></div>
+        <ul class="ladder-entries">${heatEntries.map((entry) => pendingEntryMarkup(entry, sourceStageLabel, sourceHeatCount)).join("")}</ul>
+      </div>`;
+    }).join("");
+    return `<div class="ladder-heats">${cards}</div>`;
+  }
   return `<div class="ladder-heat projected">
     <div class="ladder-heat-head"><span aria-hidden="true">🔒</span><span>Not yet locked in</span></div>
     <ul class="ladder-entries">
-      ${entries.map((entry) => entry.decided
-        ? `<li class="ladder-entry ${tierClass(entry.originStage === "wildcard" ? "wildcard" : entry.originStage === "bye" ? "bye" : "preliminary")}">${marble(entry.color, "small")}${ladderEntryLabel(entry.name, entry.marbleSlots || 1, entry.seedRounds)}</li>`
-        : `<li class="ladder-entry pending"><span class="tbd-marble" aria-hidden="true">?</span><span>${entry.originRound != null && entry.heatNumber == null ? `Round ${entry.originRound}` : championshipHeatLabel(entry.originStage, entry.heatNumber, sourceStageLabel)}${entry.qualifyingPlace ? ` · ${ordinal(entry.qualifyingPlace)} racer` : " winner"}</span><b>TBD</b></li>`
-      ).join("")}
+      ${entries.map((entry) => pendingEntryMarkup(entry, sourceStageLabel, sourceHeatCount)).join("")}
     </ul>
     <p class="ladder-projected-note">${lockedLabel}</p>
   </div>`;
@@ -1462,9 +1488,9 @@ function renderSetup() {
         <details class="config-group" id="staging-rounds-group">
           <summary class="eyebrow">Staging rounds</summary>
           <div class="field-grid">
-            <label class="field"><span class="field-label-text">Race rounds${fieldHelp("How many staging rounds run before the championship stage. Each round is its own self-contained pool: the bye/preliminary/wildcard tiers award one seat (or up to two, for wildcard) per round, so more rounds means more separate chances for every racer to qualify, and more marbles the top performers can stack up across rounds via the cross-round bonus caps.")}</span><input name="days" type="number" min="1" max="30" value="${c.days}" required></label>
-            <label class="field"><span class="field-label-text">Heats per racer / round${fieldHelp("How many times each racer races within a single round. Together with racer count, &ldquo;Max marbles per heat&rdquo;, and &ldquo;Marbles per racer / heat&rdquo;, this decides how many heats a round splits into (see the preview below) and therefore how many total results feed that round's standings before byes/preliminary/wildcard seats are awarded.")}</span><input name="heatsPerRacerPerDay" type="number" min="1" max="20" value="${c.heatsPerRacerPerDay}" required></label>
-            <label class="field"><span class="field-label-text">Max marbles per heat${fieldHelp("Sizes staging heats automatically: the app packs marbles into the largest complete heat that fits under this ceiling, then repeats heats until every racer has raced &ldquo;Heats per racer / round&rdquo; times. A lower limit means more, smaller heats per round. This is independent of the separate size limits for wildcard and preliminary heats further down.")}</span><input name="maxMarblesPerHeat" type="number" min="2" max="480" value="${c.maxMarblesPerHeat}" required></label>
+            <label class="field"><span class="field-label-text">Race rounds${fieldHelp(`How many staging rounds run before the championship stage. Each round is its own self-contained pool: the bye/preliminary/wildcard tiers award ${fieldLink("finalRacersPromotedPerRound", "final")}, ${fieldLink("preliminaryRacersPromotedPerRound", "preliminary")}, and ${fieldLink("wildcardRacersPromotedPerRound", "wildcard")} seats per round (see below), so more rounds means more separate chances for every racer to qualify, and more marbles the top performers can stack up across rounds via the cross-round bonus caps.`)}</span><input name="days" type="number" min="1" max="30" value="${c.days}" required></label>
+            <label class="field"><span class="field-label-text">Heats per racer / round${fieldHelp(`How many times each racer races within a single round. Together with racer count, ${fieldLink("maxMarblesPerHeat", "max marbles per heat")}, and ${fieldLink("marblesPerRacer", "marbles per racer / heat")}, this decides how many heats a round splits into (see the preview below) and therefore how many total results feed that round's standings before byes/preliminary/wildcard seats are awarded.`)}</span><input name="heatsPerRacerPerDay" type="number" min="1" max="20" value="${c.heatsPerRacerPerDay}" required></label>
+            <label class="field"><span class="field-label-text">Max marbles per heat${fieldHelp(`Sizes staging heats automatically: the app packs marbles into the largest complete heat that fits under this ceiling, then repeats heats until every racer has raced ${fieldLink("heatsPerRacerPerDay", "heats per racer / round")} times. A lower limit means more, smaller heats per round. This is independent of the separate size limits for wildcard and preliminary heats further down.`)}</span><input name="maxMarblesPerHeat" type="number" min="2" max="480" value="${c.maxMarblesPerHeat}" required></label>
             <label class="field"><span class="field-label-text">Marbles per racer / heat${fieldHelp("How many marbles each racer runs per staging heat. Applies to staging (round) heats only &mdash; the final always uses exactly one marble per racer regardless of this setting, and wildcard/preliminary heats instead use however many marble slots that racer earned through promotion.")}</span><input name="marblesPerRacer" type="number" min="1" max="20" value="${c.marblesPerRacer}" required></label>
           </div>
           <div class="schedule-preview" id="schedule-preview"><strong>${c.heatsPerDay} heats per round · ${c.racersPerHeat} racers per heat</strong><span>Every racer appears ${c.heatsPerRacerPerDay} times each round; each heat uses ${c.marblesPerHeat} of the ${c.maxMarblesPerHeat} allowed marbles.</span></div>
@@ -1474,28 +1500,28 @@ function renderSetup() {
         <details class="config-group" id="championship-round-group">
           <summary class="eyebrow">Championship round</summary>
           <div class="field-grid">
-            <label class="field"><span class="field-label-text">Wildcard racers promoted / heat${fieldHelp("Top finishers from each <strong>wildcard heat</strong> who advance to the preliminary stage. This is separate from how a racer originally lands in a wildcard heat &mdash; that's decided by the &ldquo;Promotion to wildcard&rdquo; settings below, once per staging round.")}</span><input name="wildcardRacersPromotedPerHeat" type="number" min="1" max="24" value="${c.wildcardRacersPromotedPerHeat}" required></label>
+            <label class="field"><span class="field-label-text">Wildcard racers promoted / heat${fieldHelp(`Top finishers from each <strong>wildcard heat</strong> who advance to the preliminary stage. This is separate from how a racer originally lands in a wildcard heat &mdash; that's decided by ${fieldLink("wildcardRacersPromotedPerRound", "wildcard racers promoted / round")} below.`)}</span><input name="wildcardRacersPromotedPerHeat" type="number" min="1" max="24" value="${c.wildcardRacersPromotedPerHeat}" required></label>
             <label class="field"><span class="field-label-text">Preliminary racers promoted / heat${fieldHelp("Top finishers from each <strong>preliminary heat</strong> who advance to the final. Separate from how a racer originally reaches the preliminary stage &mdash; either a direct promotion from a staging round, or by placing well in a wildcard heat.")}</span><input name="preliminaryRacersPromotedPerHeat" type="number" min="1" max="24" value="${c.preliminaryRacersPromotedPerHeat}" required></label>
             <label class="field"><span class="field-label-text">Max Racers in Final${fieldHelp("Ceiling on the final's roster size. If final byes plus preliminary-heat qualifiers add up to more racers than this, the lowest-priority qualifiers are trimmed to fit.")}</span><input name="maxFinalRacers" type="number" min="2" max="24" value="${c.maxFinalRacers}" required></label>
           </div>
         </details>
-        <div class="config-callout" id="tier-callout" hidden><span aria-hidden="true">&#9432;</span><div><strong>One tier per round</strong><small>A racer can hold at most one of bye, preliminary, or wildcard from any single staging round &mdash; the top ${liveValue("finalRacersPromotedPerRound", c.finalRacersPromotedPerRound)} rank(s), reserved for the bye tier, are always excluded from the round's lower tiers, and whoever actually wins bye/preliminary that round is excluded too, even if a cascade moved that seat further down the standings. The three &ldquo;bonus&rdquo; marble caps below only grant <em>extra</em> marbles in a lower tier earned in a <em>different</em> round; they can never award a racer a second seat from the same round.</small></div></div>
+        <div class="config-callout" id="tier-callout" hidden><span aria-hidden="true">&#9432;</span><div><strong>One tier per round</strong><small>A racer can hold at most one of bye, preliminary, or wildcard from any single staging round &mdash; ${fieldLink("finalRacersPromotedPerRound", `the top ${liveValue("finalRacersPromotedPerRound", c.finalRacersPromotedPerRound)} rank(s)`)}, reserved for the bye tier, are always excluded from the round's lower tiers, and whoever actually wins bye/preliminary that round is excluded too, even if a cascade moved that seat further down the standings. The three &ldquo;bonus&rdquo; marble caps below only grant <em>extra</em> marbles in a lower tier earned in a <em>different</em> round; they can never award a racer a second seat from the same round.</small></div></div>
         <details class="config-group">
           <summary class="eyebrow">Bye to final</summary>
           <div class="field-grid">
             <label class="field"><span class="field-label-text">Final racers promoted / round${fieldHelp("How many bye seats each staging round awards, taken from the top of that round's standings (1st place, then 2nd, and so on). Raise it to send more than one racer straight to the final from every round.")}</span><input name="finalRacersPromotedPerRound" type="number" min="1" max="24" value="${c.finalRacersPromotedPerRound}" required></label>
-            <label class="field"><span class="field-label-text">Max final bye marbles per racer${fieldHelp(`How many bye-tier finishes (the round's top ${liveValue("finalRacersPromotedPerRound", c.finalRacersPromotedPerRound)} rank(s), see above) one racer may bank as bye marbles into the final, across the <strong>whole tournament</strong> &mdash; not per round. A racer who earns bye seats in rounds 1 and 3 banks 2 bye marbles if this is 2 or higher; if capped at 1, their second one either cascades to that round's next-eligible racer or is forfeited, depending on the cascading toggle below.`)}</span><input name="maxFinalByeMarblesPerRacer" type="number" min="0" max="20" value="${c.maxFinalByeMarblesPerRacer}" required></label>
-            <label class="field"><span class="field-label-text">Max prelim marbles for racer with final bye${fieldHelp(`Extra preliminary marbles a racer may collect from <strong>other</strong> rounds once they already hold any bye marble, on top of (and instead of) the normal &ldquo;max prelim promotion marbles per racer&rdquo; cap, which doesn't apply to bye-tier racers. Never grants a preliminary seat from the same round as the bye &mdash; the round's top ${liveValue("finalRacersPromotedPerRound", c.finalRacersPromotedPerRound)} rank(s) are reserved for the bye tier only. Default 0 means bye-tier racers never also collect preliminary marbles.`)}</span><input name="maxPrelimMarblesForRacerWithFinalBye" type="number" min="0" max="20" value="${c.maxPrelimMarblesForRacerWithFinalBye}" required></label>
-            <label class="field"><span class="field-label-text">Max wildcard marbles for racer with final bye${fieldHelp("Same idea as the preliminary bonus above, but for the wildcard tier: extra wildcard marbles a bye-tier racer may collect from other rounds, never the same round as their bye. Default 0 disables it.")}</span><input name="maxWildcardMarblesForRacerWithFinalBye" type="number" min="0" max="20" value="${c.maxWildcardMarblesForRacerWithFinalBye}" required></label>
-            <label class="field checkbox-field"><input name="allowCascadingFinalByeSelection" type="checkbox" ${c.allowCascadingFinalByeSelection ? "checked" : ""}><span class="field-label-text">Allow cascading final bye selection${fieldHelp(`When one of a round's bye-tier finishers (the top ${liveValue("finalRacersPromotedPerRound", c.finalRacersPromotedPerRound)} rank(s)) has already banked the max bye marbles above, this decides what happens to that seat. <strong>On:</strong> the seat cascades down the standings to the first racer still under their own cap. <strong>Off:</strong> the seat is simply forfeited for that round. Either way those rank(s) never receive a preliminary or wildcard seat instead &mdash; they're reserved for the bye tier only.`)}</span></label>
+            <label class="field"><span class="field-label-text">Max final bye marbles per racer${fieldHelp(`How many bye-tier finishes (${fieldLink("finalRacersPromotedPerRound", `the round's top ${liveValue("finalRacersPromotedPerRound", c.finalRacersPromotedPerRound)} rank(s)`)}) one racer may bank as bye marbles into the final, across the <strong>whole tournament</strong> &mdash; not per round. A racer who earns bye seats in rounds 1 and 3 banks 2 bye marbles if this is 2 or higher; if capped at 1, their second one either cascades to that round's next-eligible racer or is forfeited, depending on the cascading toggle below.`)}</span><input name="maxFinalByeMarblesPerRacer" type="number" min="0" max="20" value="${c.maxFinalByeMarblesPerRacer}" required></label>
+            <label class="field"><span class="field-label-text">Max prelim marbles for racer with final bye${fieldHelp(`Extra preliminary marbles a racer may collect from <strong>other</strong> rounds once they already hold any bye marble, on top of (and instead of) the normal ${fieldLink("maxPrelimPromotionMarblesPerRacer", "max prelim promotion marbles per racer")} cap, which doesn't apply to bye-tier racers. Never grants a preliminary seat from the same round as the bye &mdash; ${fieldLink("finalRacersPromotedPerRound", `the round's top ${liveValue("finalRacersPromotedPerRound", c.finalRacersPromotedPerRound)} rank(s)`)} are reserved for the bye tier only. Default 0 means bye-tier racers never also collect preliminary marbles.`)}</span><input name="maxPrelimMarblesForRacerWithFinalBye" type="number" min="0" max="20" value="${c.maxPrelimMarblesForRacerWithFinalBye}" required></label>
+            <label class="field"><span class="field-label-text">Max wildcard marbles for racer with final bye${fieldHelp(`Same idea as ${fieldLink("maxPrelimMarblesForRacerWithFinalBye", "the preliminary bonus above")}, but for the wildcard tier: extra wildcard marbles a bye-tier racer may collect from other rounds, never the same round as their bye. Default 0 disables it.`)}</span><input name="maxWildcardMarblesForRacerWithFinalBye" type="number" min="0" max="20" value="${c.maxWildcardMarblesForRacerWithFinalBye}" required></label>
+            <label class="field checkbox-field"><input name="allowCascadingFinalByeSelection" type="checkbox" ${c.allowCascadingFinalByeSelection ? "checked" : ""}><span class="field-label-text">Allow cascading final bye selection${fieldHelp(`When one of a round's bye-tier finishers (${fieldLink("finalRacersPromotedPerRound", `the top ${liveValue("finalRacersPromotedPerRound", c.finalRacersPromotedPerRound)} rank(s)`)}) has already banked ${fieldLink("maxFinalByeMarblesPerRacer", "the max bye marbles above")}, this decides what happens to that seat. <strong>On:</strong> the seat cascades down the standings to the first racer still under their own cap. <strong>Off:</strong> the seat is simply forfeited for that round. Either way those rank(s) never receive a preliminary or wildcard seat instead &mdash; they're reserved for the bye tier only.`)}</span></label>
           </div>
         </details>
         <details class="config-group">
           <summary class="eyebrow">Promotion to preliminary</summary>
           <div class="field-grid">
-            <label class="field"><span class="field-label-text">Preliminary racers promoted / round${fieldHelp("How many direct-to-preliminary seats each staging round awards, taken from the ranks just below however many bye seats are reserved above.")}</span><input name="preliminaryRacersPromotedPerRound" type="number" min="1" max="24" value="${c.preliminaryRacersPromotedPerRound}" required></label>
-            <label class="field"><span class="field-label-text">Max prelim promotion marbles per racer${fieldHelp(`Caps how many preliminary marbles a racer with <strong>no</strong> bye marbles may hold across the tournament, earned by finishing 2nd (or the cascade target) in staging rounds. Bye-tier racers use the separate &ldquo;max prelim marbles for racer with final bye&rdquo; cap instead of this one (currently ${liveValue("maxPrelimMarblesForRacerWithFinalBye", c.maxPrelimMarblesForRacerWithFinalBye)}).`)}</span><input name="maxPrelimPromotionMarblesPerRacer" type="number" min="0" max="20" value="${c.maxPrelimPromotionMarblesPerRacer}" required></label>
-            <label class="field"><span class="field-label-text">Max wildcard marbles for racer with prelim promotion${fieldHelp("Extra wildcard marbles a racer may collect from <strong>other</strong> rounds once they already hold any preliminary marble, on top of the normal wildcard cap, which doesn't apply to prelim-tier racers. Never grants a wildcard seat from the same round as the preliminary promotion. Default 0 disables it.")}</span><input name="maxWildcardMarblesForRacerWithPrelimPromotion" type="number" min="0" max="20" value="${c.maxWildcardMarblesForRacerWithPrelimPromotion}" required></label>
+            <label class="field"><span class="field-label-text">Preliminary racers promoted / round${fieldHelp(`How many direct-to-preliminary seats each staging round awards, taken from the ranks just below however many ${fieldLink("finalRacersPromotedPerRound", "bye seats are reserved above")}.`)}</span><input name="preliminaryRacersPromotedPerRound" type="number" min="1" max="24" value="${c.preliminaryRacersPromotedPerRound}" required></label>
+            <label class="field"><span class="field-label-text">Max prelim promotion marbles per racer${fieldHelp(`Caps how many preliminary marbles a racer <strong>who hasn't earned any bye marbles</strong> may hold across the tournament, earned by finishing 2nd (or the cascade target) in staging rounds. The moment a racer earns any bye marble, this cap no longer applies to them at all: bye-tier racers use the separate ${fieldLink("maxPrelimMarblesForRacerWithFinalBye", "max prelim marbles for racer with final bye")} cap instead (${liveValue("maxPrelimMarblesForRacerWithFinalBye", c.maxPrelimMarblesForRacerWithFinalBye)}).`)}</span><input name="maxPrelimPromotionMarblesPerRacer" type="number" min="0" max="20" value="${c.maxPrelimPromotionMarblesPerRacer}" required></label>
+            <label class="field"><span class="field-label-text">Max wildcard marbles for racer with prelim promotion${fieldHelp(`Extra wildcard marbles a racer may collect from <strong>other</strong> rounds once they already hold any preliminary marble, on top of ${fieldLink("maxWildcardPromotionMarblesPerRacer", "the normal wildcard cap")}, which doesn't apply to prelim-tier racers. Never grants a wildcard seat from the same round as the preliminary promotion. Default 0 disables it.`)}</span><input name="maxWildcardMarblesForRacerWithPrelimPromotion" type="number" min="0" max="20" value="${c.maxWildcardMarblesForRacerWithPrelimPromotion}" required></label>
             <label class="field"><span class="field-label-text">Max marbles per preliminary heat${fieldHelp("Sizes preliminary heats automatically &mdash; the app packs qualifying marbles into as few full heats as possible under this ceiling. Doesn't affect who qualifies.")}</span><input name="preliminaryMaxMarblesPerHeat" type="number" min="2" max="480" value="${c.preliminaryMaxMarblesPerHeat}" required></label>
             <label class="field checkbox-field"><input name="allowCascadingPrelimPromotionSelection" type="checkbox" ${c.allowCascadingPrelimPromotionSelection ? "checked" : ""}><span class="field-label-text">Allow cascading prelim promotion selection${fieldHelp("When one of a round's direct-preliminary finishers is already at their preliminary cap (or is that round's bye winner), this decides whether the seat cascades further down the standings to the next eligible racer (on) or is forfeited for that round (off).")}</span></label>
           </div>
@@ -1503,10 +1529,10 @@ function renderSetup() {
         <details class="config-group">
           <summary class="eyebrow">Promotion to wildcard</summary>
           <div class="field-grid">
-            <label class="field"><span class="field-label-text">Wildcard racers promoted / round${fieldHelp("How many wildcard seats each staging round awards, taken from the ranks just below however many bye and preliminary seats are reserved above.")}</span><input name="wildcardRacersPromotedPerRound" type="number" min="1" max="24" value="${c.wildcardRacersPromotedPerRound}" required></label>
-            <label class="field"><span class="field-label-text">Max wildcard promotion marbles per racer${fieldHelp(`Caps how many wildcard marbles a racer <strong>who hasn't qualified for the bye or preliminary tier at all this tournament</strong> may hold, earned from the wildcard seats available in each staging round. This is unrelated to how many bye or preliminary marbles someone else has banked &mdash; the moment a racer earns even one bye or preliminary marble, this cap no longer applies to them at all: bye-tier racers use the separate &ldquo;max wildcard marbles for racer with final bye&rdquo; cap instead (${liveBonusCapPhrase("maxWildcardMarblesForRacerWithFinalBye", c.maxWildcardMarblesForRacerWithFinalBye)}), and prelim-tier racers use &ldquo;max wildcard marbles for racer with prelim promotion&rdquo; (${liveBonusCapPhrase("maxWildcardMarblesForRacerWithPrelimPromotion", c.maxWildcardMarblesForRacerWithPrelimPromotion)}).`)}</span><input name="maxWildcardPromotionMarblesPerRacer" type="number" min="0" max="20" value="${c.maxWildcardPromotionMarblesPerRacer}" required></label>
+            <label class="field"><span class="field-label-text">Wildcard racers promoted / round${fieldHelp(`How many wildcard seats each staging round awards, taken from the ranks just below however many ${fieldLink("finalRacersPromotedPerRound", "bye")} and ${fieldLink("preliminaryRacersPromotedPerRound", "preliminary")} seats are reserved above.`)}</span><input name="wildcardRacersPromotedPerRound" type="number" min="1" max="24" value="${c.wildcardRacersPromotedPerRound}" required></label>
+            <label class="field"><span class="field-label-text">Max wildcard promotion marbles per racer${fieldHelp(`Caps wildcard marbles for a racer who hasn't earned a bye or preliminary seat this tournament. Bye-tier racers use ${fieldLink("maxWildcardMarblesForRacerWithFinalBye", "max wildcard marbles for racer with final bye")} instead (currently ${liveValue("maxWildcardMarblesForRacerWithFinalBye", c.maxWildcardMarblesForRacerWithFinalBye)}), and prelim-tier racers use ${fieldLink("maxWildcardMarblesForRacerWithPrelimPromotion", "max wildcard marbles for racer with prelim promotion")} instead (currently ${liveValue("maxWildcardMarblesForRacerWithPrelimPromotion", c.maxWildcardMarblesForRacerWithPrelimPromotion)}).`)}</span><input name="maxWildcardPromotionMarblesPerRacer" type="number" min="0" max="20" value="${c.maxWildcardPromotionMarblesPerRacer}" required></label>
             <label class="field"><span class="field-label-text">Max marbles per wildcard heat${fieldHelp("Sizes wildcard heats automatically, the same way the preliminary heat-size limit does. Doesn't affect who qualifies.")}</span><input name="wildcardMaxMarblesPerHeat" type="number" min="2" max="480" value="${c.wildcardMaxMarblesPerHeat}" required></label>
-            <label class="field checkbox-field"><input name="allowCascadingWildcardPromotionSelection" type="checkbox" ${c.allowCascadingWildcardPromotionSelection ? "checked" : ""}><span class="field-label-text">Allow cascading wildcard promotion selection${fieldHelp(`When one of a round's ${liveValue("wildcardRacersPromotedPerRound", c.wildcardRacersPromotedPerRound)} wildcard seats lands on a racer who's already at their wildcard cap (or who already holds a bye/preliminary seat from that same round), this decides whether the seat cascades to the next eligible finisher (on) or is forfeited for that round (off).`)}</span></label>
+            <label class="field checkbox-field"><input name="allowCascadingWildcardPromotionSelection" type="checkbox" ${c.allowCascadingWildcardPromotionSelection ? "checked" : ""}><span class="field-label-text">Allow cascading wildcard promotion selection${fieldHelp(`When one of a round's ${fieldLink("wildcardRacersPromotedPerRound", `${liveValue("wildcardRacersPromotedPerRound", c.wildcardRacersPromotedPerRound)} wildcard seats`)} lands on a racer who's already at their wildcard cap (or who already holds a bye/preliminary seat from that same round), this decides whether the seat cascades to the next eligible finisher (on) or is forfeited for that round (off).`)}</span></label>
           </div>
         </details>
       </section>
@@ -1587,10 +1613,15 @@ async function saveConfiguration(event) {
     applyState(await api(`/api/tournaments/${activeTournamentId}`, {method:"PUT", body:JSON.stringify(configPayload(false))}));
     notify("Tournament settings saved.");
   } catch (error) {
-    if (error.requiresReset && window.confirm(`${error.message}\n\nContinue and rebuild the schedule?`)) {
-      try { applyState(await api(`/api/tournaments/${activeTournamentId}`, {method:"PUT", body:JSON.stringify(configPayload(true))})); notify("This tournament's schedule was rebuilt."); }
-      catch (secondError) { notify(secondError.message, true); }
-    } else if (!error.requiresReset) notify(error.message, true);
+    if (error.requiresReset) {
+      if (window.confirm(`${error.message}\n\nContinue and rebuild the schedule?`)) {
+        try { applyState(await api(`/api/tournaments/${activeTournamentId}`, {method:"PUT", body:JSON.stringify(configPayload(true))})); notify("This tournament's schedule was rebuilt."); }
+        catch (secondError) { notify(secondError.message, true); }
+      } else {
+        render();
+        notify("Change not saved -- the tournament's existing results were kept.", true);
+      }
+    } else notify(error.message, true);
   } finally { submit.disabled = false; }
 }
 
@@ -1639,6 +1670,20 @@ const closeFieldHelpPopovers = () => {
 };
 
 document.addEventListener("click", (event) => {
+  const gotoFieldButton = event.target.closest("[data-goto-field]");
+  if (gotoFieldButton) {
+    const input = document.querySelector(`#config-form [name="${gotoFieldButton.dataset.gotoField}"]`);
+    closeFieldHelpPopovers();
+    if (input) {
+      const details = input.closest("details.config-group");
+      if (details && !details.open) details.open = true;
+      input.scrollIntoView({behavior:"smooth", block:"center"});
+      input.focus({preventScroll:true});
+      input.classList.add("field-jump-highlight");
+      setTimeout(() => input.classList.remove("field-jump-highlight"), 1200);
+    }
+    return;
+  }
   const helpToggle = event.target.closest("[data-help-toggle]");
   if (helpToggle) {
     const popover = document.getElementById(helpToggle.dataset.helpToggle);
@@ -1733,9 +1778,6 @@ document.addEventListener("input", (event) => {
   if (event.target.closest("#config-form") && event.target.name) {
     document.querySelectorAll(`[data-live-value-for="${event.target.name}"]`).forEach((span) => {
       span.textContent = event.target.value === "" ? "0" : event.target.value;
-    });
-    document.querySelectorAll(`[data-live-phrase-for="${event.target.name}"]`).forEach((span) => {
-      span.textContent = bonusCapPhrase(event.target.value === "" ? 0 : event.target.value);
     });
   }
 });

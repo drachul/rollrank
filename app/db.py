@@ -246,21 +246,33 @@ def calculate_racers_per_heat(
 def calculate_championship_heat_size(
     field_size: int, max_marbles_per_heat: int, marbles_per_racer: int
 ) -> tuple[int, int]:
-    """Largest single-appearance heat size that evenly divides field_size.
+    """The heat count a championship field splits into, filling heats as
+    close to max_marbles_per_heat as the marble limit allows and spreading
+    any remainder as evenly as possible across heats -- unlike a staging
+    round's repeated heats, a one-off championship promotion heat doesn't
+    need every heat to come out exactly the same size, so a field that
+    doesn't divide evenly (7 racers at a max of 4, say) still splits into
+    heats instead of forcing one oversized heat or skipping the stage
+    entirely. interleave_groups() (used by callers to actually place
+    entries) already tolerates -- and rebalances toward -- heats within one
+    racer of each other, so it fills in the rest correctly once this
+    returns a sane heat_count.
 
-    Returns (0, 0) when no valid heat can be formed (field too small, or no
-    divisor within the marble limit) -- callers treat that as "the whole field
-    auto-advances to the next stage without racing" rather than raising.
+    Returns (0, 0) when no heat of at least 2 racers can be formed at all
+    (field too small, or the marble limit is too tight to seat even a
+    pair) -- callers treat that as "the whole field auto-advances to the
+    next stage without racing" rather than raising.
     """
     if field_size < 2:
         return 0, 0
-    try:
-        racers_per_heat = calculate_racers_per_heat(field_size, 1, max_marbles_per_heat, marbles_per_racer)
-    except ValueError:
+    max_racers_per_heat = min(MAX_RACERS_PER_HEAT, max_marbles_per_heat // marbles_per_racer)
+    if max_racers_per_heat < 2:
         return 0, 0
-    if racers_per_heat < 2:
-        return 0, 0
-    return racers_per_heat, field_size // racers_per_heat
+    heat_count = -(-field_size // max_racers_per_heat)  # ceiling division
+    # Never ask for more heats than the field can fill with at least 2
+    # racers each -- a heat of 1 can't race against anyone.
+    heat_count = min(heat_count, field_size // 2)
+    return field_size // heat_count, heat_count
 
 
 def balanced_day_schedule(
@@ -1595,7 +1607,7 @@ def final_field(
     return deduped, trimmed
 
 
-def _wildcard_groups_with_marble_splitting(
+def wildcard_groups_with_marble_splitting(
     entries: Sequence[dict[str, Any]], heat_count: int, seed: int
 ) -> list[list[dict[str, Any]]]:
     """Group wildcard entries into heat_count heats, splitting a racer's
@@ -1659,7 +1671,7 @@ def build_wildcard_heats(connection: sqlite3.Connection, tournament_id: int) -> 
     global_number = _next_global_number(connection, tournament_id)
     groups = [
         group
-        for group in _wildcard_groups_with_marble_splitting(entries, heat_count, tournament["seed"])
+        for group in wildcard_groups_with_marble_splitting(entries, heat_count, tournament["seed"])
         if group
     ]
     for heat_number, group in enumerate(groups, start=1):
@@ -1756,6 +1768,12 @@ def _field_marble_signature(
     )
 
 
+def _stage_heat_count(connection: sqlite3.Connection, tournament_id: int, stage: str) -> int:
+    return connection.execute(
+        "SELECT COUNT(*) FROM heats WHERE tournament_id = ? AND stage = ?", (tournament_id, stage)
+    ).fetchone()[0]
+
+
 def sync_championship(connection: sqlite3.Connection, tournament_id: int) -> None:
     """Recompute-and-compare pipeline: for each stage in order, compare its
     prospective racer field to what's currently stored, rebuilding (and wiping
@@ -1775,11 +1793,21 @@ def sync_championship(connection: sqlite3.Connection, tournament_id: int) -> Non
     wildcard_entries = wildcard_field(connection, tournament_id)
     wildcard_marbles = _field_marble_signature(wildcard_entries, "marbleSlots")
     current_wildcard_marbles = stage_racer_marbles(connection, tournament_id, "wildcard")
-    if wildcard_marbles != (current_wildcard_marbles or []):
+    total_wildcard_marbles = sum(entry["marbleSlots"] for entry in wildcard_entries)
+    # A field-signature match alone isn't enough -- the same racers/marbles
+    # can still be stale if wildcard_max_marbles_per_heat changed since the
+    # heats were built, since that changes how many heats they should be
+    # split across without touching who qualifies.
+    _wildcard_heat_size, expected_wildcard_heat_count = calculate_championship_heat_size(
+        total_wildcard_marbles, tournament["wildcard_max_marbles_per_heat"], 1
+    )
+    if (
+        wildcard_marbles != (current_wildcard_marbles or [])
+        or expected_wildcard_heat_count != _stage_heat_count(connection, tournament_id, "wildcard")
+    ):
         delete_championship_stages(connection, tournament_id, "wildcard")
         if wildcard_marbles:
             build_wildcard_heats(connection, tournament_id)
-    total_wildcard_marbles = sum(entry["marbleSlots"] for entry in wildcard_entries)
     if not _stage_ready_to_advance(connection, tournament_id, "wildcard", total_wildcard_marbles, tournament):
         delete_championship_stages(connection, tournament_id, "preliminary")
         return
@@ -1787,11 +1815,17 @@ def sync_championship(connection: sqlite3.Connection, tournament_id: int) -> Non
     preliminary_entries = preliminary_field(connection, tournament_id)
     preliminary_marbles = _field_marble_signature(preliminary_entries, "marbleSlots")
     current_preliminary_marbles = stage_racer_marbles(connection, tournament_id, "preliminary")
-    if preliminary_marbles != (current_preliminary_marbles or []):
+    total_preliminary_marbles = sum(entry["marbleSlots"] for entry in preliminary_entries)
+    _preliminary_heat_size, expected_preliminary_heat_count = calculate_championship_heat_size(
+        total_preliminary_marbles, tournament["preliminary_max_marbles_per_heat"], 1
+    )
+    if (
+        preliminary_marbles != (current_preliminary_marbles or [])
+        or expected_preliminary_heat_count != _stage_heat_count(connection, tournament_id, "preliminary")
+    ):
         delete_championship_stages(connection, tournament_id, "preliminary")
         if preliminary_marbles:
             build_preliminary_heats(connection, tournament_id)
-    total_preliminary_marbles = sum(entry["marbleSlots"] for entry in preliminary_entries)
     if not _stage_ready_to_advance(connection, tournament_id, "preliminary", total_preliminary_marbles, tournament):
         delete_championship_stages(connection, tournament_id, "final")
         return
