@@ -16,6 +16,9 @@ let kioskUsesBrowserFullscreen = false;
 let setupWizardStep = 0;
 let setupWizardDraft = null;
 let standingsTierView = "projected";
+let tieBreakOrder = [];
+let tieBreakKey = null;
+let tieBreakImpactWarning = null;
 if (kioskMode) activeView = "dashboard";
 
 const landingPage = document.querySelector("#landing-page");
@@ -25,6 +28,7 @@ const app = document.querySelector("#app");
 const toast = document.querySelector("#toast");
 const tournamentSwitcher = document.querySelector("#tournament-switcher");
 const tournamentDialog = document.querySelector("#new-tournament-dialog");
+const tieBreakDialog = document.querySelector("#tie-break-dialog");
 
 const escapeHtml = (value) => String(value ?? "")
   .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
@@ -45,6 +49,117 @@ const fieldHelp = (bodyHtml) => {
   const id = `field-help-${fieldHelpCounter++}`;
   return `<span class="field-help-wrap"><button type="button" class="field-help-toggle" data-help-toggle="${id}" aria-expanded="false" aria-label="More information" aria-describedby="${id}">?</button><div class="field-help-popover" id="${id}" role="tooltip" hidden>${bodyHtml}</div></span>`;
 };
+
+// Embeds another field's current value in a help tooltip, kept live via the
+// #config-form "input" listener below -- so the tip always reflects what's
+// actually typed into that field right now, not just what was last saved.
+const liveValue = (fieldName, currentValue) => `<span class="live-value" data-live-value-for="${fieldName}">${escapeHtml(currentValue)}</span>`;
+
+// Wraps a help-tip mention of another config field so clicking it opens that
+// field's section (if collapsed), scrolls to it, and focuses it -- so a
+// dependency mentioned in a tooltip is one click away instead of a search.
+const fieldLink = (fieldName, labelHtml) => `<button type="button" class="field-help-jump" data-goto-field="${fieldName}">${labelHtml}</button>`;
+
+function formatResolvedDate(resolvedAt) {
+  if (!resolvedAt) return "";
+  const date = new Date(`${resolvedAt.replace(" ", "T")}Z`);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString(undefined, {month: "short", day: "numeric", year: "numeric"});
+}
+
+function tiePopoverMarkup(id, racer, index, place, tiedWith, isCollapsed, isResolved, resolvedAt) {
+  const otherRacers = tiedWith
+    .map((other) => `<span class="tie-popover-racer">${marble(other.color, "small")}${escapeHtml(other.name)}</span>`)
+    .join("");
+  const otherCount = tiedWith.length === 1 ? "1 other racer" : `${tiedWith.length} other racers`;
+  const resolvedDate = formatResolvedDate(resolvedAt);
+  const footer = isCollapsed
+    ? "No promotion seat depends on the order between them this round, so they're simply shown tied rather than split by an arbitrary order."
+    : isResolved
+      ? `An organizer manually resolved this tie${resolvedDate ? ` on ${resolvedDate}` : ""}, placing ${escapeHtml(racer.name)} ${ordinal(place)}.`
+      : "This placement is provisional -- ordered by roster order until an organizer resolves the tie.";
+  const heading = isResolved ? `Tiebreak resolved for ${ordinal(place)} in Round ${index + 1}` : `Tied for ${ordinal(place)} in Round ${index + 1}`;
+  return `<div class="tie-popover" id="${id}" role="tooltip" hidden><strong>${heading}</strong><p>${escapeHtml(racer.name)} matched ${otherCount} exactly on points and placement this round.</p><div class="tie-popover-racers">${otherRacers}</div><small>${footer}</small></div>`;
+}
+
+function pendingTieBreakCallout() {
+  const pending = state?.pendingTieBreak;
+  if (!pending || kioskMode) return "";
+  const names = pending.racers.map((racer) => escapeHtml(racer.name)).join(", ");
+  return `<div class="config-callout tie-break-callout"><span aria-hidden="true">!</span><div><strong>Round ${pending.day} needs a tiebreak</strong><small>${names} finished this round tied on points, wins, and placement -- and how that's ordered decides who gets promoted. Racing can't continue until it's resolved.</small></div><button type="button" class="primary-button compact" data-open-tie-break>Resolve tie</button></div>`;
+}
+
+function kioskPendingTieBreakBanner() {
+  const pending = state?.pendingTieBreak;
+  if (!pending) return "";
+  const names = pending.racers.map((racer) => escapeHtml(racer.name)).join(", ");
+  return `<div class="kiosk-tiebreak-banner"><span aria-hidden="true">!</span><div><strong>Round ${pending.day} tiebreak pending</strong><p>${names} finished tied on points, wins, and placement. Racing is paused until it's resolved from the scoring device.</p></div></div>`;
+}
+
+function tieBreakDialogBody() {
+  const pending = state?.pendingTieBreak;
+  if (!pending) return "";
+  const picked = new Set(tieBreakOrder);
+  const remaining = pending.racers.filter((racer) => !picked.has(racer.id));
+  const seatNoun = pending.racers.length > 2 ? "seats" : "seat";
+  const orderMarkup = tieBreakOrder.length
+    ? `<ol class="tie-break-order">${tieBreakOrder
+        .map((id) => pending.racers.find((racer) => racer.id === id))
+        .map((racer) => `<li>${marble(racer.color, "small")}<span>${escapeHtml(racer.name)}</span></li>`)
+        .join("")}</ol>`
+    : "";
+  const picksMarkup = remaining.length
+    ? `<div class="tie-break-picks">${remaining
+        .map((racer) => `<button type="button" class="tie-break-pick" data-tie-pick="${racer.id}">${marble(racer.color, "small")}<span>${escapeHtml(racer.name)}</span><small>${racer.currentTier ? `Currently ${tierLabel[racer.currentTier]}` : "Currently no seat"}</small></button>`)
+        .join("")}</div>`
+    : "";
+  const allPicked = tieBreakOrder.length === pending.racers.length;
+  const warningMarkup = tieBreakImpactWarning
+    ? `<div class="tie-break-warning"><span aria-hidden="true">!</span><div><strong>This also changes ${tieBreakImpactWarning.length === 1 ? "an earlier round" : "earlier rounds"}</strong><p>Applying this order changes the bye/preliminary/wildcard result already shown for Round${tieBreakImpactWarning.length === 1 ? "" : "s"} ${tieBreakImpactWarning.join(", ")}. Confirm to apply it anyway.</p></div></div>`
+    : "";
+  const confirmLabel = tieBreakImpactWarning ? "Yes, apply anyway" : "Confirm order";
+  return `<header><div><p class="eyebrow">Round ${pending.day} tiebreak</p><h2 id="tie-break-dialog-title">Resolve the tie for Round ${pending.day}</h2></div><button type="button" data-close-tie-break aria-label="Close">×</button></header><p>These racers matched on points, wins, and placement this round. Click them below in the order they should rank, highest first, to decide who wins the ${seatNoun} on the line.</p>${orderMarkup}${picksMarkup}${warningMarkup}<div class="dialog-actions"><button type="button" class="secondary-button" data-tie-break-reset ${tieBreakOrder.length ? "" : "disabled"}>Reset</button><button type="button" class="primary-button" data-tie-break-confirm ${allPicked ? "" : "disabled"}>${confirmLabel}</button></div>`;
+}
+
+function syncTieBreakDialog() {
+  if (!tieBreakDialog) return;
+  const pending = state?.pendingTieBreak;
+  const body = tieBreakDialog.querySelector("#tie-break-dialog-body");
+  if (!pending) {
+    tieBreakOrder = [];
+    tieBreakKey = null;
+    tieBreakImpactWarning = null;
+    if (tieBreakDialog.open) tieBreakDialog.close();
+    body.innerHTML = "";
+    return;
+  }
+  const key = `${pending.day}:${pending.racers.map((racer) => racer.id).sort().join(",")}`;
+  if (key !== tieBreakKey) {
+    tieBreakOrder = [];
+    tieBreakKey = key;
+    tieBreakImpactWarning = null;
+  }
+  body.innerHTML = tieBreakDialogBody();
+}
+
+async function confirmTieBreak() {
+  const pending = state?.pendingTieBreak;
+  if (!pending || tieBreakOrder.length !== pending.racers.length) return;
+  try {
+    const response = await api(`/api/tournaments/${state.competition.id}/staging/${pending.day}/tiebreak`, {
+      method: "PUT",
+      body: JSON.stringify({order: tieBreakOrder, confirmEarlierImpact: tieBreakImpactWarning !== null}),
+    });
+    if (response.needsConfirmation) {
+      tieBreakImpactWarning = response.affectedDays;
+      syncTieBreakDialog();
+      return;
+    }
+    tieBreakImpactWarning = null;
+    applyState(response);
+    notify("Tie resolved.");
+  } catch (error) { notify(error.message, true); }
+}
 
 function notify(message, isError = false) {
   toast.textContent = message;
@@ -90,6 +205,7 @@ function applyState(nextState) {
   kioskRefreshFailed = false;
   kioskLastUpdated = new Date();
   syncTournamentChrome();
+  syncTieBreakDialog();
   render();
   if (completedHeat?.stage === "final") startKioskCupPresentation(completedHeat, state.competition.name);
   else if (completedHeat) startKioskRaceResults(completedHeat);
@@ -571,6 +687,7 @@ function renderDashboard() {
   const nextHeat = state.days.flatMap((day) => day.heats).find((heat) => !heat.complete);
   const topRacers = state.standings.slice(0, 5);
   return `
+    ${pendingTieBreakCallout()}
     <section class="dashboard-hero">
       <div class="hero-copy">
         <div class="dashboard-status-row"><span class="status-chip ${status.className}"><i></i>${status.label}</span><button type="button" class="kiosk-launch-button" data-enter-kiosk><span aria-hidden="true">⛶</span> Fullscreen display</button></div>
@@ -591,7 +708,7 @@ function renderDashboard() {
         ${nextHeat ? `<div class="next-heat">
           <div class="heat-flag"><small>Race</small><strong>#${nextHeat.globalNumber}</strong></div>
           <div class="racer-preview">${nextHeat.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>
-          ${nextHeat.started === false ? `<button class="primary-button compact" data-start-heat="${nextHeat.id}">Start heat</button>` : `<button class="primary-button compact" data-score-heat="${nextHeat.id}">Score heat</button>`}
+          ${nextHeat.locked ? `<span class="heat-locked-note">Resolve the pending tiebreak first</span>` : nextHeat.started === false ? `<button class="primary-button compact" data-start-heat="${nextHeat.id}">Start heat</button>` : `<button class="primary-button compact" data-score-heat="${nextHeat.id}">Score heat</button>`}
         </div>` : `<div class="completion-callout"><div class="trophy">★</div><div><strong>Championship bracket underway</strong><p>Wildcard, preliminary, and final heats build automatically as each stage finishes.</p></div><button class="primary-button compact" data-view="heats" data-day="championship">Open bracket</button></div>`}
       </article>
       <article class="panel standings-preview">
@@ -709,7 +826,9 @@ function renderKioskDashboard() {
   const liveStatus = kioskRefreshFailed ? "Reconnecting…" : kioskTimestamp();
   let nextContent = "";
 
-  if (nextHeat) {
+  if (state.pendingTieBreak && nextHeat?.locked) {
+    nextContent = `<p class="kiosk-card-label">Paused</p><div class="kiosk-final-ready"><span aria-hidden="true">!</span><div><strong>Round ${state.pendingTieBreak.day} tiebreak pending</strong><p>Racing resumes once it's resolved from the scoring device.</p></div></div>`;
+  } else if (nextHeat) {
     nextContent = `<div class="kiosk-card-heading"><p class="kiosk-card-label">${nextHeat.started ? "In progress" : "Up next"}</p><b>Race #${nextHeat.globalNumber}</b></div><h2>Round ${nextHeat.day} · Heat ${nextHeat.heatNumber}</h2><div class="kiosk-next-racers">${nextHeat.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>`;
   } else if (nextWildcard) {
     nextContent = `<div class="kiosk-card-heading"><p class="kiosk-card-label">${nextWildcard.started ? "In progress" : "Up next"}</p><b>Championship</b></div><h2>Championship: Wildcard ${championshipHeatLabel("wildcard", nextWildcard.heatNumber)}</h2><div class="kiosk-next-racers">${nextWildcard.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>`;
@@ -725,6 +844,7 @@ function renderKioskDashboard() {
       <div class="kiosk-title"><p>${status.label}</p><h1>${escapeHtml(c.name)}</h1></div>
       <div class="kiosk-controls"><span class="kiosk-live-status${kioskRefreshFailed ? " stale" : ""}"><i></i>${liveStatus}</span><button type="button" data-exit-kiosk aria-label="Exit fullscreen display">Exit <span aria-hidden="true">×</span></button></div>
     </header>
+    ${kioskPendingTieBreakBanner()}
     <div class="kiosk-overview">
       <article class="kiosk-progress-card">
         <div class="kiosk-card-heading"><p class="kiosk-card-label">Round progress</p></div>
@@ -848,6 +968,7 @@ function renderHeats() {
   const onChampionship = activeDay === "championship";
   const selectedDay = onChampionship ? null : state.days.find((day) => day.day === activeDay) || state.days[0];
   return `${viewHeader("Results desk", "Rounds", "Choose a round, then record a unique finishing position for every marble.")}
+    ${pendingTieBreakCallout()}
     <div class="day-tabs" role="tablist">${state.days.map((day) => {
       const complete = day.heats.filter((heat) => heat.complete).length;
       return `<button role="tab" aria-selected="${day.day === activeDay}" class="${day.day === activeDay ? "active" : ""}" data-day="${day.day}"><span>Round ${day.day}</span><small>${complete}/${day.heats.length} complete</small></button>`;
@@ -889,14 +1010,48 @@ function ladderEntryLabel(name, marbleCount, seedRounds, extraTag = "") {
   return `<div class="ladder-entry-info"><span>${escapeHtml(name)}${marbleCount > 1 ? ` <span class="marble-count">×${marbleCount}</span>` : ""}</span>${extraTag || seedRoundsTag(seedRounds)}</div>`;
 }
 
+function pendingHeatName(sourceHeatNumber, sourceStageLabel, sourceHeatCount) {
+  const label = sourceHeatCount > 1 ? `Heat ${sourceHeatNumber}` : "Heat";
+  return sourceStageLabel ? `${sourceStageLabel} ${label}` : label;
+}
+
+function pendingHeatLabel(entry, sourceStageLabel, sourceHeatCount) {
+  if (entry.originRound != null) return `Round ${entry.originRound}`;
+  return pendingHeatName(entry.sourceHeatNumber, sourceStageLabel, sourceHeatCount);
+}
+
+function pendingEntryMarkup(entry, sourceStageLabel, sourceHeatCount) {
+  return entry.decided
+    ? `<li class="ladder-entry ${tierClass(entry.originStage === "wildcard" ? "wildcard" : entry.originStage === "bye" ? "bye" : "preliminary")}">${marble(entry.color, "small")}${ladderEntryLabel(entry.name, entry.marbleSlots || 1, entry.seedRounds)}</li>`
+    : `<li class="ladder-entry pending"><span class="tbd-marble" aria-hidden="true">?</span><span>${pendingHeatLabel(entry, sourceStageLabel, sourceHeatCount)}${entry.qualifyingPlace ? ` · ${ordinal(entry.qualifyingPlace)} racer` : " winner"}</span><b>TBD</b></li>`;
+}
+
 function ladderProjectedRoster(entries, lockedLabel, sourceStageLabel) {
+  // heatNumber (when present on every entry) means "which of this stage's
+  // own heats this lands in" -- used purely to split the card, never for
+  // row text. sourceHeatNumber means "which upstream heat this came from"
+  // -- used only for row text (e.g. "Wildcard Heat 2"), never for grouping.
+  const destinationHeatNumbers = [...new Set(entries.filter((entry) => entry.heatNumber != null).map((entry) => entry.heatNumber))].sort((a, b) => a - b);
+  const sourceHeatCount = new Set(entries.filter((entry) => entry.sourceHeatNumber != null).map((entry) => entry.sourceHeatNumber)).size;
+  // A field bound for multiple heats (e.g. a wildcard/preliminary pool too
+  // big for one heat under the max-marbles-per-heat setting) previews as
+  // separate cards, one per heat -- the same way real heats each get their
+  // own card once built, instead of one flat list that reads as a single
+  // heat even when individual rows say otherwise.
+  if (destinationHeatNumbers.length > 1) {
+    const cards = destinationHeatNumbers.map((heatNumber) => {
+      const heatEntries = entries.filter((entry) => entry.heatNumber === heatNumber);
+      return `<div class="ladder-heat projected">
+        <div class="ladder-heat-head"><span aria-hidden="true">🔒</span><span>Heat ${heatNumber} &middot; not yet locked in</span></div>
+        <ul class="ladder-entries">${heatEntries.map((entry) => pendingEntryMarkup(entry, sourceStageLabel, sourceHeatCount)).join("")}</ul>
+      </div>`;
+    }).join("");
+    return `<div class="ladder-heats">${cards}</div>`;
+  }
   return `<div class="ladder-heat projected">
     <div class="ladder-heat-head"><span aria-hidden="true">🔒</span><span>Not yet locked in</span></div>
     <ul class="ladder-entries">
-      ${entries.map((entry) => entry.decided
-        ? `<li class="ladder-entry ${tierClass(entry.originStage === "wildcard" ? "wildcard" : entry.originStage === "bye" ? "bye" : "preliminary")}">${marble(entry.color, "small")}${ladderEntryLabel(entry.name, entry.marbleSlots || 1, entry.seedRounds)}</li>`
-        : `<li class="ladder-entry pending"><span class="tbd-marble" aria-hidden="true">?</span><span>${championshipHeatLabel(entry.originStage, entry.heatNumber, sourceStageLabel)}${entry.qualifyingPlace ? ` · ${ordinal(entry.qualifyingPlace)} racer` : " winner"}</span><b>TBD</b></li>`
-      ).join("")}
+      ${entries.map((entry) => pendingEntryMarkup(entry, sourceStageLabel, sourceHeatCount)).join("")}
     </ul>
     <p class="ladder-projected-note">${lockedLabel}</p>
   </div>`;
@@ -993,9 +1148,27 @@ function standingRoundCell(racer, place, index, liveRoundDay, mobile = false) {
   }
   const className = `${tierClass(tier)}${provisional ? ` tier-reassigned${tier ? "" : " tier-removed"}` : ""}`;
   const placement = placeLabel(place, index + 1 === liveRoundDay);
+  const tiedWith = place != null ? (racer.dayTiedWith || [])[index] : null;
+  if (!tiedWith || tiedWith.length === 0) {
+    return mobile
+      ? `<span class="${className}"><small>Round ${index + 1}</small><b>${placement}</b>${tierMarkup}</span>`
+      : `<td class="${className}">${placement}${tierMarkup}</td>`;
+  }
+  const id = `tie-popover-${racer.id}-${index}-${mobile ? "mobile" : "desktop"}`;
+  const isCollapsed = (racer.dayTieCollapsed || [])[index] === true;
+  const isResolved = (racer.dayTieResolved || [])[index] === true;
+  const resolvedAt = (racer.dayTieResolvedAt || [])[index];
+  // Yellow "!" means this placement still needs an organizer's decision.
+  // Blue "i" means there's nothing to act on -- either the tie doesn't
+  // affect a seat (collapsed) or an organizer already decided it (resolved).
+  const flag = isCollapsed || isResolved
+    ? `<sup class="tie-flag tie-flag-info" aria-hidden="true">i</sup>`
+    : `<sup class="tie-flag" aria-hidden="true">!</sup>`;
+  const popover = tiePopoverMarkup(id, racer, index, place, tiedWith, isCollapsed, isResolved, resolvedAt);
+  const buttonAttrs = `type="button" class="tie-cell-toggle" data-tie-toggle="${id}" aria-expanded="false" aria-describedby="${id}" aria-label="${isResolved ? "Manually resolved placement" : "Tied placement"}, view details"`;
   return mobile
-    ? `<span class="${className}"><small>Round ${index + 1}</small><b>${placement}</b>${tierMarkup}</span>`
-    : `<td class="${className}">${placement}${tierMarkup}</td>`;
+    ? `<span class="${className} tie-target"><button ${buttonAttrs}><small>Round ${index + 1}</small><b>${placement}${flag}</b>${tierMarkup}</button>${popover}</span>`
+    : `<td class="${className} tie-target"><button ${buttonAttrs}>${placement}${flag}${tierMarkup}</button>${popover}</td>`;
 }
 
 function standingsTierViewControl(liveRoundDay) {
@@ -1006,14 +1179,15 @@ function standingsTierViewControl(liveRoundDay) {
 function renderStandings() {
   const c = state.competition;
   return `${viewHeader("Live scoring", "Tournament standings", "Round placings update automatically whenever a heat result is saved.")}
+    ${pendingTieBreakCallout()}
     ${renderChampionshipLadder()}
     <section class="panel table-panel">${c.liveRoundDay ? standingsTierViewControl(c.liveRoundDay) : ""}<div class="table-scroll"><table class="standings-table"><thead><tr><th>Racer</th>${Array.from({length:c.days}, (_, i) => `<th>Round ${i + 1}</th>`).join("")}</tr></thead><tbody>
-    ${state.standings.map((racer) => `<tr><td><span class="racer-cell">${marble(racer.color, "small")}<strong>${escapeHtml(racer.name)}</strong></span></td>${racer.dayPlacements.map((place, index) => standingRoundCell(racer, place, index, c.liveRoundDay)).join("")}</tr>`).join("")}
+    ${state.standings.map((racer) => `<tr><td><span class="racer-cell">${marble(racer.color, "small")}<strong>${escapeHtml(racer.name)}</strong></span></td>${racer.dayDisplayPlacements.map((place, index) => standingRoundCell(racer, place, index, c.liveRoundDay)).join("")}</tr>`).join("")}
     </tbody></table></div>
     <div class="mobile-standings" aria-label="Mobile standings">
       ${state.standings.map((racer) => `<article class="mobile-standing-card">
         <div class="mobile-standing-lead">${marble(racer.color, "small")}<strong>${escapeHtml(racer.name)}</strong></div>
-        <div class="mobile-standing-stats">${racer.dayPlacements.map((place, index) => standingRoundCell(racer, place, index, c.liveRoundDay, true)).join("")}</div>
+        <div class="mobile-standing-stats">${racer.dayDisplayPlacements.map((place, index) => standingRoundCell(racer, place, index, c.liveRoundDay, true)).join("")}</div>
       </article>`).join("")}
     </div></section>`;
 }
@@ -1130,6 +1304,9 @@ function setupWizardValuesFromForm() {
     allowCascadingWildcardPromotionSelection:checked("allowCascadingWildcardPromotionSelection"),
     wildcardRacersPromotedPerHeat:value("wildcardRacersPromotedPerHeat"),
     preliminaryRacersPromotedPerHeat:value("preliminaryRacersPromotedPerHeat"),
+    finalRacersPromotedPerRound:value("finalRacersPromotedPerRound"),
+    preliminaryRacersPromotedPerRound:value("preliminaryRacersPromotedPerRound"),
+    wildcardRacersPromotedPerRound:value("wildcardRacersPromotedPerRound"),
     maxFinalRacers:value("maxFinalRacers"), scoringStyle:"keep",
   };
 }
@@ -1141,6 +1318,7 @@ function wizardPreset(name) {
     maxWildcardMarblesForRacerWithFinalBye:0, maxWildcardMarblesForRacerWithPrelimPromotion:0,
     allowCascadingFinalByeSelection:true, allowCascadingPrelimPromotionSelection:true,
     allowCascadingWildcardPromotionSelection:true,
+    finalRacersPromotedPerRound:1, preliminaryRacersPromotedPerRound:1, wildcardRacersPromotedPerRound:2,
   };
   const presets = {
     express:{days:2, heatsPerRacerPerDay:1, maxMarblesPerHeat:6, wildcardMaxMarblesPerHeat:6, preliminaryMaxMarblesPerHeat:6, maxFinalByeMarblesPerRacer:1, maxPrelimPromotionMarblesPerRacer:1, maxWildcardPromotionMarblesPerRacer:1, wildcardRacersPromotedPerHeat:1, preliminaryRacersPromotedPerHeat:2, maxFinalRacers:4, scoringStyle:"podium"},
@@ -1165,9 +1343,9 @@ function setupWizardProjection(draft = setupWizardDraft) {
   const appearances = racerCount * draft.heatsPerRacerPerDay;
   const staging = wizardHeatSize(appearances, draft.maxMarblesPerHeat, draft.marblesPerRacer, racerCount);
   const stagingHeats = staging.count * draft.days;
-  const byeMarbles = draft.maxFinalByeMarblesPerRacer ? Math.min(draft.days, racerCount * draft.maxFinalByeMarblesPerRacer) : 0;
-  const directPrelim = draft.maxPrelimPromotionMarblesPerRacer ? Math.min(draft.days, racerCount * draft.maxPrelimPromotionMarblesPerRacer) : 0;
-  const wildcardMarbles = draft.maxWildcardPromotionMarblesPerRacer ? Math.min(draft.days * 2, racerCount * draft.maxWildcardPromotionMarblesPerRacer) : 0;
+  const byeMarbles = draft.maxFinalByeMarblesPerRacer ? Math.min(draft.days * draft.finalRacersPromotedPerRound, racerCount * draft.maxFinalByeMarblesPerRacer) : 0;
+  const directPrelim = draft.maxPrelimPromotionMarblesPerRacer ? Math.min(draft.days * draft.preliminaryRacersPromotedPerRound, racerCount * draft.maxPrelimPromotionMarblesPerRacer) : 0;
+  const wildcardMarbles = draft.maxWildcardPromotionMarblesPerRacer ? Math.min(draft.days * draft.wildcardRacersPromotedPerRound, racerCount * draft.maxWildcardPromotionMarblesPerRacer) : 0;
   const wildcard = wizardHeatSize(wildcardMarbles, draft.wildcardMaxMarblesPerHeat);
   const wildcardAdvancers = wildcard.count ? Math.min(wildcardMarbles, wildcard.count * draft.wildcardRacersPromotedPerHeat) : wildcardMarbles;
   const preliminaryMarbles = directPrelim + wildcardAdvancers;
@@ -1252,7 +1430,10 @@ function renderSetupWizardStep() {
       </div></div><aside class="wizard-impact ${projection.valid ? "" : "invalid"}">${wizardStagingImpact(projection)}</aside></div>`;
   } else if (setupWizardStep === 2) {
     const cascadingMode = wizardCascadingMode();
-    body.innerHTML = `<div class="wizard-layout championship"><div><p class="eyebrow">Championship ladder</p><h3>Control how racers advance</h3><p class="wizard-lead">Round winners receive final byes, runners-up enter the preliminary stage, and the next two places enter the wildcard stage.</p><div class="wizard-controls">
+    body.innerHTML = `<div class="wizard-layout championship"><div><p class="eyebrow">Championship ladder</p><h3>Control how racers advance</h3><p class="wizard-lead">Each round's top finishers advance toward the championship: its best racer(s) receive final byes, the next best enter the preliminary stage, and the rest enter the wildcard stage.</p><div class="wizard-controls">
+      ${wizardNumberControl("Final seats / round", "finalRacersPromotedPerRound", 1, 24, "How many racers each round sends straight to the final.")}
+      ${wizardNumberControl("Preliminary seats / round", "preliminaryRacersPromotedPerRound", 1, 24, "How many racers each round sends straight to the preliminary stage.")}
+      ${wizardNumberControl("Wildcard seats / round", "wildcardRacersPromotedPerRound", 1, 24, "How many racers each round sends into the wildcard stage.")}
       ${wizardNumberControl("Wildcard marble limit / racer", "maxWildcardPromotionMarblesPerRacer", 0, 20, "Set to 0 to skip wildcard qualification; higher values reward repeat results.")}
       ${wizardNumberControl("Promoted / wildcard heat", "wildcardRacersPromotedPerHeat", 1, 24, "Top racers from each wildcard heat who reach the preliminary stage.")}
       ${wizardNumberControl("Max marbles / wildcard heat", "wildcardMaxMarblesPerHeat", 2, 480, "Lower limits can create more wildcard heats.")}
@@ -1288,7 +1469,7 @@ function wizardScoringPoints(style, placeCount) {
 
 function applySetupWizard() {
   const form = document.querySelector("#config-form");
-  const numericSettings = ["days", "heatsPerRacerPerDay", "maxMarblesPerHeat", "marblesPerRacer", "wildcardMaxMarblesPerHeat", "preliminaryMaxMarblesPerHeat", "maxFinalByeMarblesPerRacer", "maxPrelimMarblesForRacerWithFinalBye", "maxWildcardMarblesForRacerWithFinalBye", "maxPrelimPromotionMarblesPerRacer", "maxWildcardMarblesForRacerWithPrelimPromotion", "maxWildcardPromotionMarblesPerRacer", "wildcardRacersPromotedPerHeat", "preliminaryRacersPromotedPerHeat", "maxFinalRacers"];
+  const numericSettings = ["days", "heatsPerRacerPerDay", "maxMarblesPerHeat", "marblesPerRacer", "wildcardMaxMarblesPerHeat", "preliminaryMaxMarblesPerHeat", "maxFinalByeMarblesPerRacer", "maxPrelimMarblesForRacerWithFinalBye", "maxWildcardMarblesForRacerWithFinalBye", "maxPrelimPromotionMarblesPerRacer", "maxWildcardMarblesForRacerWithPrelimPromotion", "maxWildcardPromotionMarblesPerRacer", "wildcardRacersPromotedPerHeat", "preliminaryRacersPromotedPerHeat", "finalRacersPromotedPerRound", "preliminaryRacersPromotedPerRound", "wildcardRacersPromotedPerRound", "maxFinalRacers"];
   const checkboxSettings = ["allowCascadingFinalByeSelection", "allowCascadingPrelimPromotionSelection", "allowCascadingWildcardPromotionSelection"];
   numericSettings.forEach((name) => { form.elements[name].value = setupWizardDraft[name]; });
   checkboxSettings.forEach((name) => { form.elements[name].checked = setupWizardDraft[name]; });
@@ -1307,50 +1488,54 @@ function renderSetup() {
       <section class="panel config-panel"><div class="section-title"><span>01</span><div><h2>Tournament format</h2><p>Name the event and define its schedule.</p></div></div>
         <div class="setup-assistant"><div><span aria-hidden="true">✦</span><div><strong>New to tournament setup?</strong><small>Build a format step by step and preview how each choice affects the rounds and championship stages.</small></div></div><button type="button" class="primary-button" data-setup-wizard>Setup Wizard <span aria-hidden="true">→</span></button></div>
         <label class="field wide"><span>Tournament name</span><input name="name" value="${escapeHtml(c.name)}" maxlength="80" required></label>
-        <details class="config-group">
+        <details class="config-group" id="staging-rounds-group">
           <summary class="eyebrow">Staging rounds</summary>
           <div class="field-grid">
-            <label class="field"><span class="field-label-text">Race rounds${fieldHelp("How many staging rounds run before the championship stage. Each round is its own self-contained pool: the bye/preliminary/wildcard tiers award one seat (or up to two, for wildcard) per round, so more rounds means more separate chances for every racer to qualify, and more marbles the top performers can stack up across rounds via the cross-round bonus caps.")}</span><input name="days" type="number" min="1" max="30" value="${c.days}" required></label>
-            <label class="field"><span class="field-label-text">Heats per racer / round${fieldHelp("How many times each racer races within a single round. Together with racer count, &ldquo;Max marbles per heat&rdquo;, and &ldquo;Marbles per racer / heat&rdquo;, this decides how many heats a round splits into (see the preview below) and therefore how many total results feed that round's standings before byes/preliminary/wildcard seats are awarded.")}</span><input name="heatsPerRacerPerDay" type="number" min="1" max="20" value="${c.heatsPerRacerPerDay}" required></label>
-            <label class="field"><span class="field-label-text">Max marbles per heat${fieldHelp("Sizes staging heats automatically: the app packs marbles into the largest complete heat that fits under this ceiling, then repeats heats until every racer has raced &ldquo;Heats per racer / round&rdquo; times. A lower limit means more, smaller heats per round. This is independent of the separate size limits for wildcard and preliminary heats further down.")}</span><input name="maxMarblesPerHeat" type="number" min="2" max="480" value="${c.maxMarblesPerHeat}" required></label>
+            <label class="field"><span class="field-label-text">Race rounds${fieldHelp(`How many staging rounds run before the championship stage. Each round is its own self-contained pool: the bye/preliminary/wildcard tiers award ${fieldLink("finalRacersPromotedPerRound", "final")}, ${fieldLink("preliminaryRacersPromotedPerRound", "preliminary")}, and ${fieldLink("wildcardRacersPromotedPerRound", "wildcard")} seats per round (see below), so more rounds means more separate chances for every racer to qualify, and more marbles the top performers can stack up across rounds via the cross-round bonus caps.`)}</span><input name="days" type="number" min="1" max="30" value="${c.days}" required></label>
+            <label class="field"><span class="field-label-text">Heats per racer / round${fieldHelp(`How many times each racer races within a single round. Together with racer count, ${fieldLink("maxMarblesPerHeat", "max marbles per heat")}, and ${fieldLink("marblesPerRacer", "marbles per racer / heat")}, this decides how many heats a round splits into (see the preview below) and therefore how many total results feed that round's standings before byes/preliminary/wildcard seats are awarded.`)}</span><input name="heatsPerRacerPerDay" type="number" min="1" max="20" value="${c.heatsPerRacerPerDay}" required></label>
+            <label class="field"><span class="field-label-text">Max marbles per heat${fieldHelp(`Sizes staging heats automatically: the app packs marbles into the largest complete heat that fits under this ceiling, then repeats heats until every racer has raced ${fieldLink("heatsPerRacerPerDay", "heats per racer / round")} times. A lower limit means more, smaller heats per round. This is independent of the separate size limits for wildcard and preliminary heats further down.`)}</span><input name="maxMarblesPerHeat" type="number" min="2" max="480" value="${c.maxMarblesPerHeat}" required></label>
             <label class="field"><span class="field-label-text">Marbles per racer / heat${fieldHelp("How many marbles each racer runs per staging heat. Applies to staging (round) heats only &mdash; the final always uses exactly one marble per racer regardless of this setting, and wildcard/preliminary heats instead use however many marble slots that racer earned through promotion.")}</span><input name="marblesPerRacer" type="number" min="1" max="20" value="${c.marblesPerRacer}" required></label>
           </div>
           <div class="schedule-preview" id="schedule-preview"><strong>${c.heatsPerDay} heats per round · ${c.racersPerHeat} racers per heat</strong><span>Every racer appears ${c.heatsPerRacerPerDay} times each round; each heat uses ${c.marblesPerHeat} of the ${c.maxMarblesPerHeat} allowed marbles.</span></div>
           <label class="field wide"><span class="field-label-text">Points by finishing place${fieldHelp("Comma-separated points awarded for 1st, 2nd, 3rd, etc. within a heat; any place beyond the list scores zero, and DNFs always score zero. These points sum across a round's heats into that round's standings, which decide who wins the round's bye/preliminary/wildcard seats &mdash; so changing the point spread can change who qualifies for the championship without changing a single finishing order.")}</span><input name="points" value="${state.points.join(", ")}" required></label>
         </details>
+        <div class="config-callout" id="tiebreak-callout" hidden><span aria-hidden="true">&#9432;</span><div><strong>How ties are broken</strong><small>A round's standings are ranked by points, then by how many times each racer placed 1st, then 2nd, then 3rd, and so on through every placement reached that round (a DNF counts as worse than any real placement) &mdash; so most ties resolve on their own from the actual results. If racers still match exactly on every level <em>and</em> the order between them would change who gets a bye, preliminary, or wildcard seat, that round pauses: racing can't continue until an organizer manually picks the order from a prompt on the Dashboard, Standings, or Rounds view. Ties that don't affect a seat (e.g. two racers tied for last) are simply shown tied &mdash; both display a blue &ldquo;i&rdquo; marker rather than the amber !, since there's nothing to act on. Once an organizer resolves a tie, that placement keeps the same blue &ldquo;i&rdquo; marker so it stays clear the order was a manual call, not a result decided by the racing itself.</small></div></div>
         <details class="config-group" id="championship-round-group">
           <summary class="eyebrow">Championship round</summary>
           <div class="field-grid">
-            <label class="field"><span class="field-label-text">Wildcard racers promoted / heat${fieldHelp("Top finishers from each <strong>wildcard heat</strong> who advance to the preliminary stage. This is separate from how a racer originally lands in a wildcard heat &mdash; that's decided by the &ldquo;Promotion to wildcard&rdquo; settings below, once per staging round.")}</span><input name="wildcardRacersPromotedPerHeat" type="number" min="1" max="24" value="${c.wildcardRacersPromotedPerHeat}" required></label>
+            <label class="field"><span class="field-label-text">Wildcard racers promoted / heat${fieldHelp(`Top finishers from each <strong>wildcard heat</strong> who advance to the preliminary stage. This is separate from how a racer originally lands in a wildcard heat &mdash; that's decided by ${fieldLink("wildcardRacersPromotedPerRound", "wildcard racers promoted / round")} below.`)}</span><input name="wildcardRacersPromotedPerHeat" type="number" min="1" max="24" value="${c.wildcardRacersPromotedPerHeat}" required></label>
             <label class="field"><span class="field-label-text">Preliminary racers promoted / heat${fieldHelp("Top finishers from each <strong>preliminary heat</strong> who advance to the final. Separate from how a racer originally reaches the preliminary stage &mdash; either a direct promotion from a staging round, or by placing well in a wildcard heat.")}</span><input name="preliminaryRacersPromotedPerHeat" type="number" min="1" max="24" value="${c.preliminaryRacersPromotedPerHeat}" required></label>
             <label class="field"><span class="field-label-text">Max Racers in Final${fieldHelp("Ceiling on the final's roster size. If final byes plus preliminary-heat qualifiers add up to more racers than this, the lowest-priority qualifiers are trimmed to fit.")}</span><input name="maxFinalRacers" type="number" min="2" max="24" value="${c.maxFinalRacers}" required></label>
           </div>
         </details>
-        <div class="config-callout" id="tier-callout" hidden><span aria-hidden="true">&#9432;</span><div><strong>One tier per round</strong><small>A racer can hold at most one of bye, preliminary, or wildcard from any single staging round &mdash; 1st place is always reserved for the bye seat, and whoever actually wins bye/preliminary that round is excluded from the round's lower tiers even if a cascade moved that seat further down the standings. The three &ldquo;bonus&rdquo; marble caps below only grant <em>extra</em> marbles in a lower tier earned in a <em>different</em> round; they can never award a racer a second seat from the same round.</small></div></div>
+        <div class="config-callout" id="tier-callout" hidden><span aria-hidden="true">&#9432;</span><div><strong>One tier per round</strong><small>A racer can hold at most one of bye, preliminary, or wildcard from any single staging round &mdash; ${fieldLink("finalRacersPromotedPerRound", `the top ${liveValue("finalRacersPromotedPerRound", c.finalRacersPromotedPerRound)} rank(s)`)}, reserved for the bye tier, are always excluded from the round's lower tiers, and whoever actually wins bye/preliminary that round is excluded too, even if a cascade moved that seat further down the standings. The three &ldquo;bonus&rdquo; marble caps below only grant <em>extra</em> marbles in a lower tier earned in a <em>different</em> round; they can never award a racer a second seat from the same round.</small></div></div>
         <details class="config-group">
           <summary class="eyebrow">Bye to final</summary>
           <div class="field-grid">
-            <label class="field"><span class="field-label-text">Max final bye marbles per racer${fieldHelp("How many round wins (1st-place finishes) one racer may bank as bye marbles into the final, across the <strong>whole tournament</strong> &mdash; not per round. A racer who wins rounds 1 and 3 banks 2 bye marbles if this is 2 or higher; if capped at 1, their second win either cascades to that round's runner-up or is forfeited, depending on the cascading toggle below.")}</span><input name="maxFinalByeMarblesPerRacer" type="number" min="0" max="20" value="${c.maxFinalByeMarblesPerRacer}" required></label>
-            <label class="field"><span class="field-label-text">Max prelim marbles for racer with final bye${fieldHelp("Extra preliminary marbles a racer may collect from <strong>other</strong> rounds once they already hold any bye marble, on top of (and instead of) the normal &ldquo;max prelim promotion marbles per racer&rdquo; cap, which doesn't apply to bye-tier racers. Never grants a preliminary seat from the same round as the bye &mdash; that round's 1st place is reserved for the bye tier only. Default 0 means bye-tier racers never also collect preliminary marbles.")}</span><input name="maxPrelimMarblesForRacerWithFinalBye" type="number" min="0" max="20" value="${c.maxPrelimMarblesForRacerWithFinalBye}" required></label>
-            <label class="field"><span class="field-label-text">Max wildcard marbles for racer with final bye${fieldHelp("Same idea as the preliminary bonus above, but for the wildcard tier: extra wildcard marbles a bye-tier racer may collect from other rounds, never the same round as their bye. Default 0 disables it.")}</span><input name="maxWildcardMarblesForRacerWithFinalBye" type="number" min="0" max="20" value="${c.maxWildcardMarblesForRacerWithFinalBye}" required></label>
-            <label class="field checkbox-field"><input name="allowCascadingFinalByeSelection" type="checkbox" ${c.allowCascadingFinalByeSelection ? "checked" : ""}><span class="field-label-text">Allow cascading final bye selection${fieldHelp("When a round's 1st-place finisher has already banked the max bye marbles above, this decides what happens to that round's bye seat. <strong>On:</strong> the seat cascades down the standings to the first racer still under their own cap. <strong>Off:</strong> the seat is simply forfeited for that round. Either way 1st place never receives a preliminary or wildcard seat instead &mdash; that position is reserved for the bye tier only.")}</span></label>
+            <label class="field"><span class="field-label-text">Final racers promoted / round${fieldHelp("How many bye seats each staging round awards, taken from the top of that round's standings (1st place, then 2nd, and so on). Raise it to send more than one racer straight to the final from every round.")}</span><input name="finalRacersPromotedPerRound" type="number" min="1" max="24" value="${c.finalRacersPromotedPerRound}" required></label>
+            <label class="field"><span class="field-label-text">Max final bye marbles per racer${fieldHelp(`How many bye-tier finishes (${fieldLink("finalRacersPromotedPerRound", `the round's top ${liveValue("finalRacersPromotedPerRound", c.finalRacersPromotedPerRound)} rank(s)`)}) one racer may bank as bye marbles into the final, across the <strong>whole tournament</strong> &mdash; not per round. A racer who earns bye seats in rounds 1 and 3 banks 2 bye marbles if this is 2 or higher; if capped at 1, their second one either cascades to that round's next-eligible racer or is forfeited, depending on the cascading toggle below.`)}</span><input name="maxFinalByeMarblesPerRacer" type="number" min="0" max="20" value="${c.maxFinalByeMarblesPerRacer}" required></label>
+            <label class="field"><span class="field-label-text">Max prelim marbles for racer with final bye${fieldHelp(`Extra preliminary marbles a racer may collect from <strong>other</strong> rounds once they already hold any bye marble, on top of (and instead of) the normal ${fieldLink("maxPrelimPromotionMarblesPerRacer", "max prelim promotion marbles per racer")} cap, which doesn't apply to bye-tier racers. Never grants a preliminary seat from the same round as the bye &mdash; ${fieldLink("finalRacersPromotedPerRound", `the round's top ${liveValue("finalRacersPromotedPerRound", c.finalRacersPromotedPerRound)} rank(s)`)} are reserved for the bye tier only. Default 0 means bye-tier racers never also collect preliminary marbles.`)}</span><input name="maxPrelimMarblesForRacerWithFinalBye" type="number" min="0" max="20" value="${c.maxPrelimMarblesForRacerWithFinalBye}" required></label>
+            <label class="field"><span class="field-label-text">Max wildcard marbles for racer with final bye${fieldHelp(`Same idea as ${fieldLink("maxPrelimMarblesForRacerWithFinalBye", "the preliminary bonus above")}, but for the wildcard tier: extra wildcard marbles a bye-tier racer may collect from other rounds, never the same round as their bye. Default 0 disables it.`)}</span><input name="maxWildcardMarblesForRacerWithFinalBye" type="number" min="0" max="20" value="${c.maxWildcardMarblesForRacerWithFinalBye}" required></label>
+            <label class="field checkbox-field"><input name="allowCascadingFinalByeSelection" type="checkbox" ${c.allowCascadingFinalByeSelection ? "checked" : ""}><span class="field-label-text">Allow cascading final bye selection${fieldHelp(`When one of a round's bye-tier finishers (${fieldLink("finalRacersPromotedPerRound", `the top ${liveValue("finalRacersPromotedPerRound", c.finalRacersPromotedPerRound)} rank(s)`)}) has already banked ${fieldLink("maxFinalByeMarblesPerRacer", "the max bye marbles above")}, this decides what happens to that seat. <strong>On:</strong> the seat cascades down the standings to the first racer still under their own cap. <strong>Off:</strong> the seat is simply forfeited for that round. Either way those rank(s) never receive a preliminary or wildcard seat instead &mdash; they're reserved for the bye tier only.`)}</span></label>
           </div>
         </details>
         <details class="config-group">
           <summary class="eyebrow">Promotion to preliminary</summary>
           <div class="field-grid">
-            <label class="field"><span class="field-label-text">Max prelim promotion marbles per racer${fieldHelp("Caps how many preliminary marbles a racer with <strong>no</strong> bye marbles may hold across the tournament, earned by finishing 2nd (or the cascade target) in staging rounds. Bye-tier racers use the separate &ldquo;max prelim marbles for racer with final bye&rdquo; cap instead of this one.")}</span><input name="maxPrelimPromotionMarblesPerRacer" type="number" min="0" max="20" value="${c.maxPrelimPromotionMarblesPerRacer}" required></label>
-            <label class="field"><span class="field-label-text">Max wildcard marbles for racer with prelim promotion${fieldHelp("Extra wildcard marbles a racer may collect from <strong>other</strong> rounds once they already hold any preliminary marble, on top of the normal wildcard cap, which doesn't apply to prelim-tier racers. Never grants a wildcard seat from the same round as the preliminary promotion. Default 0 disables it.")}</span><input name="maxWildcardMarblesForRacerWithPrelimPromotion" type="number" min="0" max="20" value="${c.maxWildcardMarblesForRacerWithPrelimPromotion}" required></label>
+            <label class="field"><span class="field-label-text">Preliminary racers promoted / round${fieldHelp(`How many direct-to-preliminary seats each staging round awards, taken from the ranks just below however many ${fieldLink("finalRacersPromotedPerRound", "bye seats are reserved above")}.`)}</span><input name="preliminaryRacersPromotedPerRound" type="number" min="1" max="24" value="${c.preliminaryRacersPromotedPerRound}" required></label>
+            <label class="field"><span class="field-label-text">Max prelim promotion marbles per racer${fieldHelp(`Caps how many preliminary marbles a racer <strong>who hasn't earned any bye marbles</strong> may hold across the tournament, earned by finishing 2nd (or the cascade target) in staging rounds. The moment a racer earns any bye marble, this cap no longer applies to them at all: bye-tier racers use the separate ${fieldLink("maxPrelimMarblesForRacerWithFinalBye", "max prelim marbles for racer with final bye")} cap instead (${liveValue("maxPrelimMarblesForRacerWithFinalBye", c.maxPrelimMarblesForRacerWithFinalBye)}).`)}</span><input name="maxPrelimPromotionMarblesPerRacer" type="number" min="0" max="20" value="${c.maxPrelimPromotionMarblesPerRacer}" required></label>
+            <label class="field"><span class="field-label-text">Max wildcard marbles for racer with prelim promotion${fieldHelp(`Extra wildcard marbles a racer may collect from <strong>other</strong> rounds once they already hold any preliminary marble, on top of ${fieldLink("maxWildcardPromotionMarblesPerRacer", "the normal wildcard cap")}, which doesn't apply to prelim-tier racers. Never grants a wildcard seat from the same round as the preliminary promotion. Default 0 disables it.`)}</span><input name="maxWildcardMarblesForRacerWithPrelimPromotion" type="number" min="0" max="20" value="${c.maxWildcardMarblesForRacerWithPrelimPromotion}" required></label>
             <label class="field"><span class="field-label-text">Max marbles per preliminary heat${fieldHelp("Sizes preliminary heats automatically &mdash; the app packs qualifying marbles into as few full heats as possible under this ceiling. Doesn't affect who qualifies.")}</span><input name="preliminaryMaxMarblesPerHeat" type="number" min="2" max="480" value="${c.preliminaryMaxMarblesPerHeat}" required></label>
-            <label class="field checkbox-field"><input name="allowCascadingPrelimPromotionSelection" type="checkbox" ${c.allowCascadingPrelimPromotionSelection ? "checked" : ""}><span class="field-label-text">Allow cascading prelim promotion selection${fieldHelp("When a round's 2nd place is already at their preliminary cap (or is that round's bye winner), this decides whether the seat cascades further down the standings to the next eligible racer (on) or is forfeited for that round (off).")}</span></label>
+            <label class="field checkbox-field"><input name="allowCascadingPrelimPromotionSelection" type="checkbox" ${c.allowCascadingPrelimPromotionSelection ? "checked" : ""}><span class="field-label-text">Allow cascading prelim promotion selection${fieldHelp("When one of a round's direct-preliminary finishers is already at their preliminary cap (or is that round's bye winner), this decides whether the seat cascades further down the standings to the next eligible racer (on) or is forfeited for that round (off).")}</span></label>
           </div>
         </details>
         <details class="config-group">
           <summary class="eyebrow">Promotion to wildcard</summary>
           <div class="field-grid">
-            <label class="field"><span class="field-label-text">Max wildcard promotion marbles per racer${fieldHelp("Caps how many wildcard marbles a racer with <strong>no</strong> bye or preliminary marbles may hold across the tournament, earned from the two wildcard seats available in each staging round. Bye-tier and prelim-tier racers use their own bonus caps above instead of this one.")}</span><input name="maxWildcardPromotionMarblesPerRacer" type="number" min="0" max="20" value="${c.maxWildcardPromotionMarblesPerRacer}" required></label>
+            <label class="field"><span class="field-label-text">Wildcard racers promoted / round${fieldHelp(`How many wildcard seats each staging round awards, taken from the ranks just below however many ${fieldLink("finalRacersPromotedPerRound", "bye")} and ${fieldLink("preliminaryRacersPromotedPerRound", "preliminary")} seats are reserved above.`)}</span><input name="wildcardRacersPromotedPerRound" type="number" min="1" max="24" value="${c.wildcardRacersPromotedPerRound}" required></label>
+            <label class="field"><span class="field-label-text">Max wildcard promotion marbles per racer${fieldHelp(`Caps wildcard marbles for a racer who hasn't earned a bye or preliminary seat this tournament. Bye-tier racers use ${fieldLink("maxWildcardMarblesForRacerWithFinalBye", "max wildcard marbles for racer with final bye")} instead (currently ${liveValue("maxWildcardMarblesForRacerWithFinalBye", c.maxWildcardMarblesForRacerWithFinalBye)}), and prelim-tier racers use ${fieldLink("maxWildcardMarblesForRacerWithPrelimPromotion", "max wildcard marbles for racer with prelim promotion")} instead (currently ${liveValue("maxWildcardMarblesForRacerWithPrelimPromotion", c.maxWildcardMarblesForRacerWithPrelimPromotion)}).`)}</span><input name="maxWildcardPromotionMarblesPerRacer" type="number" min="0" max="20" value="${c.maxWildcardPromotionMarblesPerRacer}" required></label>
             <label class="field"><span class="field-label-text">Max marbles per wildcard heat${fieldHelp("Sizes wildcard heats automatically, the same way the preliminary heat-size limit does. Doesn't affect who qualifies.")}</span><input name="wildcardMaxMarblesPerHeat" type="number" min="2" max="480" value="${c.wildcardMaxMarblesPerHeat}" required></label>
-            <label class="field checkbox-field"><input name="allowCascadingWildcardPromotionSelection" type="checkbox" ${c.allowCascadingWildcardPromotionSelection ? "checked" : ""}><span class="field-label-text">Allow cascading wildcard promotion selection${fieldHelp("When one of a round's two wildcard seats lands on a racer who's already at their wildcard cap (or who already holds a bye/preliminary seat from that same round), this decides whether the seat cascades to the next eligible finisher (on) or is forfeited for that round (off).")}</span></label>
+            <label class="field checkbox-field"><input name="allowCascadingWildcardPromotionSelection" type="checkbox" ${c.allowCascadingWildcardPromotionSelection ? "checked" : ""}><span class="field-label-text">Allow cascading wildcard promotion selection${fieldHelp(`When one of a round's ${fieldLink("wildcardRacersPromotedPerRound", `${liveValue("wildcardRacersPromotedPerRound", c.wildcardRacersPromotedPerRound)} wildcard seats`)} lands on a racer who's already at their wildcard cap (or who already holds a bye/preliminary seat from that same round), this decides whether the seat cascades to the next eligible finisher (on) or is forfeited for that round (off).`)}</span></label>
           </div>
         </details>
       </section>
@@ -1392,7 +1577,7 @@ function configPayload(confirmReset = false) {
   const form = document.querySelector("#config-form");
   const formData = new FormData(form);
   const contestants = [...form.querySelectorAll(".contestant-config-row")].map((row) => ({color:row.querySelector('input[type="color"]').value, name:row.querySelector('input[type="text"]').value}));
-  return {name:formData.get("name"), days:formData.get("days"), heatsPerRacerPerDay:formData.get("heatsPerRacerPerDay"), maxMarblesPerHeat:formData.get("maxMarblesPerHeat"), marblesPerRacer:formData.get("marblesPerRacer"), wildcardMaxMarblesPerHeat:formData.get("wildcardMaxMarblesPerHeat"), preliminaryMaxMarblesPerHeat:formData.get("preliminaryMaxMarblesPerHeat"), maxFinalByeMarblesPerRacer:formData.get("maxFinalByeMarblesPerRacer"), maxPrelimMarblesForRacerWithFinalBye:formData.get("maxPrelimMarblesForRacerWithFinalBye"), maxWildcardMarblesForRacerWithFinalBye:formData.get("maxWildcardMarblesForRacerWithFinalBye"), allowCascadingFinalByeSelection:formData.get("allowCascadingFinalByeSelection") === "on", maxPrelimPromotionMarblesPerRacer:formData.get("maxPrelimPromotionMarblesPerRacer"), allowCascadingPrelimPromotionSelection:formData.get("allowCascadingPrelimPromotionSelection") === "on", maxWildcardMarblesForRacerWithPrelimPromotion:formData.get("maxWildcardMarblesForRacerWithPrelimPromotion"), maxWildcardPromotionMarblesPerRacer:formData.get("maxWildcardPromotionMarblesPerRacer"), allowCascadingWildcardPromotionSelection:formData.get("allowCascadingWildcardPromotionSelection") === "on", wildcardRacersPromotedPerHeat:formData.get("wildcardRacersPromotedPerHeat"), preliminaryRacersPromotedPerHeat:formData.get("preliminaryRacersPromotedPerHeat"), maxFinalRacers:formData.get("maxFinalRacers"), points:String(formData.get("points")).split(",").map((value) => value.trim()), contestants, confirmReset};
+  return {name:formData.get("name"), days:formData.get("days"), heatsPerRacerPerDay:formData.get("heatsPerRacerPerDay"), maxMarblesPerHeat:formData.get("maxMarblesPerHeat"), marblesPerRacer:formData.get("marblesPerRacer"), wildcardMaxMarblesPerHeat:formData.get("wildcardMaxMarblesPerHeat"), preliminaryMaxMarblesPerHeat:formData.get("preliminaryMaxMarblesPerHeat"), maxFinalByeMarblesPerRacer:formData.get("maxFinalByeMarblesPerRacer"), maxPrelimMarblesForRacerWithFinalBye:formData.get("maxPrelimMarblesForRacerWithFinalBye"), maxWildcardMarblesForRacerWithFinalBye:formData.get("maxWildcardMarblesForRacerWithFinalBye"), allowCascadingFinalByeSelection:formData.get("allowCascadingFinalByeSelection") === "on", maxPrelimPromotionMarblesPerRacer:formData.get("maxPrelimPromotionMarblesPerRacer"), allowCascadingPrelimPromotionSelection:formData.get("allowCascadingPrelimPromotionSelection") === "on", maxWildcardMarblesForRacerWithPrelimPromotion:formData.get("maxWildcardMarblesForRacerWithPrelimPromotion"), maxWildcardPromotionMarblesPerRacer:formData.get("maxWildcardPromotionMarblesPerRacer"), allowCascadingWildcardPromotionSelection:formData.get("allowCascadingWildcardPromotionSelection") === "on", wildcardRacersPromotedPerHeat:formData.get("wildcardRacersPromotedPerHeat"), preliminaryRacersPromotedPerHeat:formData.get("preliminaryRacersPromotedPerHeat"), finalRacersPromotedPerRound:formData.get("finalRacersPromotedPerRound"), preliminaryRacersPromotedPerRound:formData.get("preliminaryRacersPromotedPerRound"), wildcardRacersPromotedPerRound:formData.get("wildcardRacersPromotedPerRound"), maxFinalRacers:formData.get("maxFinalRacers"), points:String(formData.get("points")).split(",").map((value) => value.trim()), contestants, confirmReset};
 }
 
 function updateSchedulePreview() {
@@ -1431,10 +1616,15 @@ async function saveConfiguration(event) {
     applyState(await api(`/api/tournaments/${activeTournamentId}`, {method:"PUT", body:JSON.stringify(configPayload(false))}));
     notify("Tournament settings saved.");
   } catch (error) {
-    if (error.requiresReset && window.confirm(`${error.message}\n\nContinue and rebuild the schedule?`)) {
-      try { applyState(await api(`/api/tournaments/${activeTournamentId}`, {method:"PUT", body:JSON.stringify(configPayload(true))})); notify("This tournament's schedule was rebuilt."); }
-      catch (secondError) { notify(secondError.message, true); }
-    } else if (!error.requiresReset) notify(error.message, true);
+    if (error.requiresReset) {
+      if (window.confirm(`${error.message}\n\nContinue and rebuild the schedule?`)) {
+        try { applyState(await api(`/api/tournaments/${activeTournamentId}`, {method:"PUT", body:JSON.stringify(configPayload(true))})); notify("This tournament's schedule was rebuilt."); }
+        catch (secondError) { notify(secondError.message, true); }
+      } else {
+        render();
+        notify("Change not saved -- the tournament's existing results were kept.", true);
+      }
+    } else notify(error.message, true);
   } finally { submit.disabled = false; }
 }
 
@@ -1478,11 +1668,25 @@ async function deleteCurrentTournament() {
 }
 
 const closeFieldHelpPopovers = () => {
-  document.querySelectorAll(".field-help-popover:not([hidden])").forEach((popover) => { popover.hidden = true; });
-  document.querySelectorAll('[data-help-toggle][aria-expanded="true"]').forEach((button) => button.setAttribute("aria-expanded", "false"));
+  document.querySelectorAll(".field-help-popover:not([hidden]), .tie-popover:not([hidden])").forEach((popover) => { popover.hidden = true; });
+  document.querySelectorAll('[data-help-toggle][aria-expanded="true"], [data-tie-toggle][aria-expanded="true"]').forEach((button) => button.setAttribute("aria-expanded", "false"));
 };
 
 document.addEventListener("click", (event) => {
+  const gotoFieldButton = event.target.closest("[data-goto-field]");
+  if (gotoFieldButton) {
+    const input = document.querySelector(`#config-form [name="${gotoFieldButton.dataset.gotoField}"]`);
+    closeFieldHelpPopovers();
+    if (input) {
+      const details = input.closest("details.config-group");
+      if (details && !details.open) details.open = true;
+      input.scrollIntoView({behavior:"smooth", block:"center"});
+      input.focus({preventScroll:true});
+      input.classList.add("field-jump-highlight");
+      setTimeout(() => input.classList.remove("field-jump-highlight"), 1200);
+    }
+    return;
+  }
   const helpToggle = event.target.closest("[data-help-toggle]");
   if (helpToggle) {
     const popover = document.getElementById(helpToggle.dataset.helpToggle);
@@ -1491,7 +1695,23 @@ document.addEventListener("click", (event) => {
     if (popover && !isOpen) { popover.hidden = false; helpToggle.setAttribute("aria-expanded", "true"); }
     return;
   }
-  if (!event.target.closest(".field-help-popover")) closeFieldHelpPopovers();
+  const tieToggle = event.target.closest("[data-tie-toggle]");
+  if (tieToggle) {
+    const popover = document.getElementById(tieToggle.dataset.tieToggle);
+    const isOpen = popover && !popover.hidden;
+    closeFieldHelpPopovers();
+    if (popover && !isOpen) {
+      popover.hidden = false;
+      tieToggle.setAttribute("aria-expanded", "true");
+      const anchor = tieToggle.getBoundingClientRect();
+      const width = popover.offsetWidth;
+      const left = Math.min(Math.max(12, anchor.left), window.innerWidth - width - 12);
+      popover.style.left = `${left}px`;
+      popover.style.top = `${Math.min(anchor.bottom + 8, window.innerHeight - popover.offsetHeight - 12)}px`;
+    }
+    return;
+  }
+  if (!event.target.closest(".field-help-popover") && !event.target.closest(".tie-popover")) closeFieldHelpPopovers();
   if (event.target.closest("[data-setup-wizard]")) { openSetupWizard(); return; }
   if (event.target.closest("[data-close-setup-wizard]")) { document.querySelector("#setup-wizard")?.close(); return; }
   const wizardPresetButton = event.target.closest("[data-wizard-preset]");
@@ -1514,6 +1734,12 @@ document.addEventListener("click", (event) => {
   if (event.target.closest("[data-new-tournament]")) { tournamentDialog.showModal(); requestAnimationFrame(() => tournamentDialog.querySelector('input[name="name"]').focus()); return; }
   if (event.target.closest("[data-close-tournament-dialog]")) { tournamentDialog.close(); return; }
   if (event.target.closest("[data-delete-tournament]")) { deleteCurrentTournament(); return; }
+  if (event.target.closest("[data-open-tie-break]")) { syncTieBreakDialog(); tieBreakDialog.showModal(); return; }
+  if (event.target.closest("[data-close-tie-break]")) { tieBreakDialog.close(); return; }
+  const tiePickButton = event.target.closest("[data-tie-pick]");
+  if (tiePickButton) { tieBreakOrder = [...tieBreakOrder, Number(tiePickButton.dataset.tiePick)]; tieBreakImpactWarning = null; syncTieBreakDialog(); return; }
+  if (event.target.closest("[data-tie-break-reset]")) { tieBreakOrder = []; tieBreakImpactWarning = null; syncTieBreakDialog(); return; }
+  if (event.target.closest("[data-tie-break-confirm]")) { confirmTieBreak(); return; }
   const dayButton = event.target.closest("[data-day]");
   if (dayButton) { activeDay = dayButton.dataset.day === "championship" ? "championship" : Number(dayButton.dataset.day); render(); return; }
   const scoreButton = event.target.closest("[data-score-heat]");
@@ -1552,6 +1778,11 @@ document.addEventListener("input", (event) => {
   }
   if (event.target.closest("#config-form") && ["days", "heatsPerRacerPerDay", "maxMarblesPerHeat", "marblesPerRacer"].includes(event.target.name)) updateSchedulePreview();
   if (event.target.matches('.contestant-color-marble input[type="color"]')) event.target.previousElementSibling?.style.setProperty("--marble-color", event.target.value);
+  if (event.target.closest("#config-form") && event.target.name) {
+    document.querySelectorAll(`[data-live-value-for="${event.target.name}"]`).forEach((span) => {
+      span.textContent = event.target.value === "" ? "0" : event.target.value;
+    });
+  }
 });
 
 document.addEventListener("change", (event) => {
@@ -1584,8 +1815,9 @@ document.addEventListener("keydown", (event) => {
 
 // "toggle" doesn't bubble, so this has to listen during the capture phase.
 document.addEventListener("toggle", (event) => {
-  if (event.target.id !== "championship-round-group") return;
-  const callout = document.querySelector("#tier-callout");
+  const calloutId = {"championship-round-group": "tier-callout", "staging-rounds-group": "tiebreak-callout"}[event.target.id];
+  if (!calloutId) return;
+  const callout = document.querySelector(`#${calloutId}`);
   if (callout) callout.hidden = !event.target.open;
 }, true);
 

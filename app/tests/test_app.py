@@ -655,6 +655,20 @@ class MarbleRaceApiTest(unittest.TestCase):
                 [heat["entries"][0]["contestantId"], heat["entries"][1]["contestantId"]],
             )
 
+        # Every heat that day used the same "1st entry wins" pattern, so the
+        # top racer of heat 0 and the top racer of heat 1 end up with
+        # identical points/wins/finish-sum for the day -- a genuine tie for
+        # the bye seat that needs resolving before the wildcard stage opens.
+        pending = state["pendingTieBreak"]
+        self.assertIsNotNone(pending)
+        resolved = self.client.put(
+            f"/api/tournaments/{tournament_id}/staging/1/tiebreak",
+            json={"order": [racer["id"] for racer in pending["racers"]]},
+        )
+        self.assertEqual(resolved.status_code, 200)
+        state = resolved.get_json()
+        self.assertIsNone(state["pendingTieBreak"])
+
         self.assertTrue(state["championship"]["wildcard"]["ready"])
         self.assertEqual(
             [racer["dayPlacements"][0] for racer in state["standings"]],
@@ -2526,6 +2540,270 @@ class MarbleRaceApiTest(unittest.TestCase):
         )
         self.assertEqual(blocked.status_code, 409)
         self.assertIn("later heat has already started", blocked.get_json()["error"])
+
+    def _configure_tiebreak_cup(self, name: str) -> tuple[dict, list[int]]:
+        """Two-day tournament where every heat that day contains the whole
+        8-racer field (heatsPerRacerPerDay=3, racersPerHeat=8), so a test can
+        give two or more racers an identical *placement vector* -- the same
+        count of 1st-place finishes, same count of 2nd-place finishes, and
+        so on -- by rotating them through the same set of literal placements
+        across the day's three heats. No two racers can share a literal
+        placement within any single heat, so that rotation is the only way
+        to construct a genuine tie under the placement-vector tiebreak."""
+        created = self.client.post("/api/tournaments", json={"name": name}).get_json()
+        tournament_id = created["competition"]["id"]
+        self.addCleanup(lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close())
+        contestant_ids = [racer["id"] for racer in created["contestants"]]
+        configured = self.client.put(
+            f"/api/tournaments/{tournament_id}",
+            json={
+                "name": name,
+                "days": 2,
+                "heatsPerRacerPerDay": 3,
+                "maxMarblesPerHeat": 8,
+                "marblesPerRacer": 1,
+                "wildcardMaxMarblesPerHeat": 6,
+                "preliminaryMaxMarblesPerHeat": 6,
+                "maxFinalByeMarblesPerRacer": 1,
+                "maxPrelimPromotionMarblesPerRacer": 1,
+                "maxFinalRacers": 6,
+                "points": list(range(8, 0, -1)),
+                "contestants": [
+                    {"name": racer["name"], "color": racer["color"]}
+                    for racer in created["contestants"]
+                ],
+            },
+        ).get_json()
+        self.assertEqual(configured["competition"]["racersPerHeat"], 8)
+        return configured, contestant_ids
+
+    def _score_day_one(self, state: dict, contestant_ids: list[int], heat_finishes: list[dict[int, int]]) -> dict:
+        """Scores every heat in day 1, each with its own explicit
+        contestantId -> finish map."""
+        for heat, finishes in zip(state["days"][0]["heats"], heat_finishes):
+            results = [
+                {
+                    "contestantId": entry["contestantId"],
+                    "marbleNumber": entry["marbles"][0]["number"],
+                    "finish": finishes[entry["contestantId"]],
+                }
+                for entry in heat["entries"]
+            ]
+            start_heat(self.client, heat)
+            saved = self.client.put(f'/api/heats/{heat["id"]}/results', json={"results": results})
+            self.assertEqual(saved.status_code, 200)
+            state = saved.get_json()
+        return state
+
+    def test_promotion_tie_blocks_progress_until_resolved(self) -> None:
+        state, contestant_ids = self._configure_tiebreak_cup("Manual Tiebreak Cup")
+        # racer[0] wins every heat (bye); racer[1] is always 2nd
+        # (preliminary); racers 2/3/4 rotate through 3rd/4th/5th across the
+        # three heats so each ends up with an identical placement vector
+        # (one 3rd, one 4th, one 5th) -- a genuine tie for the two remaining
+        # wildcard seats. Racers 5/6/7 rotate the same way through 6th/7th/
+        # 8th, tied among themselves but irrelevant to any seat.
+        ruby, blue, golden, emerald, purple, orange, silver, pink = contestant_ids
+        state = self._score_day_one(
+            state,
+            contestant_ids,
+            [
+                {ruby: 1, blue: 2, golden: 3, emerald: 4, purple: 5, orange: 6, silver: 7, pink: 8},
+                {ruby: 1, blue: 2, golden: 4, emerald: 5, purple: 3, orange: 7, silver: 8, pink: 6},
+                {ruby: 1, blue: 2, golden: 5, emerald: 3, purple: 4, orange: 8, silver: 6, pink: 7},
+            ],
+        )
+        tied_ids = {contestant_ids[2], contestant_ids[3], contestant_ids[4]}
+
+        pending = state["pendingTieBreak"]
+        self.assertIsNotNone(pending)
+        self.assertEqual(pending["day"], 1)
+        self.assertEqual({racer["id"] for racer in pending["racers"]}, tied_ids)
+        self.assertEqual(
+            {racer["id"] for racer in pending["racers"] if racer["currentTier"] == "wildcard"},
+            {contestant_ids[2], contestant_ids[3]},
+        )
+        self.assertIsNone(
+            next(racer for racer in pending["racers"] if racer["id"] == contestant_ids[4])["currentTier"]
+        )
+
+        day_two_heat = state["days"][1]["heats"][0]
+        blocked = self.client.put(f'/api/heats/{day_two_heat["id"]}/start')
+        self.assertEqual(blocked.status_code, 409)
+
+        tournament_id = state["competition"]["id"]
+        mismatched = self.client.put(
+            f"/api/tournaments/{tournament_id}/staging/1/tiebreak",
+            json={"order": [contestant_ids[2], contestant_ids[3]]},
+        )
+        self.assertEqual(mismatched.status_code, 400)
+
+        # Rank racer[4] (currently unpromoted) ahead of racer[3] (currently
+        # wildcard) -- if the resolution is actually applied, this should
+        # flip who gets the second wildcard seat.
+        resolved = self.client.put(
+            f"/api/tournaments/{tournament_id}/staging/1/tiebreak",
+            json={"order": [contestant_ids[2], contestant_ids[4], contestant_ids[3]]},
+        )
+        self.assertEqual(resolved.status_code, 200)
+        resolved_state = resolved.get_json()
+        self.assertIsNone(resolved_state["pendingTieBreak"])
+
+        connection = connect()
+        try:
+            field = championship_field(connection, tournament_id)
+        finally:
+            connection.close()
+        wildcard_ids = {item["racerId"] for item in field["wildcardPool"]}
+        self.assertEqual(wildcard_ids, {contestant_ids[2], contestant_ids[4]})
+
+        unblocked = self.client.put(f'/api/heats/{day_two_heat["id"]}/start')
+        self.assertEqual(unblocked.status_code, 200)
+
+    def test_tie_with_no_seat_at_stake_does_not_block_progress(self) -> None:
+        state, contestant_ids = self._configure_tiebreak_cup("Harmless Tiebreak Cup")
+        # racer[0]/[1]/[2]/[3] cleanly take bye/preliminary/both wildcard
+        # seats every heat -- no ambiguity there. racers 5/6/7 rotate through
+        # 6th/7th/8th across the three heats, ending up with an identical
+        # placement vector (one 6th, one 7th, one 8th apiece), a genuine
+        # 3-way tie, but one that's well below the wildcard cutoff and so
+        # can't change anything.
+        ruby, blue, golden, emerald, purple, orange, silver, pink = contestant_ids
+        state = self._score_day_one(
+            state,
+            contestant_ids,
+            [
+                {ruby: 1, blue: 2, golden: 3, emerald: 4, purple: 5, orange: 6, silver: 7, pink: 8},
+                {ruby: 1, blue: 2, golden: 3, emerald: 4, purple: 5, orange: 7, silver: 8, pink: 6},
+                {ruby: 1, blue: 2, golden: 3, emerald: 4, purple: 5, orange: 8, silver: 6, pink: 7},
+            ],
+        )
+        self.assertIsNone(state["pendingTieBreak"])
+
+        day_two_heat = state["days"][1]["heats"][0]
+        unblocked = self.client.put(f'/api/heats/{day_two_heat["id"]}/start')
+        self.assertEqual(unblocked.status_code, 200)
+
+    def test_tiebreak_that_changes_an_earlier_round_requires_confirmation(self) -> None:
+        # bye_racer_ids in championship_field() is a whole-tournament set
+        # resolved before the preliminary pass ever starts, so which racer
+        # wins *day 2's* bye can retroactively change the bonus-capacity
+        # lookup *day 1's* preliminary promotion depended on. Blue Bolt is
+        # day 1's clear preliminary candidate (rank 2) and also one of two
+        # racers tied for day 2's bye -- maxPrelimMarblesForRacerWithFinalBye
+        # defaults to 0, so if Blue ends up holding any bye, Blue's day 1
+        # preliminary capacity drops to zero and cascades away to Golden
+        # Globe (day 1's rank 3).
+        created = self.client.post(
+            "/api/tournaments", json={"name": "Cross Round Impact Cup"}
+        ).get_json()
+        tournament_id = created["competition"]["id"]
+        self.addCleanup(lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close())
+        contestant_ids = [racer["id"] for racer in created["contestants"]]
+        configured = self.client.put(
+            f"/api/tournaments/{tournament_id}",
+            json={
+                "name": "Cross Round Impact Cup",
+                "days": 2,
+                "heatsPerRacerPerDay": 2,
+                "maxMarblesPerHeat": 8,
+                "marblesPerRacer": 1,
+                "wildcardMaxMarblesPerHeat": 6,
+                "preliminaryMaxMarblesPerHeat": 6,
+                "maxFinalByeMarblesPerRacer": 1,
+                "maxPrelimPromotionMarblesPerRacer": 1,
+                "maxPrelimMarblesForRacerWithFinalBye": 0,
+                "allowCascadingFinalByeSelection": True,
+                "allowCascadingPrelimPromotionSelection": True,
+                "maxFinalRacers": 6,
+                "points": list(range(8, 0, -1)),
+                "contestants": [
+                    {"name": racer["name"], "color": racer["color"]}
+                    for racer in created["contestants"]
+                ],
+            },
+        ).get_json()
+        ruby, blue, golden, emerald, purple, orange, silver, pink = contestant_ids
+        # Day 1: Ruby wins outright (bye); Blue clearly 2nd (preliminary);
+        # Golden clearly 3rd (the cascade target if Blue is excluded).
+        # Day 2: Blue and Golden tied for 1st (the bye seat).
+        heat_finishes = [
+            {ruby: 1, blue: 2, golden: 3, emerald: 4, purple: 5, orange: 6, silver: 7, pink: 8},
+            {ruby: 1, blue: 2, golden: 3, emerald: 4, purple: 6, orange: 5, silver: 8, pink: 7},
+            {blue: 1, golden: 2, ruby: 3, emerald: 4, purple: 5, orange: 6, silver: 7, pink: 8},
+            {blue: 2, golden: 1, ruby: 4, emerald: 3, purple: 6, orange: 5, silver: 8, pink: 7},
+        ]
+        state = configured
+        for heat_index, finishes in enumerate(heat_finishes):
+            # Day 2's heats only appear once day 1 is fully scored, so
+            # refetch the schedule before each heat rather than relying on
+            # the stale list captured before the tournament had raced.
+            fresh = self.client.get(f"/api/state?tournamentId={tournament_id}").get_json()
+            heat = [h for day in fresh["days"] for h in day["heats"]][heat_index]
+            results = [
+                {
+                    "contestantId": entry["contestantId"],
+                    "marbleNumber": entry["marbles"][0]["number"],
+                    "finish": finishes[entry["contestantId"]],
+                }
+                for entry in heat["entries"]
+            ]
+            start_heat(self.client, heat)
+            saved = self.client.put(f'/api/heats/{heat["id"]}/results', json={"results": results})
+            self.assertEqual(saved.status_code, 200)
+            state = saved.get_json()
+
+        pending = state["pendingTieBreak"]
+        self.assertIsNotNone(pending)
+        self.assertEqual(pending["day"], 2)
+        self.assertEqual({racer["id"] for racer in pending["racers"]}, {blue, golden})
+
+        # Currently (seed-order fallback), Blue wins day 2's bye, which
+        # excludes Blue from day 1's preliminary cap -- so Golden (day 1's
+        # cascade target) holds it instead of Blue.
+        connection = connect()
+        try:
+            field_before = championship_field(connection, tournament_id)
+        finally:
+            connection.close()
+        day1_prelim_before = {
+            item["racerId"] for item in field_before["preliminaryDirect"] if item["originRound"] == 1
+        }
+        self.assertEqual(day1_prelim_before, {golden})
+
+        # Ranking Golden ahead of Blue for day 2's bye flips that: Blue is
+        # no longer excluded and reclaims day 1's preliminary directly, so
+        # this should be flagged rather than applied outright.
+        flagged = self.client.put(
+            f"/api/tournaments/{tournament_id}/staging/2/tiebreak",
+            json={"order": [golden, blue]},
+        )
+        self.assertEqual(flagged.status_code, 200)
+        flagged_body = flagged.get_json()
+        self.assertTrue(flagged_body.get("needsConfirmation"))
+        self.assertEqual(flagged_body.get("affectedDays"), [1])
+
+        # Nothing was persisted by the unconfirmed attempt.
+        still_pending = self.client.get(f"/api/state?tournamentId={tournament_id}").get_json()
+        self.assertIsNotNone(still_pending["pendingTieBreak"])
+
+        confirmed = self.client.put(
+            f"/api/tournaments/{tournament_id}/staging/2/tiebreak",
+            json={"order": [golden, blue], "confirmEarlierImpact": True},
+        )
+        self.assertEqual(confirmed.status_code, 200)
+        confirmed_body = confirmed.get_json()
+        self.assertIsNone(confirmed_body["pendingTieBreak"])
+
+        connection = connect()
+        try:
+            field_after = championship_field(connection, tournament_id)
+        finally:
+            connection.close()
+        day1_prelim_after = {
+            item["racerId"] for item in field_after["preliminaryDirect"] if item["originRound"] == 1
+        }
+        self.assertEqual(day1_prelim_after, {blue})
 
 
 if __name__ == "__main__":
