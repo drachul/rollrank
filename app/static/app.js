@@ -2,7 +2,7 @@ let state = null;
 const initialParams = new URLSearchParams(window.location.search);
 const supportedViews = ["dashboard", "heats", "standings", "setup"];
 let activeView = supportedViews.includes(initialParams.get("view")) ? initialParams.get("view") : "dashboard";
-let activeDay = 1;
+let activeRound = 1;
 let activeTournamentId = Number(initialParams.get("tournament")) || null;
 let kioskMode = initialParams.get("display") === "kiosk";
 let liveEventSource = null;
@@ -64,7 +64,7 @@ function formatResolvedDate(resolvedAt) {
   if (!resolvedAt) return "";
   const date = new Date(`${resolvedAt.replace(" ", "T")}Z`);
   if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleDateString(undefined, {month: "short", day: "numeric", year: "numeric"});
+  return date.toLocaleDateString(undefined, {month: "short", round: "numeric", year: "numeric"});
 }
 
 function tiePopoverMarkup(id, racer, index, place, tiedWith, isCollapsed, isResolved, resolvedAt) {
@@ -86,33 +86,33 @@ function pendingTieBreakCallout() {
   const pending = state?.pendingTieBreak;
   if (!pending || kioskMode) return "";
   const names = pending.racers.map((racer) => escapeHtml(racer.name)).join(", ");
-  return `<div class="config-callout tie-break-callout"><span aria-hidden="true">!</span><div><strong>Round ${pending.day} needs a tiebreak</strong><small>${names} finished this round tied on points, wins, and placement -- and how that's ordered decides who gets promoted. Racing can't continue until it's resolved.</small></div><button type="button" class="primary-button compact" data-open-tie-break>Resolve tie</button></div>`;
+  return `<div class="config-callout tie-break-callout"><span aria-hidden="true">!</span><div><strong>Round ${pending.round} needs a tiebreak</strong><small>${names} finished this round tied on points, wins, and placement -- and how that's ordered decides who gets promoted. Racing can't continue until it's resolved.</small></div><button type="button" class="primary-button compact" data-open-tie-break>Resolve tie</button></div>`;
 }
 
 function kioskPendingTieBreakBanner() {
   const pending = state?.pendingTieBreak;
   if (!pending) return "";
   const names = pending.racers.map((racer) => escapeHtml(racer.name)).join(", ");
-  return `<div class="kiosk-tiebreak-banner"><span aria-hidden="true">!</span><div><strong>Round ${pending.day} tiebreak pending</strong><p>${names} finished tied on points, wins, and placement. Racing is paused until it's resolved from the scoring device.</p></div></div>`;
+  return `<div class="kiosk-tiebreak-banner"><span aria-hidden="true">!</span><div><strong>Round ${pending.round} tiebreak pending</strong><p>${names} finished tied on points, wins, and placement. Racing is paused until it's resolved from the scoring device.</p></div></div>`;
 }
 
 function tieBreakWarningMarkup(impact) {
-  const {affectedDays, seatChanges, newTiebreaks} = impact;
+  const {affectedRounds, seatChanges, newTiebreaks} = impact;
   const tierText = (tier) => tier ? tierLabel[tier] : "no seat";
-  const changesByDay = new Map();
+  const changesByRound = new Map();
   for (const change of seatChanges) {
-    if (!changesByDay.has(change.day)) changesByDay.set(change.day, []);
-    changesByDay.get(change.day).push(change);
+    if (!changesByRound.has(change.round)) changesByRound.set(change.round, []);
+    changesByRound.get(change.round).push(change);
   }
-  const dayListMarkup = `<ul class="tie-break-warning-days">${[...changesByDay.entries()]
-    .map(([day, changes]) => `<li><strong>Round ${day}</strong><ul class="tie-break-warning-seats">${changes
+  const roundListMarkup = `<ul class="tie-break-warning-rounds">${[...changesByRound.entries()]
+    .map(([round, changes]) => `<li><strong>Round ${round}</strong><ul class="tie-break-warning-seats">${changes
       .map((change) => `<li>${marble(change.racerColor, "small")}<span>${escapeHtml(change.racerName)}</span><small>${tierText(change.fromTier)} → ${tierText(change.toTier)}</small></li>`)
       .join("")}</ul></li>`)
     .join("")}</ul>`;
   const newTiebreaksMarkup = newTiebreaks.length
-    ? `<p class="tie-break-warning-note">It will also leave ${newTiebreaks.length === 1 ? "a new tie" : "new ties"} in Round${newTiebreaks.length === 1 ? "" : "s"} ${newTiebreaks.map((entry) => entry.day).join(", ")} that will need its own tiebreak once you confirm this one.</p>`
+    ? `<p class="tie-break-warning-note">It will also leave ${newTiebreaks.length === 1 ? "a new tie" : "new ties"} in Round${newTiebreaks.length === 1 ? "" : "s"} ${newTiebreaks.map((entry) => entry.round).join(", ")} that will need its own tiebreak once you confirm this one.</p>`
     : "";
-  return `<div class="tie-break-warning"><span aria-hidden="true">!</span><div><strong>This also changes ${affectedDays.length === 1 ? "an earlier round" : "earlier rounds"}</strong><p>Applying this order changes who holds these seats in Round${affectedDays.length === 1 ? "" : "s"} ${affectedDays.join(", ")}:</p>${dayListMarkup}${newTiebreaksMarkup}</div></div>`;
+  return `<div class="tie-break-warning"><span aria-hidden="true">!</span><div><strong>This also changes ${affectedRounds.length === 1 ? "an earlier round" : "earlier rounds"}</strong><p>Applying this order changes who holds these seats in Round${affectedRounds.length === 1 ? "" : "s"} ${affectedRounds.join(", ")}:</p>${roundListMarkup}${newTiebreaksMarkup}</div></div>`;
 }
 
 function tieBreakDialogBody() {
@@ -135,7 +135,7 @@ function tieBreakDialogBody() {
   const allPicked = tieBreakOrder.length === pending.racers.length;
   const warningMarkup = tieBreakImpactWarning ? tieBreakWarningMarkup(tieBreakImpactWarning) : "";
   const confirmLabel = tieBreakImpactWarning ? "Yes, apply anyway" : "Confirm order";
-  return `<header><div><p class="eyebrow">Round ${pending.day} tiebreak</p><h2 id="tie-break-dialog-title">Resolve the tie for Round ${pending.day}</h2></div><button type="button" data-close-tie-break aria-label="Close">×</button></header><p>These racers matched on points, wins, and placement this round. Click them below in the order they should rank, highest first, to decide who wins the ${seatNoun} on the line.</p>${orderMarkup}${picksMarkup}${warningMarkup}<div class="dialog-actions"><button type="button" class="secondary-button" data-tie-break-reset ${tieBreakOrder.length ? "" : "disabled"}>Reset</button><button type="button" class="primary-button" data-tie-break-confirm ${allPicked ? "" : "disabled"}>${confirmLabel}</button></div>`;
+  return `<header><div><p class="eyebrow">Round ${pending.round} tiebreak</p><h2 id="tie-break-dialog-title">Resolve the tie for Round ${pending.round}</h2></div><button type="button" data-close-tie-break aria-label="Close">×</button></header><p>These racers matched on points, wins, and placement this round. Click them below in the order they should rank, highest first, to decide who wins the ${seatNoun} on the line.</p>${orderMarkup}${picksMarkup}${warningMarkup}<div class="dialog-actions"><button type="button" class="secondary-button" data-tie-break-reset ${tieBreakOrder.length ? "" : "disabled"}>Reset</button><button type="button" class="primary-button" data-tie-break-confirm ${allPicked ? "" : "disabled"}>${confirmLabel}</button></div>`;
 }
 
 function syncTieBreakDialog() {
@@ -150,7 +150,7 @@ function syncTieBreakDialog() {
     body.innerHTML = "";
     return;
   }
-  const key = `${pending.day}:${pending.racers.map((racer) => racer.id).sort().join(",")}`;
+  const key = `${pending.round}:${pending.racers.map((racer) => racer.id).sort().join(",")}`;
   if (key !== tieBreakKey) {
     tieBreakOrder = [];
     tieBreakKey = key;
@@ -163,13 +163,13 @@ async function confirmTieBreak() {
   const pending = state?.pendingTieBreak;
   if (!pending || tieBreakOrder.length !== pending.racers.length) return;
   try {
-    const response = await api(`/api/tournaments/${state.competition.id}/staging/${pending.day}/tiebreak`, {
+    const response = await api(`/api/tournaments/${state.competition.id}/staging/${pending.round}/tiebreak`, {
       method: "PUT",
       body: JSON.stringify({order: tieBreakOrder, confirmEarlierImpact: tieBreakImpactWarning !== null}),
     });
     if (response.needsConfirmation) {
       tieBreakImpactWarning = {
-        affectedDays: response.affectedDays,
+        affectedRounds: response.affectedRounds,
         seatChanges: response.seatChanges,
         newTiebreaks: response.newTiebreaks,
       };
@@ -222,7 +222,7 @@ function applyState(nextState) {
   if (state && state.competition.id !== nextState.competition.id) stopKioskRaceAnimations();
   state = nextState;
   activeTournamentId = state.competition.id;
-  if (activeDay !== "championship") activeDay = Math.min(activeDay, state.competition.days);
+  if (activeRound !== "championship") activeRound = Math.min(activeRound, state.competition.rounds);
   kioskRefreshFailed = false;
   kioskLastUpdated = new Date();
   syncTournamentChrome();
@@ -286,7 +286,7 @@ function stopLiveUpdates() {
 function tournamentHeats(snapshot) {
   if (!snapshot) return [];
   const championship = snapshot.championship;
-  const heats = snapshot.days.flatMap((day) => day.heats)
+  const heats = snapshot.rounds.flatMap((round) => round.heats)
     .concat(championship.wildcard.heats, championship.preliminary.heats);
   if (championship.final.heat) heats.push(championship.final.heat);
   return heats;
@@ -318,7 +318,7 @@ function kioskIntroductionHeatName(heat) {
   if (heat.stage === "wildcard") return `Championship: Wildcard ${championshipHeatLabel("wildcard", heat.heatNumber)}`;
   if (heat.stage === "preliminary") return `Championship: Preliminary ${championshipHeatLabel("preliminary", heat.heatNumber)}`;
   if (heat.stage === "final") return "Championship: Final";
-  return `Round ${heat.day} · Heat ${heat.heatNumber}`;
+  return `Round ${heat.round} · Heat ${heat.heatNumber}`;
 }
 
 function stopKioskRaceIntroduction() {
@@ -687,7 +687,7 @@ function renderDashboardFinalSummary() {
       </aside>
     </section>
     <section class="panel dashboard-final-lineup">
-      <div class="panel-heading"><div><p class="eyebrow">The final</p><h2>Final race lineup</h2></div><button class="text-button" data-view="heats" data-day="championship">View championship details →</button></div>
+      <div class="panel-heading"><div><p class="eyebrow">The final</p><h2>Final race lineup</h2></div><button class="text-button" data-view="heats" data-round="championship">View championship details →</button></div>
       <div class="dashboard-final-racers">
         ${entries.map((entry) => `<article class="${entry.finish === 0 ? "dnf" : ""}">
           ${marble(entry.color)}
@@ -705,7 +705,7 @@ function renderDashboard() {
   if (state.championship.final.complete) return renderDashboardFinalSummary();
   const c = state.competition;
   const status = currentTournamentStatus();
-  const nextHeat = state.days.flatMap((day) => day.heats).find((heat) => !heat.complete);
+  const nextHeat = state.rounds.flatMap((round) => round.heats).find((heat) => !heat.complete);
   const topRacers = state.standings.slice(0, 5);
   return `
     ${pendingTieBreakCallout()}
@@ -717,20 +717,20 @@ function renderDashboard() {
       </div>
       <aside class="summary-card">
         <p class="eyebrow light">Tournament snapshot</p>
-        <div class="summary-lead"><strong>${c.days}</strong><span>race<br>rounds</span></div>
-        <div class="summary-pills"><span><b>${c.heatsPerRacerPerDay}</b> heats / racer / round</span><span><b>${c.heatsPerDay}</b> total heats / round</span><span><b>${c.racersPerHeat}</b> racers / heat</span><span><b>${c.marblesPerHeat}/${c.maxMarblesPerHeat}</b> marbles / heat</span><span><b>${c.maxFinalRacers}</b> max finalists</span></div>
+        <div class="summary-lead"><strong>${c.rounds}</strong><span>race<br>rounds</span></div>
+        <div class="summary-pills"><span><b>${c.heatsPerRacerPerRound}</b> heats / racer / round</span><span><b>${c.heatsPerRound}</b> total heats / round</span><span><b>${c.racersPerHeat}</b> racers / heat</span><span><b>${c.marblesPerHeat}/${c.maxMarblesPerHeat}</b> marbles / heat</span><span><b>${c.maxFinalRacers}</b> max finalists</span></div>
         <div class="progress-label"><span>Results entered</span><b>${c.completedHeats} of ${c.totalHeats}</b></div>
         <div class="progress-track"><i style="width:${progressPercent()}%"></i></div>
       </aside>
     </section>
     <section class="dashboard-grid">
       <article class="panel">
-        <div class="panel-heading"><div><p class="eyebrow">Race queue</p><h2>${nextHeat ? `${nextHeat.started ? "In Progress" : "Next"}: Round ${nextHeat.day}, Heat ${nextHeat.heatNumber}` : "All round heats complete"}</h2></div><button class="text-button" data-view="heats">View rounds →</button></div>
+        <div class="panel-heading"><div><p class="eyebrow">Race queue</p><h2>${nextHeat ? `${nextHeat.started ? "In Progress" : "Next"}: Round ${nextHeat.round}, Heat ${nextHeat.heatNumber}` : "All round heats complete"}</h2></div><button class="text-button" data-view="heats">View rounds →</button></div>
         ${nextHeat ? `<div class="next-heat">
           <div class="heat-flag"><small>Race</small><strong>#${nextHeat.globalNumber}</strong></div>
           <div class="racer-preview">${nextHeat.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>
           ${nextHeat.locked ? `<span class="heat-locked-note">Resolve the pending tiebreak first</span>` : nextHeat.started === false ? `<button class="primary-button compact" data-start-heat="${nextHeat.id}">Start heat</button>` : `<button class="primary-button compact" data-score-heat="${nextHeat.id}">Score heat</button>`}
-        </div>` : `<div class="completion-callout"><div class="trophy">★</div><div><strong>Championship bracket underway</strong><p>Wildcard, preliminary, and final heats build automatically as each stage finishes.</p></div><button class="primary-button compact" data-view="heats" data-day="championship">Open bracket</button></div>`}
+        </div>` : `<div class="completion-callout"><div class="trophy">★</div><div><strong>Championship bracket underway</strong><p>Wildcard, preliminary, and final heats build automatically as each stage finishes.</p></div><button class="primary-button compact" data-view="heats" data-round="championship">Open bracket</button></div>`}
       </article>
       <article class="panel standings-preview">
         <div class="panel-heading"><div><p class="eyebrow">Live table</p><h2>Tournament standings</h2></div></div>
@@ -794,8 +794,8 @@ function renderKioskFinalDashboard() {
 }
 
 function racerStatBadges(racer) {
-  const tiers = racer.dayChampionshipTiers || [];
-  const finalizedTiers = racer.dayChampionshipPreviousTiers || tiers;
+  const tiers = racer.roundChampionshipTiers || [];
+  const finalizedTiers = racer.roundChampionshipPreviousTiers || tiers;
   const tierStat = (tier, key, label, title) => {
     const count = tiers.filter((item) => item === tier).length;
     const finalizedCount = finalizedTiers.filter((item) => item === tier).length;
@@ -832,25 +832,25 @@ function renderKioskDashboard() {
   const championship = state.championship;
   if (championship.final.ready) return renderKioskFinalDashboard();
   const status = currentTournamentStatus();
-  const nextHeat = state.days.flatMap((day) => day.heats).find((heat) => !heat.complete);
+  const nextHeat = state.rounds.flatMap((round) => round.heats).find((heat) => !heat.complete);
   const nextWildcard = championship.wildcard.heats.find((heat) => !heat.complete);
   const nextPreliminary = championship.preliminary.heats.find((heat) => !heat.complete);
   const visibleStandings = state.standings.slice(0, 8);
-  const completedRounds = state.days.filter((day) => day.heats.every((heat) => heat.complete)).length;
+  const completedRounds = state.rounds.filter((round) => round.heats.every((heat) => heat.complete)).length;
   const progress = progressPercent();
   const roundDividers = [];
   let heatsSoFar = 0;
-  for (let i = 0; i < state.days.length - 1; i++) {
-    heatsSoFar += state.days[i].heats.length;
+  for (let i = 0; i < state.rounds.length - 1; i++) {
+    heatsSoFar += state.rounds[i].heats.length;
     if (c.totalHeats) roundDividers.push(Math.round((heatsSoFar / c.totalHeats) * 100));
   }
   const liveStatus = kioskRefreshFailed ? "Reconnecting…" : kioskTimestamp();
   let nextContent = "";
 
   if (state.pendingTieBreak && nextHeat?.locked) {
-    nextContent = `<p class="kiosk-card-label">Paused</p><div class="kiosk-final-ready"><span aria-hidden="true">!</span><div><strong>Round ${state.pendingTieBreak.day} tiebreak pending</strong><p>Racing resumes once it's resolved from the scoring device.</p></div></div>`;
+    nextContent = `<p class="kiosk-card-label">Paused</p><div class="kiosk-final-ready"><span aria-hidden="true">!</span><div><strong>Round ${state.pendingTieBreak.round} tiebreak pending</strong><p>Racing resumes once it's resolved from the scoring device.</p></div></div>`;
   } else if (nextHeat) {
-    nextContent = `<div class="kiosk-card-heading"><p class="kiosk-card-label">${nextHeat.started ? "In progress" : "Up next"}</p><b>Race #${nextHeat.globalNumber}</b></div><h2>Round ${nextHeat.day} · Heat ${nextHeat.heatNumber}</h2><div class="kiosk-next-racers">${nextHeat.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>`;
+    nextContent = `<div class="kiosk-card-heading"><p class="kiosk-card-label">${nextHeat.started ? "In progress" : "Up next"}</p><b>Race #${nextHeat.globalNumber}</b></div><h2>Round ${nextHeat.round} · Heat ${nextHeat.heatNumber}</h2><div class="kiosk-next-racers">${nextHeat.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>`;
   } else if (nextWildcard) {
     nextContent = `<div class="kiosk-card-heading"><p class="kiosk-card-label">${nextWildcard.started ? "In progress" : "Up next"}</p><b>Championship</b></div><h2>Championship: Wildcard ${championshipHeatLabel("wildcard", nextWildcard.heatNumber)}</h2><div class="kiosk-next-racers">${nextWildcard.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>`;
   } else if (nextPreliminary) {
@@ -869,7 +869,7 @@ function renderKioskDashboard() {
     <div class="kiosk-overview">
       <article class="kiosk-progress-card">
         <div class="kiosk-card-heading"><p class="kiosk-card-label">Round progress</p></div>
-        <div class="kiosk-progress-value"><strong>${progress}%<small>[${c.completedHeats} / ${c.totalHeats}]</small></strong><span>${completedRounds} of ${c.days} rounds complete</span></div>
+        <div class="kiosk-progress-value"><strong>${progress}%<small>[${c.completedHeats} / ${c.totalHeats}]</small></strong><span>${completedRounds} of ${c.rounds} rounds complete</span></div>
         <div class="kiosk-progress-track"><i style="width:${progress}%"></i>${roundDividers.map((pct) => `<span class="kiosk-progress-divider" style="left:${pct}%"></span>`).join("")}</div>
       </article>
       <article class="kiosk-next-card">${nextContent}</article>
@@ -986,15 +986,15 @@ function championshipTabStatus() {
 }
 
 function renderHeats() {
-  const onChampionship = activeDay === "championship";
-  const selectedDay = onChampionship ? null : state.days.find((day) => day.day === activeDay) || state.days[0];
+  const onChampionship = activeRound === "championship";
+  const selectedRound = onChampionship ? null : state.rounds.find((entry) => entry.round === activeRound) || state.rounds[0];
   return `${viewHeader("Results desk", "Rounds", "Choose a round, then record a unique finishing position for every marble.")}
     ${pendingTieBreakCallout()}
-    <div class="day-tabs" role="tablist">${state.days.map((day) => {
-      const complete = day.heats.filter((heat) => heat.complete).length;
-      return `<button role="tab" aria-selected="${day.day === activeDay}" class="${day.day === activeDay ? "active" : ""}" data-day="${day.day}"><span>Round ${day.day}</span><small>${complete}/${day.heats.length} complete</small></button>`;
-    }).join("")}<button role="tab" aria-selected="${onChampionship}" class="${onChampionship ? "active" : ""}" data-day="championship"><span>Championship</span><small>${championshipTabStatus()}</small></button></div>
-    ${onChampionship ? renderChampionshipStages() : `<section class="heat-list">${selectedDay.heats.map(heatEditor).join("")}</section>`}`;
+    <div class="round-tabs" role="tablist">${state.rounds.map((entry) => {
+      const complete = entry.heats.filter((heat) => heat.complete).length;
+      return `<button role="tab" aria-selected="${entry.round === activeRound}" class="${entry.round === activeRound ? "active" : ""}" data-round="${entry.round}"><span>Round ${entry.round}</span><small>${complete}/${entry.heats.length} complete</small></button>`;
+    }).join("")}<button role="tab" aria-selected="${onChampionship}" class="${onChampionship ? "active" : ""}" data-round="championship"><span>Championship</span><small>${championshipTabStatus()}</small></button></div>
+    ${onChampionship ? renderChampionshipStages() : `<section class="heat-list">${selectedRound.heats.map(heatEditor).join("")}</section>`}`;
 }
 
 function ladderLockedPlaceholder(label) {
@@ -1152,12 +1152,12 @@ function renderChampionshipLadder() {
   </section>`;
 }
 
-function standingRoundCell(racer, place, index, liveRoundDay, mobile = false) {
-  const projectedTier = racer.dayChampionshipTiers[index];
-  const previousTier = (racer.dayChampionshipPreviousTiers || [])[index];
+function standingRoundCell(racer, place, index, liveRound, mobile = false) {
+  const projectedTier = racer.roundChampionshipTiers[index];
+  const previousTier = (racer.roundChampionshipPreviousTiers || [])[index];
   const showProjected = standingsTierView === "projected";
   const tier = showProjected ? projectedTier : previousTier;
-  const provisional = showProjected && (racer.dayChampionshipTierProvisional || [])[index] === true;
+  const provisional = showProjected && (racer.roundChampionshipTierProvisional || [])[index] === true;
   let tierMarkup = tier ? `<small class="tier-tag">${tierLabel[tier]}</small>` : "";
   if (provisional) {
     const transition = tier && previousTier
@@ -1165,20 +1165,20 @@ function standingRoundCell(racer, place, index, liveRoundDay, mobile = false) {
       : tier
         ? `Projected ${tierLabel[tier]}*`
         : `${tierLabel[previousTier]} → No seat*`;
-    tierMarkup = `<small class="tier-tag provisional" title="Provisional reassignment while round ${liveRoundDay} is in progress">${transition}</small>`;
+    tierMarkup = `<small class="tier-tag provisional" title="Provisional reassignment while round ${liveRound} is in progress">${transition}</small>`;
   }
   const className = `${tierClass(tier)}${provisional ? ` tier-reassigned${tier ? "" : " tier-removed"}` : ""}`;
-  const placement = placeLabel(place, index + 1 === liveRoundDay);
-  const tiedWith = place != null ? (racer.dayTiedWith || [])[index] : null;
+  const placement = placeLabel(place, index + 1 === liveRound);
+  const tiedWith = place != null ? (racer.roundTiedWith || [])[index] : null;
   if (!tiedWith || tiedWith.length === 0) {
     return mobile
       ? `<span class="${className}"><small>Round ${index + 1}</small><b>${placement}</b>${tierMarkup}</span>`
       : `<td class="${className}">${placement}${tierMarkup}</td>`;
   }
   const id = `tie-popover-${racer.id}-${index}-${mobile ? "mobile" : "desktop"}`;
-  const isCollapsed = (racer.dayTieCollapsed || [])[index] === true;
-  const isResolved = (racer.dayTieResolved || [])[index] === true;
-  const resolvedAt = (racer.dayTieResolvedAt || [])[index];
+  const isCollapsed = (racer.roundTieCollapsed || [])[index] === true;
+  const isResolved = (racer.roundTieResolved || [])[index] === true;
+  const resolvedAt = (racer.roundTieResolvedAt || [])[index];
   // Yellow "!" means this placement still needs an organizer's decision.
   // Blue "i" means there's nothing to act on -- either the tie doesn't
   // affect a seat (collapsed) or an organizer already decided it (resolved).
@@ -1192,9 +1192,9 @@ function standingRoundCell(racer, place, index, liveRoundDay, mobile = false) {
     : `<td class="${className} tie-target"><button ${buttonAttrs}>${placement}${flag}${tierMarkup}</button>${popover}</td>`;
 }
 
-function standingsTierViewControl(liveRoundDay) {
+function standingsTierViewControl(liveRound) {
   const projected = standingsTierView === "projected";
-  return `<div class="provisional-tier-note"><span>${projected ? "*" : "●"}</span><div class="provisional-tier-copy"><strong>${projected ? "Projected qualification changes" : "Current qualification status"}</strong><small>${projected ? `Round ${liveRoundDay} is in progress. Arrows show earlier seats that would be reassigned if the round ended now.` : `Showing finalized qualification seats only. Round ${liveRoundDay} placements remain provisional until every heat is scored.`}</small></div><div class="standings-tier-toggle" role="group" aria-label="Qualification seat view"><button type="button" data-standings-tier-view="current" aria-pressed="${!projected}" class="${projected ? "" : "active"}">Current</button><button type="button" data-standings-tier-view="projected" aria-pressed="${projected}" class="${projected ? "active" : ""}">Projected</button></div></div>`;
+  return `<div class="provisional-tier-note"><span>${projected ? "*" : "●"}</span><div class="provisional-tier-copy"><strong>${projected ? "Projected qualification changes" : "Current qualification status"}</strong><small>${projected ? `Round ${liveRound} is in progress. Arrows show earlier seats that would be reassigned if the round ended now.` : `Showing finalized qualification seats only. Round ${liveRound} placements remain provisional until every heat is scored.`}</small></div><div class="standings-tier-toggle" role="group" aria-label="Qualification seat view"><button type="button" data-standings-tier-view="current" aria-pressed="${!projected}" class="${projected ? "" : "active"}">Current</button><button type="button" data-standings-tier-view="projected" aria-pressed="${projected}" class="${projected ? "active" : ""}">Projected</button></div></div>`;
 }
 
 function renderStandings() {
@@ -1202,13 +1202,13 @@ function renderStandings() {
   return `${viewHeader("Live scoring", "Tournament standings", "Round placings update automatically whenever a heat result is saved.")}
     ${pendingTieBreakCallout()}
     ${renderChampionshipLadder()}
-    <section class="panel table-panel">${c.liveRoundDay ? standingsTierViewControl(c.liveRoundDay) : ""}<div class="table-scroll"><table class="standings-table"><thead><tr><th>Racer</th>${Array.from({length:c.days}, (_, i) => `<th>Round ${i + 1}</th>`).join("")}</tr></thead><tbody>
-    ${state.standings.map((racer) => `<tr><td><span class="racer-cell">${marble(racer.color, "small")}<strong>${escapeHtml(racer.name)}</strong></span></td>${racer.dayDisplayPlacements.map((place, index) => standingRoundCell(racer, place, index, c.liveRoundDay)).join("")}</tr>`).join("")}
+    <section class="panel table-panel">${c.liveRound ? standingsTierViewControl(c.liveRound) : ""}<div class="table-scroll"><table class="standings-table"><thead><tr><th>Racer</th>${Array.from({length:c.rounds}, (_, i) => `<th>Round ${i + 1}</th>`).join("")}</tr></thead><tbody>
+    ${state.standings.map((racer) => `<tr><td><span class="racer-cell">${marble(racer.color, "small")}<strong>${escapeHtml(racer.name)}</strong></span></td>${racer.roundDisplayPlacements.map((place, index) => standingRoundCell(racer, place, index, c.liveRound)).join("")}</tr>`).join("")}
     </tbody></table></div>
     <div class="mobile-standings" aria-label="Mobile standings">
       ${state.standings.map((racer) => `<article class="mobile-standing-card">
         <div class="mobile-standing-lead">${marble(racer.color, "small")}<strong>${escapeHtml(racer.name)}</strong></div>
-        <div class="mobile-standing-stats">${racer.dayDisplayPlacements.map((place, index) => standingRoundCell(racer, place, index, c.liveRoundDay, true)).join("")}</div>
+        <div class="mobile-standing-stats">${racer.roundDisplayPlacements.map((place, index) => standingRoundCell(racer, place, index, c.liveRound, true)).join("")}</div>
       </article>`).join("")}
     </div></section>`;
 }
@@ -1310,7 +1310,7 @@ function setupWizardValuesFromForm() {
   const checked = (name) => form.elements[name].checked;
   return {
     preset:"custom",
-    days:value("days"), heatsPerRacerPerDay:value("heatsPerRacerPerDay"),
+    rounds:value("rounds"), heatsPerRacerPerRound:value("heatsPerRacerPerRound"),
     maxMarblesPerHeat:value("maxMarblesPerHeat"), marblesPerRacer:value("marblesPerRacer"),
     wildcardMaxMarblesPerHeat:value("wildcardMaxMarblesPerHeat"),
     preliminaryMaxMarblesPerHeat:value("preliminaryMaxMarblesPerHeat"),
@@ -1342,9 +1342,9 @@ function wizardPreset(name) {
     finalRacersPromotedPerRound:1, preliminaryRacersPromotedPerRound:1, wildcardRacersPromotedPerRound:2,
   };
   const presets = {
-    express:{days:2, heatsPerRacerPerDay:1, maxMarblesPerHeat:6, wildcardMaxMarblesPerHeat:6, preliminaryMaxMarblesPerHeat:6, maxFinalByeMarblesPerRacer:1, maxPrelimPromotionMarblesPerRacer:1, maxWildcardPromotionMarblesPerRacer:1, wildcardRacersPromotedPerHeat:1, preliminaryRacersPromotedPerHeat:2, maxFinalRacers:4, scoringStyle:"podium"},
-    classic:{days:3, heatsPerRacerPerDay:3, maxMarblesPerHeat:6, wildcardMaxMarblesPerHeat:6, preliminaryMaxMarblesPerHeat:6, maxFinalByeMarblesPerRacer:2, maxPrelimPromotionMarblesPerRacer:1, maxWildcardPromotionMarblesPerRacer:2, wildcardRacersPromotedPerHeat:2, preliminaryRacersPromotedPerHeat:2, maxFinalRacers:6, scoringStyle:"classic"},
-    showcase:{days:5, heatsPerRacerPerDay:3, maxMarblesPerHeat:8, wildcardMaxMarblesPerHeat:8, preliminaryMaxMarblesPerHeat:8, maxFinalByeMarblesPerRacer:2, maxPrelimPromotionMarblesPerRacer:2, maxWildcardPromotionMarblesPerRacer:3, wildcardRacersPromotedPerHeat:3, preliminaryRacersPromotedPerHeat:3, maxFinalRacers:8, scoringStyle:"balanced"},
+    express:{rounds:2, heatsPerRacerPerRound:1, maxMarblesPerHeat:6, wildcardMaxMarblesPerHeat:6, preliminaryMaxMarblesPerHeat:6, maxFinalByeMarblesPerRacer:1, maxPrelimPromotionMarblesPerRacer:1, maxWildcardPromotionMarblesPerRacer:1, wildcardRacersPromotedPerHeat:1, preliminaryRacersPromotedPerHeat:2, maxFinalRacers:4, scoringStyle:"podium"},
+    classic:{rounds:3, heatsPerRacerPerRound:3, maxMarblesPerHeat:6, wildcardMaxMarblesPerHeat:6, preliminaryMaxMarblesPerHeat:6, maxFinalByeMarblesPerRacer:2, maxPrelimPromotionMarblesPerRacer:1, maxWildcardPromotionMarblesPerRacer:2, wildcardRacersPromotedPerHeat:2, preliminaryRacersPromotedPerHeat:2, maxFinalRacers:6, scoringStyle:"classic"},
+    showcase:{rounds:5, heatsPerRacerPerRound:3, maxMarblesPerHeat:8, wildcardMaxMarblesPerHeat:8, preliminaryMaxMarblesPerHeat:8, maxFinalByeMarblesPerRacer:2, maxPrelimPromotionMarblesPerRacer:2, maxWildcardPromotionMarblesPerRacer:3, wildcardRacersPromotedPerHeat:3, preliminaryRacersPromotedPerHeat:3, maxFinalRacers:8, scoringStyle:"balanced"},
   };
   const selected = {...shared, ...presets[name]};
   selected.maxFinalRacers = Math.max(2, Math.min(racerCount, selected.maxFinalRacers));
@@ -1361,12 +1361,12 @@ function wizardHeatSize(fieldSize, maxMarbles, marblesPerRacer = 1, racerLimit =
 
 function setupWizardProjection(draft = setupWizardDraft) {
   const racerCount = document.querySelectorAll(".contestant-config-row").length;
-  const appearances = racerCount * draft.heatsPerRacerPerDay;
+  const appearances = racerCount * draft.heatsPerRacerPerRound;
   const staging = wizardHeatSize(appearances, draft.maxMarblesPerHeat, draft.marblesPerRacer, racerCount);
-  const stagingHeats = staging.count * draft.days;
-  const byeMarbles = draft.maxFinalByeMarblesPerRacer ? Math.min(draft.days * draft.finalRacersPromotedPerRound, racerCount * draft.maxFinalByeMarblesPerRacer) : 0;
-  const directPrelim = draft.maxPrelimPromotionMarblesPerRacer ? Math.min(draft.days * draft.preliminaryRacersPromotedPerRound, racerCount * draft.maxPrelimPromotionMarblesPerRacer) : 0;
-  const wildcardMarbles = draft.maxWildcardPromotionMarblesPerRacer ? Math.min(draft.days * draft.wildcardRacersPromotedPerRound, racerCount * draft.maxWildcardPromotionMarblesPerRacer) : 0;
+  const stagingHeats = staging.count * draft.rounds;
+  const byeMarbles = draft.maxFinalByeMarblesPerRacer ? Math.min(draft.rounds * draft.finalRacersPromotedPerRound, racerCount * draft.maxFinalByeMarblesPerRacer) : 0;
+  const directPrelim = draft.maxPrelimPromotionMarblesPerRacer ? Math.min(draft.rounds * draft.preliminaryRacersPromotedPerRound, racerCount * draft.maxPrelimPromotionMarblesPerRacer) : 0;
+  const wildcardMarbles = draft.maxWildcardPromotionMarblesPerRacer ? Math.min(draft.rounds * draft.wildcardRacersPromotedPerRound, racerCount * draft.maxWildcardPromotionMarblesPerRacer) : 0;
   const wildcard = wizardHeatSize(wildcardMarbles, draft.wildcardMaxMarblesPerHeat);
   const wildcardAdvancers = wildcard.count ? Math.min(wildcardMarbles, wildcard.count * draft.wildcardRacersPromotedPerHeat) : wildcardMarbles;
   const preliminaryMarbles = directPrelim + wildcardAdvancers;
@@ -1384,7 +1384,7 @@ function wizardNumberControl(label, setting, minimum, maximum, help) {
 function wizardStageMap(projection) {
   const skipped = (stage) => stage.count ? `${stage.count} heat${stage.count === 1 ? "" : "s"}` : "auto-advance";
   return `<div class="wizard-stage-map" aria-label="Projected tournament stages">
-    <article><span>01</span><div><strong>${setupWizardDraft.days} staging rounds</strong><small>${projection.stagingHeats} heats · every racer appears ${setupWizardDraft.heatsPerRacerPerDay}× per round</small></div></article><i aria-hidden="true">→</i>
+    <article><span>01</span><div><strong>${setupWizardDraft.rounds} staging rounds</strong><small>${projection.stagingHeats} heats · every racer appears ${setupWizardDraft.heatsPerRacerPerRound}× per round</small></div></article><i aria-hidden="true">→</i>
     <article><span>02</span><div><strong>Wildcard</strong><small>Up to ${projection.wildcardMarbles} marbles · ${skipped(projection.wildcard)}</small></div></article><i aria-hidden="true">→</i>
     <article><span>03</span><div><strong>Preliminary</strong><small>Up to ${projection.preliminaryMarbles} marbles · ${skipped(projection.preliminary)}</small></div></article><i aria-hidden="true">→</i>
     <article><span>04</span><div><strong>The final</strong><small>Up to ${projection.finalists} racers · one marble each</small></div></article>
@@ -1444,8 +1444,8 @@ function renderSetupWizardStep() {
       <div class="wizard-current-note"><strong>${setupWizardDraft.preset === "custom" ? "Your current expert settings are loaded." : `${setupWizardDraft.preset[0].toUpperCase()}${setupWizardDraft.preset.slice(1)} format selected.`}</strong><span>You can change any recommendation before applying it.</span></div>`;
   } else if (setupWizardStep === 1) {
     body.innerHTML = `<div class="wizard-layout"><div><p class="eyebrow">Staging rounds</p><h3>Give every racer enough track time</h3><p class="wizard-lead">More rounds improve the chance that consistent racers rise to the top. More appearances per round reduce luck, but add heats.</p><div class="wizard-controls">
-      ${wizardNumberControl("Race rounds", "days", 1, 30, "Each round produces a new set of championship qualifiers.")}
-      ${wizardNumberControl("Heats per racer / round", "heatsPerRacerPerDay", 1, 20, "How often each racer appears in every round.")}
+      ${wizardNumberControl("Race rounds", "rounds", 1, 30, "Each round produces a new set of championship qualifiers.")}
+      ${wizardNumberControl("Heats per racer / round", "heatsPerRacerPerRound", 1, 20, "How often each racer appears in every round.")}
       ${wizardNumberControl("Marbles per racer / heat", "marblesPerRacer", 1, 20, "Extra marbles add scoring depth but reduce racers per heat.")}
       ${wizardNumberControl("Track marble limit", "maxMarblesPerHeat", 2, 480, "The maximum number of marbles your track can handle safely.")}
       </div></div><aside class="wizard-impact ${projection.valid ? "" : "invalid"}">${wizardStagingImpact(projection)}</aside></div>`;
@@ -1490,7 +1490,7 @@ function wizardScoringPoints(style, placeCount) {
 
 function applySetupWizard() {
   const form = document.querySelector("#config-form");
-  const numericSettings = ["days", "heatsPerRacerPerDay", "maxMarblesPerHeat", "marblesPerRacer", "wildcardMaxMarblesPerHeat", "preliminaryMaxMarblesPerHeat", "maxFinalByeMarblesPerRacer", "maxPrelimMarblesForRacerWithFinalBye", "maxWildcardMarblesForRacerWithFinalBye", "maxPrelimPromotionMarblesPerRacer", "maxWildcardMarblesForRacerWithPrelimPromotion", "maxWildcardPromotionMarblesPerRacer", "wildcardRacersPromotedPerHeat", "preliminaryRacersPromotedPerHeat", "finalRacersPromotedPerRound", "preliminaryRacersPromotedPerRound", "wildcardRacersPromotedPerRound", "maxFinalRacers"];
+  const numericSettings = ["rounds", "heatsPerRacerPerRound", "maxMarblesPerHeat", "marblesPerRacer", "wildcardMaxMarblesPerHeat", "preliminaryMaxMarblesPerHeat", "maxFinalByeMarblesPerRacer", "maxPrelimMarblesForRacerWithFinalBye", "maxWildcardMarblesForRacerWithFinalBye", "maxPrelimPromotionMarblesPerRacer", "maxWildcardMarblesForRacerWithPrelimPromotion", "maxWildcardPromotionMarblesPerRacer", "wildcardRacersPromotedPerHeat", "preliminaryRacersPromotedPerHeat", "finalRacersPromotedPerRound", "preliminaryRacersPromotedPerRound", "wildcardRacersPromotedPerRound", "maxFinalRacers"];
   const checkboxSettings = ["allowCascadingFinalByeSelection", "allowCascadingPrelimPromotionSelection", "allowCascadingWildcardPromotionSelection"];
   numericSettings.forEach((name) => { form.elements[name].value = setupWizardDraft[name]; });
   checkboxSettings.forEach((name) => { form.elements[name].checked = setupWizardDraft[name]; });
@@ -1512,12 +1512,12 @@ function renderSetup() {
         <details class="config-group" id="staging-rounds-group">
           <summary class="eyebrow">Staging rounds</summary>
           <div class="field-grid">
-            <label class="field"><span class="field-label-text">Race rounds${fieldHelp(`How many staging rounds run before the championship stage. Each round is its own self-contained pool: the bye/preliminary/wildcard tiers award ${fieldLink("finalRacersPromotedPerRound", "final")}, ${fieldLink("preliminaryRacersPromotedPerRound", "preliminary")}, and ${fieldLink("wildcardRacersPromotedPerRound", "wildcard")} seats per round (see below), so more rounds means more separate chances for every racer to qualify, and more marbles the top performers can stack up across rounds via the cross-round bonus caps.`)}</span><input name="days" type="number" min="1" max="30" value="${c.days}" required></label>
-            <label class="field"><span class="field-label-text">Heats per racer / round${fieldHelp(`How many times each racer races within a single round. Together with racer count, ${fieldLink("maxMarblesPerHeat", "max marbles per heat")}, and ${fieldLink("marblesPerRacer", "marbles per racer / heat")}, this decides how many heats a round splits into (see the preview below) and therefore how many total results feed that round's standings before byes/preliminary/wildcard seats are awarded.`)}</span><input name="heatsPerRacerPerDay" type="number" min="1" max="20" value="${c.heatsPerRacerPerDay}" required></label>
-            <label class="field"><span class="field-label-text">Max marbles per heat${fieldHelp(`Sizes staging heats automatically: the app packs marbles into the largest complete heat that fits under this ceiling, then repeats heats until every racer has raced ${fieldLink("heatsPerRacerPerDay", "heats per racer / round")} times. A lower limit means more, smaller heats per round. This is independent of the separate size limits for wildcard and preliminary heats further down.`)}</span><input name="maxMarblesPerHeat" type="number" min="2" max="480" value="${c.maxMarblesPerHeat}" required></label>
+            <label class="field"><span class="field-label-text">Race rounds${fieldHelp(`How many staging rounds run before the championship stage. Each round is its own self-contained pool: the bye/preliminary/wildcard tiers award ${fieldLink("finalRacersPromotedPerRound", "final")}, ${fieldLink("preliminaryRacersPromotedPerRound", "preliminary")}, and ${fieldLink("wildcardRacersPromotedPerRound", "wildcard")} seats per round (see below), so more rounds means more separate chances for every racer to qualify, and more marbles the top performers can stack up across rounds via the cross-round bonus caps.`)}</span><input name="rounds" type="number" min="1" max="30" value="${c.rounds}" required></label>
+            <label class="field"><span class="field-label-text">Heats per racer / round${fieldHelp(`How many times each racer races within a single round. Together with racer count, ${fieldLink("maxMarblesPerHeat", "max marbles per heat")}, and ${fieldLink("marblesPerRacer", "marbles per racer / heat")}, this decides how many heats a round splits into (see the preview below) and therefore how many total results feed that round's standings before byes/preliminary/wildcard seats are awarded.`)}</span><input name="heatsPerRacerPerRound" type="number" min="1" max="20" value="${c.heatsPerRacerPerRound}" required></label>
+            <label class="field"><span class="field-label-text">Max marbles per heat${fieldHelp(`Sizes staging heats automatically: the app packs marbles into the largest complete heat that fits under this ceiling, then repeats heats until every racer has raced ${fieldLink("heatsPerRacerPerRound", "heats per racer / round")} times. A lower limit means more, smaller heats per round. This is independent of the separate size limits for wildcard and preliminary heats further down.`)}</span><input name="maxMarblesPerHeat" type="number" min="2" max="480" value="${c.maxMarblesPerHeat}" required></label>
             <label class="field"><span class="field-label-text">Marbles per racer / heat${fieldHelp("How many marbles each racer runs per staging heat. Applies to staging (round) heats only &mdash; the final always uses exactly one marble per racer regardless of this setting, and wildcard/preliminary heats instead use however many marble slots that racer earned through promotion.")}</span><input name="marblesPerRacer" type="number" min="1" max="20" value="${c.marblesPerRacer}" required></label>
           </div>
-          <div class="schedule-preview" id="schedule-preview"><strong>${c.heatsPerDay} heats per round · ${c.racersPerHeat} racers per heat</strong><span>Every racer appears ${c.heatsPerRacerPerDay} times each round; each heat uses ${c.marblesPerHeat} of the ${c.maxMarblesPerHeat} allowed marbles.</span></div>
+          <div class="schedule-preview" id="schedule-preview"><strong>${c.heatsPerRound} heats per round · ${c.racersPerHeat} racers per heat</strong><span>Every racer appears ${c.heatsPerRacerPerRound} times each round; each heat uses ${c.marblesPerHeat} of the ${c.maxMarblesPerHeat} allowed marbles.</span></div>
           <label class="field wide"><span class="field-label-text">Points by finishing place${fieldHelp("Comma-separated points awarded for 1st, 2nd, 3rd, etc. within a heat; any place beyond the list scores zero, and DNFs always score zero. These points sum across a round's heats into that round's standings, which decide who wins the round's bye/preliminary/wildcard seats &mdash; so changing the point spread can change who qualifies for the championship without changing a single finishing order.")}</span><input name="points" value="${state.points.join(", ")}" required></label>
         </details>
         <div class="config-callout" id="tiebreak-callout" hidden><span aria-hidden="true">&#9432;</span><div><strong>How ties are broken</strong><small>A round's standings are ranked by points, then by how many times each racer placed 1st, then 2nd, then 3rd, and so on through every placement reached that round (a DNF counts as worse than any real placement) &mdash; so most ties resolve on their own from the actual results. If racers still match exactly on every level <em>and</em> the order between them would change who gets a bye, preliminary, or wildcard seat, that round pauses: racing can't continue until an organizer manually picks the order from a prompt on the Dashboard, Standings, or Rounds view. Ties that don't affect a seat (e.g. two racers tied for last) are simply shown tied &mdash; both display a blue &ldquo;i&rdquo; marker rather than the amber !, since there's nothing to act on. Once an organizer resolves a tie, that placement keeps the same blue &ldquo;i&rdquo; marker so it stays clear the order was a manual call, not a result decided by the racing itself.</small></div></div>
@@ -1598,7 +1598,7 @@ function configPayload(confirmReset = false) {
   const form = document.querySelector("#config-form");
   const formData = new FormData(form);
   const contestants = [...form.querySelectorAll(".contestant-config-row")].map((row) => ({color:row.querySelector('input[type="color"]').value, name:row.querySelector('input[type="text"]').value}));
-  return {name:formData.get("name"), days:formData.get("days"), heatsPerRacerPerDay:formData.get("heatsPerRacerPerDay"), maxMarblesPerHeat:formData.get("maxMarblesPerHeat"), marblesPerRacer:formData.get("marblesPerRacer"), wildcardMaxMarblesPerHeat:formData.get("wildcardMaxMarblesPerHeat"), preliminaryMaxMarblesPerHeat:formData.get("preliminaryMaxMarblesPerHeat"), maxFinalByeMarblesPerRacer:formData.get("maxFinalByeMarblesPerRacer"), maxPrelimMarblesForRacerWithFinalBye:formData.get("maxPrelimMarblesForRacerWithFinalBye"), maxWildcardMarblesForRacerWithFinalBye:formData.get("maxWildcardMarblesForRacerWithFinalBye"), allowCascadingFinalByeSelection:formData.get("allowCascadingFinalByeSelection") === "on", maxPrelimPromotionMarblesPerRacer:formData.get("maxPrelimPromotionMarblesPerRacer"), allowCascadingPrelimPromotionSelection:formData.get("allowCascadingPrelimPromotionSelection") === "on", maxWildcardMarblesForRacerWithPrelimPromotion:formData.get("maxWildcardMarblesForRacerWithPrelimPromotion"), maxWildcardPromotionMarblesPerRacer:formData.get("maxWildcardPromotionMarblesPerRacer"), allowCascadingWildcardPromotionSelection:formData.get("allowCascadingWildcardPromotionSelection") === "on", wildcardRacersPromotedPerHeat:formData.get("wildcardRacersPromotedPerHeat"), preliminaryRacersPromotedPerHeat:formData.get("preliminaryRacersPromotedPerHeat"), finalRacersPromotedPerRound:formData.get("finalRacersPromotedPerRound"), preliminaryRacersPromotedPerRound:formData.get("preliminaryRacersPromotedPerRound"), wildcardRacersPromotedPerRound:formData.get("wildcardRacersPromotedPerRound"), maxFinalRacers:formData.get("maxFinalRacers"), points:String(formData.get("points")).split(",").map((value) => value.trim()), contestants, confirmReset};
+  return {name:formData.get("name"), rounds:formData.get("rounds"), heatsPerRacerPerRound:formData.get("heatsPerRacerPerRound"), maxMarblesPerHeat:formData.get("maxMarblesPerHeat"), marblesPerRacer:formData.get("marblesPerRacer"), wildcardMaxMarblesPerHeat:formData.get("wildcardMaxMarblesPerHeat"), preliminaryMaxMarblesPerHeat:formData.get("preliminaryMaxMarblesPerHeat"), maxFinalByeMarblesPerRacer:formData.get("maxFinalByeMarblesPerRacer"), maxPrelimMarblesForRacerWithFinalBye:formData.get("maxPrelimMarblesForRacerWithFinalBye"), maxWildcardMarblesForRacerWithFinalBye:formData.get("maxWildcardMarblesForRacerWithFinalBye"), allowCascadingFinalByeSelection:formData.get("allowCascadingFinalByeSelection") === "on", maxPrelimPromotionMarblesPerRacer:formData.get("maxPrelimPromotionMarblesPerRacer"), allowCascadingPrelimPromotionSelection:formData.get("allowCascadingPrelimPromotionSelection") === "on", maxWildcardMarblesForRacerWithPrelimPromotion:formData.get("maxWildcardMarblesForRacerWithPrelimPromotion"), maxWildcardPromotionMarblesPerRacer:formData.get("maxWildcardPromotionMarblesPerRacer"), allowCascadingWildcardPromotionSelection:formData.get("allowCascadingWildcardPromotionSelection") === "on", wildcardRacersPromotedPerHeat:formData.get("wildcardRacersPromotedPerHeat"), preliminaryRacersPromotedPerHeat:formData.get("preliminaryRacersPromotedPerHeat"), finalRacersPromotedPerRound:formData.get("finalRacersPromotedPerRound"), preliminaryRacersPromotedPerRound:formData.get("preliminaryRacersPromotedPerRound"), wildcardRacersPromotedPerRound:formData.get("wildcardRacersPromotedPerRound"), maxFinalRacers:formData.get("maxFinalRacers"), points:String(formData.get("points")).split(",").map((value) => value.trim()), contestants, confirmReset};
 }
 
 function updateSchedulePreview() {
@@ -1607,9 +1607,9 @@ function updateSchedulePreview() {
   if (!form || !preview) return;
   const racerCount = form.querySelectorAll(".contestant-config-row").length;
   const maxMarblesPerHeat = Number(form.elements.maxMarblesPerHeat.value);
-  const appearances = Number(form.elements.heatsPerRacerPerDay.value);
+  const appearances = Number(form.elements.heatsPerRacerPerRound.value);
   const marblesPerRacer = Number(form.elements.marblesPerRacer.value);
-  const days = Number(form.elements.days.value);
+  const rounds = Number(form.elements.rounds.value);
   const slots = racerCount * appearances;
   const racerCapacity = Math.min(racerCount, 24, Math.floor(maxMarblesPerHeat / marblesPerRacer));
   let raceSize = 0;
@@ -1621,10 +1621,10 @@ function updateSchedulePreview() {
     preview.innerHTML = `<strong>No full heat schedule fits this maximum</strong><span>Increase max marbles per heat or adjust heats per racer per round.</span>`;
     return;
   }
-  const heatsPerDay = slots / raceSize;
+  const heatsPerRound = slots / raceSize;
   preview.classList.remove("invalid");
   const marblesPerHeat = raceSize * marblesPerRacer;
-  preview.innerHTML = `<strong>${heatsPerDay} heats per round · ${heatsPerDay * days} total</strong><span>${raceSize} racers per heat with ${marblesPerRacer} marble${marblesPerRacer === 1 ? "" : "s"} each; ${marblesPerHeat} of ${maxMarblesPerHeat} allowed marbles are used.</span>`;
+  preview.innerHTML = `<strong>${heatsPerRound} heats per round · ${heatsPerRound * rounds} total</strong><span>${raceSize} racers per heat with ${marblesPerRacer} marble${marblesPerRacer === 1 ? "" : "s"} each; ${marblesPerHeat} of ${maxMarblesPerHeat} allowed marbles are used.</span>`;
 }
 
 async function saveConfiguration(event) {
@@ -1665,7 +1665,7 @@ async function createTournament(event) {
       window.location.assign(`/workspace?tournament=${tournamentId}&view=setup`);
       return;
     }
-    activeDay = 1;
+    activeRound = 1;
     activeView = "setup";
     applyState(created);
     notify("New tournament created. Its settings and results are independent.");
@@ -1681,7 +1681,7 @@ async function deleteCurrentTournament() {
       window.location.assign("/");
       return;
     }
-    activeDay = 1;
+    activeRound = 1;
     activeView = "dashboard";
     await loadState(result.nextTournamentId);
     notify("Tournament deleted.");
@@ -1747,7 +1747,7 @@ document.addEventListener("click", (event) => {
   const viewButton = event.target.closest("[data-view]");
   if (viewButton) {
     activeView = viewButton.dataset.view;
-    if (viewButton.dataset.day) activeDay = viewButton.dataset.day === "championship" ? "championship" : Number(viewButton.dataset.day);
+    if (viewButton.dataset.round) activeRound = viewButton.dataset.round === "championship" ? "championship" : Number(viewButton.dataset.round);
     render();
     window.scrollTo({top:0, behavior:"smooth"});
     return;
@@ -1761,10 +1761,10 @@ document.addEventListener("click", (event) => {
   if (tiePickButton) { tieBreakOrder = [...tieBreakOrder, Number(tiePickButton.dataset.tiePick)]; tieBreakImpactWarning = null; syncTieBreakDialog(); return; }
   if (event.target.closest("[data-tie-break-reset]")) { tieBreakOrder = []; tieBreakImpactWarning = null; syncTieBreakDialog(); return; }
   if (event.target.closest("[data-tie-break-confirm]")) { confirmTieBreak(); return; }
-  const dayButton = event.target.closest("[data-day]");
-  if (dayButton) { activeDay = dayButton.dataset.day === "championship" ? "championship" : Number(dayButton.dataset.day); render(); return; }
+  const roundButton = event.target.closest("[data-round]");
+  if (roundButton) { activeRound = roundButton.dataset.round === "championship" ? "championship" : Number(roundButton.dataset.round); render(); return; }
   const scoreButton = event.target.closest("[data-score-heat]");
-  if (scoreButton) { const heat = state.days.flatMap((day) => day.heats).find((item) => item.id === Number(scoreButton.dataset.scoreHeat)); activeDay = heat.day; activeView = "heats"; render(); requestAnimationFrame(() => document.querySelector(`#heat-${heat.id}`)?.scrollIntoView({behavior:"smooth", block:"center"})); return; }
+  if (scoreButton) { const heat = state.rounds.flatMap((round) => round.heats).find((item) => item.id === Number(scoreButton.dataset.scoreHeat)); activeRound = heat.round; activeView = "heats"; render(); requestAnimationFrame(() => document.querySelector(`#heat-${heat.id}`)?.scrollIntoView({behavior:"smooth", block:"center"})); return; }
   const saveHeatButton = event.target.closest("[data-save-heat]");
   if (saveHeatButton) { saveHeat(Number(saveHeatButton.dataset.saveHeat)); return; }
   const startHeatButton = event.target.closest("[data-start-heat]");
@@ -1783,7 +1783,7 @@ document.addEventListener("submit", (event) => {
 
 tournamentSwitcher.addEventListener("change", async (event) => {
   activeTournamentId = Number(event.target.value);
-  activeDay = 1;
+  activeRound = 1;
   await loadState(activeTournamentId);
 });
 
@@ -1797,7 +1797,7 @@ document.addEventListener("input", (event) => {
     }
     return;
   }
-  if (event.target.closest("#config-form") && ["days", "heatsPerRacerPerDay", "maxMarblesPerHeat", "marblesPerRacer"].includes(event.target.name)) updateSchedulePreview();
+  if (event.target.closest("#config-form") && ["rounds", "heatsPerRacerPerRound", "maxMarblesPerHeat", "marblesPerRacer"].includes(event.target.name)) updateSchedulePreview();
   if (event.target.matches('.contestant-color-marble input[type="color"]')) event.target.previousElementSibling?.style.setProperty("--marble-color", event.target.value);
   if (event.target.closest("#config-form") && event.target.name) {
     document.querySelectorAll(`[data-live-value-for="${event.target.name}"]`).forEach((span) => {

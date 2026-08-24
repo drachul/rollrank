@@ -285,13 +285,13 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible { 
 .view-heading { display:flex; align-items:flex-end; justify-content:space-between; gap:25px; margin-bottom:27px; }
 .view-heading h1 { margin:5px 0 6px; font-size:34px; letter-spacing:-.045em; color:var(--ink); }
 .view-heading>div>p:last-child { max-width:700px; margin:0; color:var(--muted); font-size:13px; line-height:1.45; }
-.day-tabs { display:flex; gap:8px; margin-bottom:18px; overflow:auto; padding-bottom:3px; }
-.day-tabs button { min-width:110px; padding:10px 13px; border:1px solid var(--line); border-radius:10px; background:rgba(255,255,255,.05); color:var(--muted); text-align:left; cursor:pointer; }
-.day-tabs button span,.day-tabs button small { display:block; }
-.day-tabs button span { color:var(--ink); font-size:12px; font-weight:850; }
-.day-tabs button small { margin-top:3px; font-size:9px; }
-.day-tabs button.active { border-color:var(--blue); background:var(--blue); color:#dbeaff; box-shadow:0 7px 17px rgba(47,128,237,.18); }
-.day-tabs button.active span { color:#fff; }
+.round-tabs { display:flex; gap:8px; margin-bottom:18px; overflow:auto; padding-bottom:3px; }
+.round-tabs button { min-width:110px; padding:10px 13px; border:1px solid var(--line); border-radius:10px; background:rgba(255,255,255,.05); color:var(--muted); text-align:left; cursor:pointer; }
+.round-tabs button span,.round-tabs button small { display:block; }
+.round-tabs button span { color:var(--ink); font-size:12px; font-weight:850; }
+.round-tabs button small { margin-top:3px; font-size:9px; }
+.round-tabs button.active { border-color:var(--blue); background:var(--blue); color:#dbeaff; box-shadow:0 7px 17px rgba(47,128,237,.18); }
+.round-tabs button.active span { color:#fff; }
 .heat-list { display:grid; gap:12px; }
 .heat-card { overflow:hidden; border:1px solid var(--line); border-radius:13px; background:var(--panel); box-shadow:var(--shadow); }
 .heat-card.complete { border-color:rgba(40,167,101,.4); }
@@ -537,8 +537,8 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible { 
 .tie-break-warning>span { display:grid; width:20px; height:20px; flex:0 0 auto; place-items:center; border-radius:50%; background:var(--red); color:#fff; font-size:11px; font-weight:900; }
 .tie-break-warning strong { display:block; margin-bottom:3px; font-size:11px; color:#ff9d95; }
 .tie-break-warning p { margin:0; color:var(--muted); font-size:10px; line-height:1.5; }
-.tie-break-warning-days { display:flex; flex-direction:column; gap:8px; margin:8px 0 0; padding:0; list-style:none; }
-.tie-break-warning-days>li>strong { display:block; margin-bottom:4px; font-size:9px; font-weight:750; color:#ff9d95; text-transform:uppercase; letter-spacing:.03em; }
+.tie-break-warning-rounds { display:flex; flex-direction:column; gap:8px; margin:8px 0 0; padding:0; list-style:none; }
+.tie-break-warning-rounds>li>strong { display:block; margin-bottom:4px; font-size:9px; font-weight:750; color:#ff9d95; text-transform:uppercase; letter-spacing:.03em; }
 .tie-break-warning-seats { display:flex; flex-direction:column; gap:4px; margin:0; padding:0; list-style:none; }
 .tie-break-warning-seats li { display:flex; align-items:center; gap:8px; font-size:10px; color:var(--muted); }
 .tie-break-warning-seats small { margin-left:auto; font-weight:750; color:var(--ink); text-align:right; }
@@ -977,9 +977,9 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible { 
   .progress-label { margin-top:24px; }
   .view-heading { margin-bottom:20px; }
   .view-heading h1 { font-size:30px; }
-  .day-tabs { margin-right:-12px; margin-left:-12px; padding:0 12px 5px; scrollbar-width:none; }
-  .day-tabs::-webkit-scrollbar { display:none; }
-  .day-tabs button { min-width:105px; min-height:48px; }
+  .round-tabs { margin-right:-12px; margin-left:-12px; padding:0 12px 5px; scrollbar-width:none; }
+  .round-tabs::-webkit-scrollbar { display:none; }
+  .round-tabs button { min-width:105px; min-height:48px; }
   .next-heat { grid-template-columns:60px 1fr; }
   .next-heat>.primary-button { grid-column:1/-1; min-height:44px; margin:0; border-radius:0; }
   .racer-preview { grid-template-columns:repeat(2,minmax(0,1fr)); }
