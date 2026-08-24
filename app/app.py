@@ -330,7 +330,12 @@ def _projected_roster(
                         "originStage": origin_stage,
                         "originHeatId": heat["id"],
                         "qualifyingPlace": index + 1,
-                        "seedRounds": qualifier_entry.get("seedRounds", []),
+                        # Same reasoning as the wildcard->preliminary
+                        # projection below: qualifier_entry's seedRounds
+                        # spans every round behind any of their marbles in
+                        # this source heat, but only one new marble is
+                        # advancing here, so take just the earliest.
+                        "seedRounds": qualifier_entry.get("seedRounds", [])[:1],
                         "decided": True,
                     }
                 )
