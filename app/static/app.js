@@ -96,6 +96,25 @@ function kioskPendingTieBreakBanner() {
   return `<div class="kiosk-tiebreak-banner"><span aria-hidden="true">!</span><div><strong>Round ${pending.day} tiebreak pending</strong><p>${names} finished tied on points, wins, and placement. Racing is paused until it's resolved from the scoring device.</p></div></div>`;
 }
 
+function tieBreakWarningMarkup(impact) {
+  const {affectedDays, seatChanges, newTiebreaks} = impact;
+  const tierText = (tier) => tier ? tierLabel[tier] : "no seat";
+  const changesByDay = new Map();
+  for (const change of seatChanges) {
+    if (!changesByDay.has(change.day)) changesByDay.set(change.day, []);
+    changesByDay.get(change.day).push(change);
+  }
+  const dayListMarkup = `<ul class="tie-break-warning-days">${[...changesByDay.entries()]
+    .map(([day, changes]) => `<li><strong>Round ${day}</strong><ul class="tie-break-warning-seats">${changes
+      .map((change) => `<li>${marble(change.racerColor, "small")}<span>${escapeHtml(change.racerName)}</span><small>${tierText(change.fromTier)} → ${tierText(change.toTier)}</small></li>`)
+      .join("")}</ul></li>`)
+    .join("")}</ul>`;
+  const newTiebreaksMarkup = newTiebreaks.length
+    ? `<p class="tie-break-warning-note">It will also leave ${newTiebreaks.length === 1 ? "a new tie" : "new ties"} in Round${newTiebreaks.length === 1 ? "" : "s"} ${newTiebreaks.map((entry) => entry.day).join(", ")} that will need its own tiebreak once you confirm this one.</p>`
+    : "";
+  return `<div class="tie-break-warning"><span aria-hidden="true">!</span><div><strong>This also changes ${affectedDays.length === 1 ? "an earlier round" : "earlier rounds"}</strong><p>Applying this order changes who holds these seats in Round${affectedDays.length === 1 ? "" : "s"} ${affectedDays.join(", ")}:</p>${dayListMarkup}${newTiebreaksMarkup}</div></div>`;
+}
+
 function tieBreakDialogBody() {
   const pending = state?.pendingTieBreak;
   if (!pending) return "";
@@ -114,9 +133,7 @@ function tieBreakDialogBody() {
         .join("")}</div>`
     : "";
   const allPicked = tieBreakOrder.length === pending.racers.length;
-  const warningMarkup = tieBreakImpactWarning
-    ? `<div class="tie-break-warning"><span aria-hidden="true">!</span><div><strong>This also changes ${tieBreakImpactWarning.length === 1 ? "an earlier round" : "earlier rounds"}</strong><p>Applying this order changes the bye/preliminary/wildcard result already shown for Round${tieBreakImpactWarning.length === 1 ? "" : "s"} ${tieBreakImpactWarning.join(", ")}. Confirm to apply it anyway.</p></div></div>`
-    : "";
+  const warningMarkup = tieBreakImpactWarning ? tieBreakWarningMarkup(tieBreakImpactWarning) : "";
   const confirmLabel = tieBreakImpactWarning ? "Yes, apply anyway" : "Confirm order";
   return `<header><div><p class="eyebrow">Round ${pending.day} tiebreak</p><h2 id="tie-break-dialog-title">Resolve the tie for Round ${pending.day}</h2></div><button type="button" data-close-tie-break aria-label="Close">×</button></header><p>These racers matched on points, wins, and placement this round. Click them below in the order they should rank, highest first, to decide who wins the ${seatNoun} on the line.</p>${orderMarkup}${picksMarkup}${warningMarkup}<div class="dialog-actions"><button type="button" class="secondary-button" data-tie-break-reset ${tieBreakOrder.length ? "" : "disabled"}>Reset</button><button type="button" class="primary-button" data-tie-break-confirm ${allPicked ? "" : "disabled"}>${confirmLabel}</button></div>`;
 }
@@ -151,7 +168,11 @@ async function confirmTieBreak() {
       body: JSON.stringify({order: tieBreakOrder, confirmEarlierImpact: tieBreakImpactWarning !== null}),
     });
     if (response.needsConfirmation) {
-      tieBreakImpactWarning = response.affectedDays;
+      tieBreakImpactWarning = {
+        affectedDays: response.affectedDays,
+        seatChanges: response.seatChanges,
+        newTiebreaks: response.newTiebreaks,
+      };
       syncTieBreakDialog();
       return;
     }

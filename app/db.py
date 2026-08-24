@@ -1182,6 +1182,7 @@ def _is_tie_group_consequential(
     racer_ids: list[int],
     existing_day_override: dict[int, int],
     base_snapshot: frozenset[tuple[str, int, int]],
+    extra_overrides: dict[int, dict[int, int]] | None = None,
 ) -> bool:
     """Whether reversing this one tied cluster's order -- holding every
     other day, and every other already-resolved cluster on this same day,
@@ -1192,33 +1193,135 @@ def _is_tie_group_consequential(
     order) -- each is judged on its own, since one being consequential
     doesn't make the other one too. `existing_day_override` must already
     exclude this cluster's own racers so their hypothetical reversal isn't
-    itself overridden away."""
+    itself overridden away.
+
+    `extra_overrides`, when given, is merged in underneath this cluster's own
+    hypothetical reversal -- used to ask "is this cluster consequential in a
+    world where some *other* day's tie has already been resolved a certain
+    way," which must match whatever world `base_snapshot` was itself computed
+    against."""
     hypothetical_day_override = dict(existing_day_override)
     hypothetical_day_override.update({rid: i for i, rid in enumerate(reversed(racer_ids))})
-    alt_snapshot = _championship_tier_snapshot(
-        connection, tournament_id, tie_overrides={day: hypothetical_day_override}
-    )
+    tie_overrides = dict(extra_overrides or {})
+    tie_overrides[day] = hypothetical_day_override
+    alt_snapshot = _championship_tier_snapshot(connection, tournament_id, tie_overrides=tie_overrides)
     return base_snapshot != alt_snapshot
+
+
+def _newly_consequential_earlier_ties(
+    connection: sqlite3.Connection,
+    tournament_id: int,
+    pending_day: int,
+    pending_override: dict[int, int],
+) -> list[dict[str, Any]]:
+    """Already-raced days before `pending_day` that hold a tied cluster which
+    is harmless right now (so was left alone, falling back to roster order)
+    but would need an organizer's manual call of its own once
+    `pending_override` is applied to `pending_day` -- because the cross-round
+    bonus-capacity ripple from that change makes the earlier cluster's order
+    actually decide a seat for the first time. Returns one entry per day with
+    a newly-consequential cluster, listing just the racers in that cluster."""
+    extra_overrides = {pending_day: pending_override}
+    base_snapshot = _championship_tier_snapshot(connection, tournament_id, tie_overrides=extra_overrides)
+    results: list[dict[str, Any]] = []
+    for candidate_day in range(1, pending_day):
+        ranking = round_standings(connection, tournament_id, candidate_day)
+        groups: dict[tuple[int, tuple[int, ...]], list[dict[str, Any]]] = {}
+        for row in ranking:
+            groups.setdefault((row["totalPoints"], row["placementVector"]), []).append(row)
+        candidate_groups = [group for group in groups.values() if len(group) > 1]
+        if not candidate_groups:
+            continue
+        existing_override = {
+            row["racer_id"]: row["resolved_rank"]
+            for row in connection.execute(
+                "SELECT racer_id, resolved_rank FROM round_tiebreaks WHERE tournament_id = ? AND day = ?",
+                (tournament_id, candidate_day),
+            )
+        }
+        resolved_racer_ids = set(existing_override)
+        newly_tied_racers: list[dict[str, Any]] = []
+        for group in candidate_groups:
+            racer_ids = [row["id"] for row in group]
+            if resolved_racer_ids.issuperset(racer_ids):
+                continue
+            if _is_tie_group_consequential(
+                connection, tournament_id, candidate_day, racer_ids, existing_override, base_snapshot,
+                extra_overrides=extra_overrides,
+            ):
+                newly_tied_racers.extend(
+                    {"id": row["id"], "name": row["name"], "color": row["color"]} for row in group
+                )
+        if newly_tied_racers:
+            results.append({"day": candidate_day, "racers": newly_tied_racers})
+    return results
 
 
 def tiebreak_earlier_round_impact(
     connection: sqlite3.Connection, tournament_id: int, day: int, order: list[int]
-) -> list[int]:
-    """Days before `day` whose bye/preliminary/wildcard result would change
-    if `order` (best to worst) were applied to day's tie -- possible because
-    bye_racer_ids/prelim_racer_ids in championship_field() are whole-
+) -> dict[str, Any]:
+    """Whether applying `order` (best to worst) to day's tie changes the
+    bye/preliminary/wildcard result of any day before `day` -- possible
+    because bye_racer_ids/prelim_racer_ids in championship_field() are whole-
     tournament sets resolved before each tier's pass over every day, so
     which racer wins *this* day's bye or preliminary seat can retroactively
     change the bonus-capacity lookup an *earlier* day's own promotion
-    depended on. Returns the sorted list of affected day numbers, empty if
-    resolving this tie only ever affects day itself or later."""
+    depended on.
+
+    Returns:
+    - affectedDays: sorted earlier day numbers whose seat assignments change.
+    - seatChanges: one entry per (day, racer) whose tier flips, with the
+      racer's name/color and the tier it moves from/to (None meaning no
+      seat at all), so the organizer sees exactly which position moves
+      rather than just which day is touched.
+    - newTiebreaks: earlier days that currently have a harmless (unresolved,
+      never-prompted) tied cluster which this change would turn
+      consequential -- a heads-up that confirming here will surface another
+      tiebreak prompt for that day next.
+
+    Everything is empty if resolving this tie only ever affects day itself
+    or later.
+    """
     tie_override = {racer_id: rank for rank, racer_id in enumerate(order)}
     base_snapshot = _championship_tier_snapshot(connection, tournament_id)
     proposed_snapshot = _championship_tier_snapshot(
         connection, tournament_id, tie_overrides={day: tie_override}
     )
-    changed = base_snapshot.symmetric_difference(proposed_snapshot)
-    return sorted({origin_round for _tier, origin_round, _racer_id in changed if origin_round < day})
+    base_by_seat = {(origin_round, racer_id): tier for tier, origin_round, racer_id in base_snapshot}
+    proposed_by_seat = {(origin_round, racer_id): tier for tier, origin_round, racer_id in proposed_snapshot}
+    changed_seats = {
+        seat
+        for seat in set(base_by_seat) | set(proposed_by_seat)
+        if seat[0] < day and base_by_seat.get(seat) != proposed_by_seat.get(seat)
+    }
+    if not changed_seats:
+        return {"affectedDays": [], "seatChanges": [], "newTiebreaks": []}
+
+    racers = {
+        row["id"]: row
+        for row in connection.execute(
+            "SELECT id, name, color FROM racers WHERE tournament_id = ?", (tournament_id,)
+        )
+    }
+    seat_changes = sorted(
+        (
+            {
+                "day": origin_round,
+                "racerId": racer_id,
+                "racerName": racers[racer_id]["name"],
+                "racerColor": racers[racer_id]["color"],
+                "fromTier": base_by_seat.get((origin_round, racer_id)),
+                "toTier": proposed_by_seat.get((origin_round, racer_id)),
+            }
+            for origin_round, racer_id in changed_seats
+        ),
+        key=lambda change: (change["day"], change["racerName"]),
+    )
+    return {
+        "affectedDays": sorted({change["day"] for change in seat_changes}),
+        "seatChanges": seat_changes,
+        "newTiebreaks": _newly_consequential_earlier_ties(connection, tournament_id, day, tie_override),
+    }
 
 
 def pending_round_tiebreak(

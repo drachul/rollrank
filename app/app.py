@@ -1524,9 +1524,9 @@ def resolve_round_tiebreak(tournament_id: int, day: int):
             raise ApiError("The submitted racers do not match the tied racers for this round.")
 
         if not confirm_earlier_impact:
-            affected_days = tiebreak_earlier_round_impact(connection, tournament_id, day, racer_ids)
-            if affected_days:
-                return jsonify({"needsConfirmation": True, "affectedDays": affected_days})
+            impact = tiebreak_earlier_round_impact(connection, tournament_id, day, racer_ids)
+            if impact["affectedDays"]:
+                return jsonify({"needsConfirmation": True, **impact})
 
         connection.execute(
             "DELETE FROM round_tiebreaks WHERE tournament_id = ? AND day = ?",
