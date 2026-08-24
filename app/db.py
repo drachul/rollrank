@@ -25,8 +25,10 @@ DEFAULT_POINTS = [10, 7, 5, 3, 2, 1]
 MAX_RACERS_PER_HEAT = 24
 
 STAGE_CASCADE = {
-    "wildcard": ("wildcard", "preliminary", "final"),
-    "preliminary": ("preliminary", "final"),
+    "wildcard": ("wildcard", "preliminary", "quarterfinal", "semifinal", "final"),
+    "preliminary": ("preliminary", "quarterfinal", "semifinal", "final"),
+    "quarterfinal": ("quarterfinal", "semifinal", "final"),
+    "semifinal": ("semifinal", "final"),
     "final": ("final",),
 }
 
@@ -116,7 +118,7 @@ SCHEMA = [
     CREATE TABLE IF NOT EXISTS heats (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         tournament_id INTEGER NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
-        stage TEXT NOT NULL DEFAULT 'staging' CHECK (stage IN ('staging','wildcard','preliminary','final')),
+        stage TEXT NOT NULL DEFAULT 'staging' CHECK (stage IN ('staging','wildcard','preliminary','quarterfinal','semifinal','final')),
         round INTEGER,
         heat_number INTEGER NOT NULL,
         global_number INTEGER NOT NULL,
@@ -273,6 +275,21 @@ def calculate_championship_heat_size(
     # racers each -- a heat of 1 can't race against anyone.
     heat_count = min(heat_count, field_size // 2)
     return field_size // heat_count, heat_count
+
+
+def final_bracket_stage(candidate_count: int, max_final_racers: int) -> str:
+    """'final', 'semifinal', or 'quarterfinal' -- how much bracket splitting
+    the seeded-plus-bye final candidate pool needs before it fits
+    max_final_racers. Mirrors calculate_championship_heat_size's field_size
+    // 2 guard: never split down to a heat with fewer than 2 racers, so an
+    unsplittable pool just runs one final heat over cap instead.
+    """
+    if candidate_count <= max_final_racers or candidate_count < 4:
+        return "final"
+    semifinal_heat_size = -(-candidate_count // 2)  # ceiling division
+    if semifinal_heat_size <= max_final_racers or candidate_count < 8:
+        return "semifinal"
+    return "quarterfinal"
 
 
 def balanced_round_schedule(
@@ -1655,12 +1672,17 @@ def preliminary_field(connection: sqlite3.Connection, tournament_id: int) -> lis
     return consolidate_by_racer(entries)
 
 
-def final_field(
-    connection: sqlite3.Connection, tournament_id: int
+def _final_candidate_pool(
+    connection: sqlite3.Connection, tournament_id: int, tournament: sqlite3.Row
 ) -> tuple[list[dict[str, Any]], int]:
-    tournament = connection.execute(
-        "SELECT * FROM tournaments WHERE id = ?", (tournament_id,)
-    ).fetchone()
+    """Bye winners plus preliminary-heat qualifiers (or a stage-skip fallback
+    when there are no preliminary heats), deduped by racer -- the shared
+    starting pool for whichever bracket stage (quarterfinal, semifinal, or a
+    direct final) ends up racing it. Capped at 4x max_final_racers by
+    standings rank as a last-resort safety net for fields too large to
+    bracket down to size even via quarterfinals; returns how many were
+    trimmed by that safety net (0 in the overwhelmingly common case).
+    """
     field = championship_field(connection, tournament_id)
     candidates: list[dict[str, Any]] = [
         {"racerId": item["racerId"], "originStage": "bye", "originRound": item["originRound"]}
@@ -1698,16 +1720,156 @@ def final_field(
         seen.add(candidate["racerId"])
         deduped.append(candidate)
 
-    max_final = tournament["max_final_racers"]
+    safety_cap = tournament["max_final_racers"] * 4
     trimmed = 0
-    if len(deduped) > max_final:
+    if len(deduped) > safety_cap:
         overall = {row["id"]: row for row in standings(connection, tournament_id)}
         deduped.sort(
             key=lambda candidate: overall.get(candidate["racerId"], {}).get("rank", 10 ** 6)
         )
-        trimmed = len(deduped) - max_final
-        deduped = deduped[:max_final]
+        trimmed = len(deduped) - safety_cap
+        deduped = deduped[:safety_cap]
     return deduped, trimmed
+
+
+def _seed_split_groups(
+    connection: sqlite3.Connection,
+    tournament_id: int,
+    candidates: Sequence[dict[str, Any]],
+    heat_count: int,
+    seed: int,
+) -> list[list[dict[str, Any]]]:
+    """Deal candidates into heat_count bracket heats, balanced by overall
+    standings rank (the same priority final_field used for trimming before
+    this feature) rather than by origin -- each racer is its own bucket, so
+    interleave_groups() degrades to round-robin dealing in rank order
+    (rank 0,1,2,... -> heat 0,1,2,...,0,1,...), spreading the strongest
+    racers evenly across heats instead of stacking them in one.
+    """
+    overall = {row["id"]: row for row in standings(connection, tournament_id)}
+    ordered = sorted(
+        candidates, key=lambda candidate: overall.get(candidate["racerId"], {}).get("rank", 10 ** 6)
+    )
+    return interleave_groups(ordered, heat_count, seed, lambda candidate: candidate["racerId"])
+
+
+def quarterfinal_field(connection: sqlite3.Connection, tournament_id: int) -> list[dict[str, Any]]:
+    tournament = connection.execute(
+        "SELECT * FROM tournaments WHERE id = ?", (tournament_id,)
+    ).fetchone()
+    candidates, _trimmed = _final_candidate_pool(connection, tournament_id, tournament)
+    if final_bracket_stage(len(candidates), tournament["max_final_racers"]) != "quarterfinal":
+        return []
+    return candidates
+
+
+def build_quarterfinal_heats(connection: sqlite3.Connection, tournament_id: int) -> None:
+    tournament = connection.execute(
+        "SELECT * FROM tournaments WHERE id = ?", (tournament_id,)
+    ).fetchone()
+    entries = quarterfinal_field(connection, tournament_id)
+    if not entries:
+        return
+    global_number = _next_global_number(connection, tournament_id)
+    groups = [
+        group
+        for group in _seed_split_groups(connection, tournament_id, entries, 4, tournament["seed"] + 301)
+        if group
+    ]
+    for heat_number, group in enumerate(groups, start=1):
+        global_number += 1
+        _insert_championship_heat(connection, tournament_id, "quarterfinal", heat_number, global_number, group)
+
+
+def semifinal_field(connection: sqlite3.Connection, tournament_id: int) -> list[dict[str, Any]]:
+    """Dual path, mirroring preliminary_field(): if quarterfinal heats exist,
+    each pair of them (1&2, 3&4) feeds one semifinal heat via heat_top_n,
+    splitting max_final_racers between the pair (remainder to the first
+    heat) so each semifinal heat comes out no larger than max_final_racers.
+    Each promoted candidate carries targetHeat (1 or 2) so
+    build_semifinal_heats() can place it correctly without re-deriving the
+    quarterfinal pairing. Otherwise, this is a direct bracket split straight
+    off the bye/preliminary pool, same as quarterfinal_field's source.
+    """
+    tournament = connection.execute(
+        "SELECT * FROM tournaments WHERE id = ?", (tournament_id,)
+    ).fetchone()
+    max_final = tournament["max_final_racers"]
+    quarterfinal_heats = connection.execute(
+        "SELECT id, heat_number FROM heats WHERE tournament_id = ? AND stage = 'quarterfinal' ORDER BY heat_number",
+        (tournament_id,),
+    ).fetchall()
+    if quarterfinal_heats:
+        candidates: list[dict[str, Any]] = []
+        for pair_index in range(0, len(quarterfinal_heats), 2):
+            pair = quarterfinal_heats[pair_index : pair_index + 2]
+            target_heat = pair_index // 2 + 1
+            base, extra = divmod(max_final, len(pair))
+            for offset, heat_row in enumerate(pair):
+                promote_n = base + (1 if offset < extra else 0)
+                for racer_id in heat_top_n(connection, heat_row["id"], promote_n):
+                    candidates.append(
+                        {
+                            "racerId": racer_id,
+                            "originStage": "quarterfinal",
+                            "originHeatId": heat_row["id"],
+                            "targetHeat": target_heat,
+                        }
+                    )
+        return candidates
+
+    candidates, _trimmed = _final_candidate_pool(connection, tournament_id, tournament)
+    if final_bracket_stage(len(candidates), max_final) != "semifinal":
+        return []
+    return candidates
+
+
+def build_semifinal_heats(connection: sqlite3.Connection, tournament_id: int) -> None:
+    tournament = connection.execute(
+        "SELECT * FROM tournaments WHERE id = ?", (tournament_id,)
+    ).fetchone()
+    entries = semifinal_field(connection, tournament_id)
+    if not entries:
+        return
+    global_number = _next_global_number(connection, tournament_id)
+    if "targetHeat" in entries[0]:
+        groups: list[list[dict[str, Any]]] = [[], []]
+        for entry in entries:
+            groups[entry["targetHeat"] - 1].append(entry)
+    else:
+        groups = _seed_split_groups(connection, tournament_id, entries, 2, tournament["seed"] + 302)
+    for heat_number, group in enumerate((group for group in groups if group), start=1):
+        global_number += 1
+        _insert_championship_heat(connection, tournament_id, "semifinal", heat_number, global_number, group)
+
+
+def final_field(
+    connection: sqlite3.Connection, tournament_id: int
+) -> tuple[list[dict[str, Any]], int]:
+    tournament = connection.execute(
+        "SELECT * FROM tournaments WHERE id = ?", (tournament_id,)
+    ).fetchone()
+    max_final = tournament["max_final_racers"]
+    pool, trimmed = _final_candidate_pool(connection, tournament_id, tournament)
+
+    semifinal_heats = connection.execute(
+        "SELECT id, heat_number FROM heats WHERE tournament_id = ? AND stage = 'semifinal' ORDER BY heat_number",
+        (tournament_id,),
+    ).fetchall()
+    if semifinal_heats:
+        base, extra = divmod(max_final, len(semifinal_heats))
+        candidates: list[dict[str, Any]] = []
+        for offset, heat_row in enumerate(semifinal_heats):
+            promote_n = base + (1 if offset < extra else 0)
+            for racer_id in heat_top_n(connection, heat_row["id"], promote_n):
+                candidates.append(
+                    {"racerId": racer_id, "originStage": "semifinal", "originHeatId": heat_row["id"]}
+                )
+        return candidates, trimmed
+
+    if final_bracket_stage(len(pool), max_final) != "final":
+        return [], trimmed
+    return pool, trimmed
 
 
 def wildcard_groups_with_marble_splitting(
@@ -1853,6 +2015,21 @@ def _stage_ready_to_advance(
     return is_stage_complete(connection, tournament_id, stage)
 
 
+def _bracket_stage_ready_to_advance(
+    connection: sqlite3.Connection, tournament_id: int, stage: str, entries: Sequence[dict[str, Any]]
+) -> bool:
+    """Like _stage_ready_to_advance, but for quarterfinal/semifinal: those
+    stages are sized by candidate_count // 4 or // 2 rather than a
+    *_max_marbles_per_heat column, and final_bracket_stage() (via
+    quarterfinal_field()/semifinal_field() returning an empty list when this
+    round of the bracket isn't needed) already decided whether the stage
+    exists at all -- so readiness is just "not needed" or "heats scored".
+    """
+    if not entries:
+        return True
+    return is_stage_complete(connection, tournament_id, stage)
+
+
 def _field_marble_signature(
     entries: Sequence[dict[str, Any]], marble_slots_key: str | None = None
 ) -> list[tuple[int, int, int | None, int | None]]:
@@ -1930,6 +2107,28 @@ def sync_championship(connection: sqlite3.Connection, tournament_id: int) -> Non
         if preliminary_marbles:
             build_preliminary_heats(connection, tournament_id)
     if not _stage_ready_to_advance(connection, tournament_id, "preliminary", total_preliminary_marbles, tournament):
+        delete_championship_stages(connection, tournament_id, "quarterfinal")
+        return
+
+    quarterfinal_entries = quarterfinal_field(connection, tournament_id)
+    quarterfinal_ids = _field_marble_signature(quarterfinal_entries)
+    current_quarterfinal_ids = stage_racer_marbles(connection, tournament_id, "quarterfinal")
+    if quarterfinal_ids != (current_quarterfinal_ids or []):
+        delete_championship_stages(connection, tournament_id, "quarterfinal")
+        if quarterfinal_ids:
+            build_quarterfinal_heats(connection, tournament_id)
+    if not _bracket_stage_ready_to_advance(connection, tournament_id, "quarterfinal", quarterfinal_entries):
+        delete_championship_stages(connection, tournament_id, "semifinal")
+        return
+
+    semifinal_entries = semifinal_field(connection, tournament_id)
+    semifinal_ids = _field_marble_signature(semifinal_entries)
+    current_semifinal_ids = stage_racer_marbles(connection, tournament_id, "semifinal")
+    if semifinal_ids != (current_semifinal_ids or []):
+        delete_championship_stages(connection, tournament_id, "semifinal")
+        if semifinal_ids:
+            build_semifinal_heats(connection, tournament_id)
+    if not _bracket_stage_ready_to_advance(connection, tournament_id, "semifinal", semifinal_entries):
         delete_championship_stages(connection, tournament_id, "final")
         return
 

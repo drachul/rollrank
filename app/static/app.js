@@ -287,7 +287,7 @@ function tournamentHeats(snapshot) {
   if (!snapshot) return [];
   const championship = snapshot.championship;
   const heats = snapshot.rounds.flatMap((round) => round.heats)
-    .concat(championship.wildcard.heats, championship.preliminary.heats);
+    .concat(championship.wildcard.heats, championship.preliminary.heats, championship.quarterfinal.heats, championship.semifinal.heats);
   if (championship.final.heat) heats.push(championship.final.heat);
   return heats;
 }
@@ -317,6 +317,8 @@ function championshipHeatLabel(stage, heatNumber, prefix = "") {
 function kioskIntroductionHeatName(heat) {
   if (heat.stage === "wildcard") return `Championship: Wildcard ${championshipHeatLabel("wildcard", heat.heatNumber)}`;
   if (heat.stage === "preliminary") return `Championship: Preliminary ${championshipHeatLabel("preliminary", heat.heatNumber)}`;
+  if (heat.stage === "quarterfinal") return `Championship: Quarterfinal ${championshipHeatLabel("quarterfinal", heat.heatNumber)}`;
+  if (heat.stage === "semifinal") return `Championship: Semifinal ${championshipHeatLabel("semifinal", heat.heatNumber)}`;
   if (heat.stage === "final") return "Championship: Final";
   return `Round ${heat.round} · Heat ${heat.heatNumber}`;
 }
@@ -610,6 +612,8 @@ function originBadge(entry) {
     "staging-round": `From Round ${entry.originRound}`,
     "wildcard": "From Wildcard",
     "preliminary": "From Preliminary",
+    "quarterfinal": "From Quarterfinal",
+    "semifinal": "From Semifinal",
   };
   return `<span class="origin-badge">${escapeHtml(labels[stage] || "Advanced")}</span>`;
 }
@@ -835,6 +839,8 @@ function renderKioskDashboard() {
   const nextHeat = state.rounds.flatMap((round) => round.heats).find((heat) => !heat.complete);
   const nextWildcard = championship.wildcard.heats.find((heat) => !heat.complete);
   const nextPreliminary = championship.preliminary.heats.find((heat) => !heat.complete);
+  const nextQuarterfinal = championship.quarterfinal.heats.find((heat) => !heat.complete);
+  const nextSemifinal = championship.semifinal.heats.find((heat) => !heat.complete);
   const visibleStandings = state.standings.slice(0, 8);
   const completedRounds = state.rounds.filter((round) => round.heats.every((heat) => heat.complete)).length;
   const progress = progressPercent();
@@ -855,6 +861,10 @@ function renderKioskDashboard() {
     nextContent = `<div class="kiosk-card-heading"><p class="kiosk-card-label">${nextWildcard.started ? "In progress" : "Up next"}</p><b>Championship</b></div><h2>Championship: Wildcard ${championshipHeatLabel("wildcard", nextWildcard.heatNumber)}</h2><div class="kiosk-next-racers">${nextWildcard.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>`;
   } else if (nextPreliminary) {
     nextContent = `<div class="kiosk-card-heading"><p class="kiosk-card-label">${nextPreliminary.started ? "In progress" : "Up next"}</p><b>Championship</b></div><h2>Championship: Preliminary ${championshipHeatLabel("preliminary", nextPreliminary.heatNumber)}</h2><div class="kiosk-next-racers">${nextPreliminary.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>`;
+  } else if (nextQuarterfinal) {
+    nextContent = `<div class="kiosk-card-heading"><p class="kiosk-card-label">${nextQuarterfinal.started ? "In progress" : "Up next"}</p><b>Championship</b></div><h2>Championship: Quarterfinal ${championshipHeatLabel("quarterfinal", nextQuarterfinal.heatNumber)}</h2><div class="kiosk-next-racers">${nextQuarterfinal.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>`;
+  } else if (nextSemifinal) {
+    nextContent = `<div class="kiosk-card-heading"><p class="kiosk-card-label">${nextSemifinal.started ? "In progress" : "Up next"}</p><b>Championship</b></div><h2>Championship: Semifinal ${championshipHeatLabel("semifinal", nextSemifinal.heatNumber)}</h2><div class="kiosk-next-racers">${nextSemifinal.entries.map((entry) => `<span>${marble(entry.color, "small")}<b>${escapeHtml(entry.name)}</b></span>`).join("")}</div>`;
   } else {
     nextContent = `<p class="kiosk-card-label">Up next</p><div class="kiosk-final-ready"><span>★</span><div><strong>Championship in progress</strong><p>Check the bracket for the current stage.</p></div></div>`;
   }
@@ -1110,12 +1120,12 @@ function ladderStageColumn(stage, lockedLabel, sourceHeats, sourceStageLabel) {
   return `<div class="ladder-heats">${stage.heats.map((heat) => ladderHeatCard(heat, stage.heats.length, sourceHeats, sourceStageLabel)).join("")}</div>`;
 }
 
-function ladderFinalColumn(finalStage, sourceHeats) {
+function ladderFinalColumn(finalStage, sourceHeats, sourceStageLabel = "Preliminary") {
   if (!finalStage.ready) {
     if (finalStage.projectedEntries && finalStage.projectedEntries.length) {
-      return ladderProjectedRoster(finalStage.projectedEntries, "Preliminary results decide the final field.", "Preliminary");
+      return ladderProjectedRoster(finalStage.projectedEntries, `${sourceStageLabel} results decide the final field.`, sourceStageLabel);
     }
-    return ladderLockedPlaceholder("Preliminary results decide the final field.");
+    return ladderLockedPlaceholder(`${sourceStageLabel} results decide the final field.`);
   }
   if (!finalStage.heat) return `<div class="ladder-placeholder"><span aria-hidden="true">—</span><p>No final field in this tournament.</p></div>`;
   const entries = finalStage.heat.entries;
@@ -1123,7 +1133,7 @@ function ladderFinalColumn(finalStage, sourceHeats) {
     <div class="ladder-heat-head"><span>The Final</span><span class="${finalStage.complete ? "complete-chip" : "pending-chip"}">${finalStage.complete ? "Complete" : "In progress"}</span></div>
     <ul class="ladder-entries">
       ${entries.map((entry) => `<li class="ladder-entry${entry.finish === 0 ? " dnf" : ""}">
-        ${marble(entry.color, "small")}${ladderEntryLabel(entry.name, 1, entry.seedRounds, seedHeatTag(entry, sourceHeats, "Preliminary"))}<b>${entry.finish === 1 ? "🏆" : ladderPlaceLabel(entry)}</b>
+        ${marble(entry.color, "small")}${ladderEntryLabel(entry.name, 1, entry.seedRounds, seedHeatTag(entry, sourceHeats, sourceStageLabel))}<b>${entry.finish === 1 ? "🏆" : ladderPlaceLabel(entry)}</b>
       </li>`).join("")}
     </ul>
   </article>`;
@@ -1131,23 +1141,49 @@ function ladderFinalColumn(finalStage, sourceHeats) {
 
 function renderChampionshipLadder() {
   const champ = state.championship;
+  // Quarterfinal/semifinal only get a column when this tournament's final
+  // candidate pool is (or is projected to be) too big for max_final_racers --
+  // most tournaments never trigger them, so skip the column entirely rather
+  // than rendering a permanently-empty one.
+  const hasBracketContent = (stage) => (stage.heats && stage.heats.length) || (stage.projectedEntries && stage.projectedEntries.length);
+  const showQuarterfinal = hasBracketContent(champ.quarterfinal);
+  // Quarterfinal heats always feed a semifinal round next (this bracket
+  // design never jumps straight from quarterfinal to final), so once
+  // quarterfinal is showing, semifinal always gets a column too -- even
+  // before it has heats or a projection of its own -- rather than vanishing
+  // until quarterfinal heats finish scoring.
+  const showSemifinal = hasBracketContent(champ.semifinal) || showQuarterfinal;
+  const columns = [
+    {label: "Wildcard", body: ladderStageColumn(champ.wildcard, "Runs once every round heat is scored.")},
+    {label: "Preliminary", body: ladderStageColumn(champ.preliminary, "Runs once every wildcard heat is scored.", champ.wildcard.heats, "Wildcard")},
+  ];
+  if (showQuarterfinal) {
+    columns.push({label: "Quarterfinal", body: ladderStageColumn(champ.quarterfinal, "Runs once every preliminary heat is scored.", champ.preliminary.heats, "Preliminary")});
+  }
+  if (showSemifinal) {
+    columns.push({
+      label: "Semifinal",
+      body: ladderStageColumn(
+        champ.semifinal,
+        showQuarterfinal ? "Runs once every quarterfinal heat is scored." : "Runs once every preliminary heat is scored.",
+        showQuarterfinal ? champ.quarterfinal.heats : champ.preliminary.heats,
+        showQuarterfinal ? "Quarterfinal" : "Preliminary",
+      ),
+    });
+  }
+  const finalSourceHeats = showSemifinal ? champ.semifinal.heats : champ.preliminary.heats;
+  const finalSourceLabel = showSemifinal ? "Semifinal" : "Preliminary";
+  columns.push({label: "Final", body: ladderFinalColumn(champ.final, finalSourceHeats, finalSourceLabel)});
+  const gridColumns = columns.map(() => "minmax(0,1fr)").join(" auto ");
+
   return `<section class="panel ladder-panel">
     <div class="panel-heading"><div><h2>Championship ladder</h2></div></div>
-    <div class="ladder">
+    <div class="ladder" style="grid-template-columns:${gridColumns}">
+      ${columns.map((column, index) => `${index > 0 ? '<div class="ladder-connector" aria-hidden="true">→</div>' : ""}
       <div class="ladder-column">
-        <div class="ladder-column-heading"><span>Stage 1</span><h3>Wildcard</h3></div>
-        ${ladderStageColumn(champ.wildcard, "Runs once every round heat is scored.")}
-      </div>
-      <div class="ladder-connector" aria-hidden="true">→</div>
-      <div class="ladder-column">
-        <div class="ladder-column-heading"><span>Stage 2</span><h3>Preliminary</h3></div>
-        ${ladderStageColumn(champ.preliminary, "Runs once every wildcard heat is scored.", champ.wildcard.heats, "Wildcard")}
-      </div>
-      <div class="ladder-connector" aria-hidden="true">→</div>
-      <div class="ladder-column">
-        <div class="ladder-column-heading"><span>Stage 3</span><h3>Final</h3></div>
-        ${ladderFinalColumn(champ.final, champ.preliminary.heats)}
-      </div>
+        <div class="ladder-column-heading"><span>Stage ${index + 1}</span><h3>${column.label}</h3></div>
+        ${column.body}
+      </div>`).join("")}
     </div>
   </section>`;
 }
@@ -1254,10 +1290,12 @@ function renderChampionshipStageBody(stage, lockedDescription) {
   return `<section class="heat-list">${stage.heats.map(heatEditor).join("")}</section>`;
 }
 
-function renderFinalStageBody(finalStage) {
+function renderFinalStageBody(finalStage, sourceStageLabel = "preliminary") {
   if (!finalStage.ready) {
     const promoted = state.competition.preliminaryRacersPromotedPerHeat;
-    return championshipStatusCard("⏳", "Not ready", "Waiting on the preliminary round", `The top ${promoted} racer${promoted === 1 ? "" : "s"} from each preliminary heat and round-win byes race here once every preliminary heat is scored.`);
+    return championshipStatusCard("⏳", "Not ready", `Waiting on the ${sourceStageLabel} round`, sourceStageLabel === "preliminary"
+      ? `The top ${promoted} racer${promoted === 1 ? "" : "s"} from each preliminary heat and round-win byes race here once every preliminary heat is scored.`
+      : `The top finishers from each ${sourceStageLabel} heat race here once every ${sourceStageLabel} heat is scored.`);
   }
   if (!finalStage.heat) {
     return championshipStatusCard("→", "No final field", "Nobody qualified", "This tournament didn't produce any finalists.");
@@ -1279,18 +1317,56 @@ function renderChampionshipStages() {
   const champ = state.championship;
   const c = state.competition;
   const wildcardPromoted = c.wildcardRacersPromotedPerHeat;
-  return `<section class="championship-stage">
-      <div class="panel-heading"><div><p class="eyebrow">Stage 1</p><h2>Wildcard heats</h2></div>${championshipStageChip(champ.wildcard)}</div>
-      ${renderChampionshipStageBody(champ.wildcard, `3rd and 4th place finishers from every round race here once all ${c.totalHeats} round heats are complete.`)}
-    </section>
-    <section class="championship-stage">
-      <div class="panel-heading"><div><p class="eyebrow">Stage 2</p><h2>Preliminary heats</h2></div>${championshipStageChip(champ.preliminary)}</div>
-      ${renderChampionshipStageBody(champ.preliminary, `The top ${wildcardPromoted} racer${wildcardPromoted === 1 ? "" : "s"} from each wildcard heat and the round runners-up race here once every wildcard heat is scored.`)}
-    </section>
-    <section class="championship-stage">
-      <div class="panel-heading"><div><p class="eyebrow">Stage 3</p><h2>${champ.final.complete ? "Final results" : "The final"}</h2></div><div class="panel-heading-actions">${championshipStageChip(champ.final)}${champ.final.complete ? championshipReportLink() : ""}</div></div>
-      ${renderFinalStageBody(champ.final)}
-    </section>`;
+  // Quarterfinal/semifinal only show up once the projected (or actual) final
+  // field is big enough to need bracket splitting -- see renderChampionshipLadder
+  // for the same heuristic, kept consistent so both views agree on when a
+  // tournament has an extra stage or two.
+  const hasBracketContent = (stage) => (stage.heats && stage.heats.length) || (stage.projectedEntries && stage.projectedEntries.length);
+  const showQuarterfinal = hasBracketContent(champ.quarterfinal);
+  // Quarterfinal heats always feed a semifinal round next (this bracket
+  // design never jumps straight from quarterfinal to final), so once
+  // quarterfinal is showing, semifinal always gets a column too -- even
+  // before it has heats or a projection of its own -- rather than vanishing
+  // until quarterfinal heats finish scoring.
+  const showSemifinal = hasBracketContent(champ.semifinal) || showQuarterfinal;
+  const stages = [
+    {
+      title: "Wildcard heats",
+      chip: champ.wildcard,
+      body: renderChampionshipStageBody(champ.wildcard, `3rd and 4th place finishers from every round race here once all ${c.totalHeats} round heats are complete.`),
+    },
+    {
+      title: "Preliminary heats",
+      chip: champ.preliminary,
+      body: renderChampionshipStageBody(champ.preliminary, `The top ${wildcardPromoted} racer${wildcardPromoted === 1 ? "" : "s"} from each wildcard heat and the round runners-up race here once every wildcard heat is scored.`),
+    },
+  ];
+  if (showQuarterfinal) {
+    stages.push({
+      title: "Quarterfinal heats",
+      chip: champ.quarterfinal,
+      body: renderChampionshipStageBody(champ.quarterfinal, "The final field is too large for one heat, so the top seeds split into quarterfinal heats here once every preliminary heat is scored."),
+    });
+  }
+  if (showSemifinal) {
+    stages.push({
+      title: "Semifinal heats",
+      chip: champ.semifinal,
+      body: renderChampionshipStageBody(champ.semifinal, showQuarterfinal
+        ? "The top finishers from each quarterfinal heat race here once every quarterfinal heat is scored."
+        : "The final field is too large for one heat, so the top seeds split into semifinal heats here once every preliminary heat is scored."),
+    });
+  }
+  stages.push({
+    title: champ.final.complete ? "Final results" : "The final",
+    chip: champ.final,
+    actions: champ.final.complete ? championshipReportLink() : "",
+    body: renderFinalStageBody(champ.final, showSemifinal ? "semifinal" : "preliminary"),
+  });
+  return stages.map((stage, index) => `<section class="championship-stage">
+      <div class="panel-heading"><div><p class="eyebrow">Stage ${index + 1}</p><h2>${stage.title}</h2></div><div class="panel-heading-actions">${championshipStageChip(stage.chip)}${stage.actions || ""}</div></div>
+      ${stage.body}
+    </section>`).join("");
 }
 
 function contestantRow(contestant = {name:"", color:"#2F80ED"}) {
@@ -1461,7 +1537,7 @@ function renderSetupWizardStep() {
       ${wizardNumberControl("Preliminary marble limit / racer", "maxPrelimPromotionMarblesPerRacer", 0, 20, "Set to 0 to disable direct runner-up promotion.")}
       ${wizardNumberControl("Promoted / preliminary heat", "preliminaryRacersPromotedPerHeat", 1, 24, "Top racers from each preliminary heat who reach the final.")}
       ${wizardNumberControl("Max marbles / preliminary heat", "preliminaryMaxMarblesPerHeat", 2, 480, "Lower limits can create more preliminary heats.")}
-      ${wizardNumberControl("Max racers in final", "maxFinalRacers", 2, Math.min(24, projection.racerCount), "The final is trimmed to this many unique racers.")}
+      ${wizardNumberControl("Max racers in final", "maxFinalRacers", 2, Math.min(24, projection.racerCount), "If more racers qualify than this, the final splits into semifinal (or quarterfinal, for even bigger fields) heats instead of one oversized race.")}
       </div><fieldset class="wizard-choice"><legend>Qualification seat behavior</legend><label><input type="radio" name="wizard-repeat" value="spread" data-wizard-repeat ${cascadingMode === "spread" ? "checked" : ""}><span><strong>Spread opportunities <em>Cascading on</em></strong><small>When a racer is capped, pass final-bye, preliminary, and wildcard seats down the standings.</small></span></label><label><input type="radio" name="wizard-repeat" value="reward" data-wizard-repeat ${cascadingMode === "reward" ? "checked" : ""}><span><strong>Reward repeat performers <em>No cascading</em></strong><small>Disable all three cascading toggles. When a racer is capped, that qualification seat is forfeited.</small></span></label>${wizardCascadingStatus()}</fieldset></div><aside class="wizard-impact">${wizardChampionshipImpact(projection)}</aside></div>`;
   } else {
     const scoreLabels = {keep:"Keep current scoring", classic:"Classic 10–7–5 curve", balanced:"Every place scores", podium:"Podium-focused"};
@@ -1526,7 +1602,7 @@ function renderSetup() {
           <div class="field-grid">
             <label class="field"><span class="field-label-text">Wildcard racers promoted / heat${fieldHelp(`Top finishers from each <strong>wildcard heat</strong> who advance to the preliminary stage. This is separate from how a racer originally lands in a wildcard heat &mdash; that's decided by ${fieldLink("wildcardRacersPromotedPerRound", "wildcard racers promoted / round")} below.`)}</span><input name="wildcardRacersPromotedPerHeat" type="number" min="1" max="24" value="${c.wildcardRacersPromotedPerHeat}" required></label>
             <label class="field"><span class="field-label-text">Preliminary racers promoted / heat${fieldHelp("Top finishers from each <strong>preliminary heat</strong> who advance to the final. Separate from how a racer originally reaches the preliminary stage &mdash; either a direct promotion from a staging round, or by placing well in a wildcard heat.")}</span><input name="preliminaryRacersPromotedPerHeat" type="number" min="1" max="24" value="${c.preliminaryRacersPromotedPerHeat}" required></label>
-            <label class="field"><span class="field-label-text">Max Racers in Final${fieldHelp("Ceiling on the final's roster size. If final byes plus preliminary-heat qualifiers add up to more racers than this, the lowest-priority qualifiers are trimmed to fit.")}</span><input name="maxFinalRacers" type="number" min="2" max="24" value="${c.maxFinalRacers}" required></label>
+            <label class="field"><span class="field-label-text">Max Racers in Final${fieldHelp("Ceiling on the final's roster size. If final byes plus preliminary-heat qualifiers add up to more racers than this, the field splits into two semifinal heats -- or, if a semifinal would still be over this cap, four quarterfinal heats -- with the top finishers advancing until the field fits in one final heat.")}</span><input name="maxFinalRacers" type="number" min="2" max="24" value="${c.maxFinalRacers}" required></label>
           </div>
         </details>
         <div class="config-callout" id="tier-callout" hidden><span aria-hidden="true">&#9432;</span><div><strong>One tier per round</strong><small>A racer can hold at most one of bye, preliminary, or wildcard from any single staging round &mdash; ${fieldLink("finalRacersPromotedPerRound", `the top ${liveValue("finalRacersPromotedPerRound", c.finalRacersPromotedPerRound)} rank(s)`)}, reserved for the bye tier, are always excluded from the round's lower tiers, and whoever actually wins bye/preliminary that round is excluded too, even if a cascade moved that seat further down the standings. The three &ldquo;bonus&rdquo; marble caps below only grant <em>extra</em> marbles in a lower tier earned in a <em>different</em> round; they can never award a racer a second seat from the same round.</small></div></div>

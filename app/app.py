@@ -16,6 +16,7 @@ from db import (
     connect,
     consolidate_by_racer,
     create_tournament,
+    final_bracket_stage,
     final_field,
     find_in_progress_staging_round,
     heat_top_n,
@@ -27,7 +28,9 @@ from db import (
     is_staging_round_complete,
     pending_round_tiebreak,
     preliminary_field,
+    quarterfinal_field,
     rebuild_schedule,
+    semifinal_field,
     stage_has_results,
     standings,
     sync_championship,
@@ -254,13 +257,16 @@ def _resolve_seed_rounds(
     seeded directly from a staging round (wildcard entries, and direct
     preliminary/bye qualifiers) already carries that round. A marble seeded
     by winning a prior championship heat (a preliminary entry advancing from
-    wildcard, or a final entry advancing from preliminary) only carries a
-    reference to that heat, so we look up the same racer's marbles there and
-    resolve recursively -- at most two hops (wildcard -> preliminary -> final).
+    wildcard, a semifinal/quarterfinal entry advancing from an earlier
+    bracket round, or a final entry advancing from preliminary/semifinal)
+    only carries a reference to that heat, so we look up the same racer's
+    marbles there and resolve recursively -- at most four hops now that the
+    bracket final can chain final -> semifinal -> quarterfinal -> preliminary
+    -> wildcard -> staging-round.
     """
     if origin_stage in ("staging-round", "bye"):
         return {origin_round} if origin_round is not None else set()
-    if origin_heat_id is None or depth > 3:
+    if origin_heat_id is None or depth > 4:
         return set()
     rows = connection.execute(
         "SELECT DISTINCT origin_stage, origin_round, origin_heat_id FROM heat_entries WHERE heat_id = ? AND racer_id = ?",
@@ -349,6 +355,64 @@ def _projected_roster(
                         "decided": False,
                     }
                 )
+    return roster
+
+
+def _projected_bracket_roster(
+    connection, source_heats: list[dict[str, Any]], origin_stage: str, max_final_racers: int
+) -> list[dict[str, Any]]:
+    """Like _projected_roster, but for a quarterfinal-to-semifinal or
+    semifinal-to-final preview: source_heats are paired up two at a time
+    (heat_number 1&2 -> destination heat 1, 3&4 -> destination heat 2 --
+    matching semifinal_field()/final_field()'s own pairing), and each pair
+    splits max_final_racers via the same divmod(max_final_racers, 2) --
+    remainder to the first heat of the pair -- that the real bracket build
+    uses, rather than a single uniform per-heat count. heatNumber on each
+    entry marks which destination heat it's projected into, the same way
+    the other *_projected lists do for real multi-heat stages.
+    """
+    roster: list[dict[str, Any]] = []
+    for pair_index in range(0, len(source_heats), 2):
+        pair = source_heats[pair_index : pair_index + 2]
+        destination_heat_number = pair_index // 2 + 1
+        base, extra = divmod(max_final_racers, len(pair))
+        for offset, heat in enumerate(pair):
+            promote_n = base + (1 if offset < extra else 0)
+            qualifier_entries = []
+            if heat["complete"]:
+                qualifier_ids = heat_top_n(connection, heat["id"], promote_n)
+                qualifier_entries = [
+                    next((entry for entry in heat["entries"] if entry["contestantId"] == racer_id), None)
+                    for racer_id in qualifier_ids
+                ]
+            slot_count = min(promote_n, len(heat["entries"]))
+            for index in range(slot_count):
+                qualifier_entry = qualifier_entries[index] if index < len(qualifier_entries) else None
+                if qualifier_entry:
+                    roster.append(
+                        {
+                            "contestantId": qualifier_entry["contestantId"],
+                            "name": qualifier_entry["name"],
+                            "color": qualifier_entry["color"],
+                            "originStage": origin_stage,
+                            "originHeatId": heat["id"],
+                            "qualifyingPlace": index + 1,
+                            "seedRounds": qualifier_entry.get("seedRounds", [])[:1],
+                            "decided": True,
+                            "heatNumber": destination_heat_number,
+                        }
+                    )
+                else:
+                    roster.append(
+                        {
+                            "originStage": origin_stage,
+                            "originHeatId": heat["id"],
+                            "sourceHeatNumber": heat["heatNumber"],
+                            "qualifyingPlace": index + 1,
+                            "decided": False,
+                            "heatNumber": destination_heat_number,
+                        }
+                    )
     return roster
 
 
@@ -551,6 +615,35 @@ def build_championship_state(connection, tournament_id: int, staging_ready: bool
         else (len(preliminary_field(connection, tournament_id)) if preliminary_ready else 0)
     )
 
+    # quarterfinal/semifinal only materialize when the seeded-plus-bye final
+    # candidate pool is too large for max_final_racers -- final_bracket_stage()
+    # (via quarterfinal_field()/semifinal_field() returning an empty list when
+    # not needed) already decided that, so an empty heats list here just means
+    # "skipped this round", exactly like wildcard/preliminary above.
+    quarterfinal_ready = preliminary_ready and preliminary_complete
+    quarterfinal_heats = (
+        shape_heats(fetch_heat_rows(connection, tournament_id, "quarterfinal")) if quarterfinal_ready else []
+    )
+    attach_seed_rounds(connection, quarterfinal_heats)
+    quarterfinal_complete = quarterfinal_ready and all(heat["complete"] for heat in quarterfinal_heats)
+    quarterfinal_field_size = (
+        sum(len(heat["entries"]) for heat in quarterfinal_heats)
+        if quarterfinal_heats
+        else (len(quarterfinal_field(connection, tournament_id)) if quarterfinal_ready else 0)
+    )
+
+    semifinal_ready = quarterfinal_ready and quarterfinal_complete
+    semifinal_heats = (
+        shape_heats(fetch_heat_rows(connection, tournament_id, "semifinal")) if semifinal_ready else []
+    )
+    attach_seed_rounds(connection, semifinal_heats)
+    semifinal_complete = semifinal_ready and all(heat["complete"] for heat in semifinal_heats)
+    semifinal_field_size = (
+        sum(len(heat["entries"]) for heat in semifinal_heats)
+        if semifinal_heats
+        else (len(semifinal_field(connection, tournament_id)) if semifinal_ready else 0)
+    )
+
     # Pure computation over whatever staging rounds are already complete --
     # safe (and cheap) to run from the very first round onward, not just
     # once every round has finished, so the ladder can preview each stage's
@@ -644,13 +737,20 @@ def build_championship_state(connection, tournament_id: int, staging_ready: bool
                         }
                     )
 
-    final_ready = preliminary_ready and preliminary_complete
-    final_projected: list[dict[str, Any]] = []
-    if not final_ready:
+    final_ready = semifinal_ready and semifinal_complete
+
+    # The starting candidate pool for whichever bracket stage races first --
+    # byes plus preliminary-heat qualifiers (real once preliminary heats
+    # exist, otherwise simulated from prelim_groups same as
+    # preliminary_projected above). Only computed when neither quarterfinal
+    # nor semifinal heats exist for real yet, since those cases get their
+    # preview from the real heats instead (see below).
+    candidate_pool_preview: list[dict[str, Any]] = []
+    if not final_ready and not quarterfinal_heats and not semifinal_heats:
         final_racers_promoted_per_round = tournament["final_racers_promoted_per_round"]
         # The final always races one marble per racer even if a racer
         # banked multiple bye rounds, so the preview shows them once.
-        final_projected = [
+        candidate_pool_preview = [
             {
                 "contestantId": item["racerId"],
                 "name": racer_lookup[item["racerId"]]["name"],
@@ -668,7 +768,7 @@ def build_championship_state(connection, tournament_id: int, staging_ready: bool
             if is_staging_round_complete(connection, tournament_id, round):
                 continue
             for offset in range(final_racers_promoted_per_round):
-                final_projected.append(
+                candidate_pool_preview.append(
                     {
                         "originStage": "staging-round",
                         "originRound": round,
@@ -680,7 +780,7 @@ def build_championship_state(connection, tournament_id: int, staging_ready: bool
                     }
                 )
         if preliminary_heats:
-            final_projected += _projected_roster(
+            candidate_pool_preview += _projected_roster(
                 connection,
                 [],
                 preliminary_heats,
@@ -698,7 +798,7 @@ def build_championship_state(connection, tournament_id: int, staging_ready: bool
             for heat_number, group in enumerate(prelim_groups, start=1):
                 qualifiers = min(preliminary_promoted_per_heat, len(group))
                 for qualifying_place in range(1, qualifiers + 1):
-                    final_projected.append(
+                    candidate_pool_preview.append(
                         {
                             "originStage": "preliminary",
                             "sourceHeatNumber": heat_number,
@@ -706,6 +806,43 @@ def build_championship_state(connection, tournament_id: int, staging_ready: bool
                             "decided": False,
                         }
                     )
+
+    # Bracket-stage previews: prefer TBD placeholders sourced from real
+    # (possibly still-unscored) quarterfinal/semifinal heats -- the same
+    # treatment wildcard/preliminary already get -- over a positional split
+    # of candidate_pool_preview, which only applies before those heats have
+    # been built at all. Only one of quarterfinal/semifinal/final ends up
+    # with a non-empty preview at a time, matching whichever stage is
+    # actually next to lock in.
+    quarterfinal_projected: list[dict[str, Any]] = []
+    semifinal_projected: list[dict[str, Any]] = []
+    final_projected: list[dict[str, Any]] = []
+    if not final_ready:
+        if semifinal_heats:
+            final_projected = _projected_bracket_roster(
+                connection, semifinal_heats, "semifinal", tournament["max_final_racers"]
+            )
+        elif quarterfinal_heats:
+            semifinal_projected = _projected_bracket_roster(
+                connection, quarterfinal_heats, "quarterfinal", tournament["max_final_racers"]
+            )
+        elif candidate_pool_preview:
+            projected_bracket_stage = final_bracket_stage(len(candidate_pool_preview), tournament["max_final_racers"])
+            if projected_bracket_stage == "final":
+                final_projected = candidate_pool_preview
+            else:
+                # Not built for real yet, so this is a simple positional
+                # split rather than the rank-based interleaving the real
+                # build functions use -- good enough for a preview that gets
+                # replaced by the real thing once preliminary heats build.
+                preview_heat_count = 4 if projected_bracket_stage == "quarterfinal" else 2
+                preview_groups: list[list[dict[str, Any]]] = [[] for _ in range(preview_heat_count)]
+                for index, entry in enumerate(candidate_pool_preview):
+                    preview_groups[index % preview_heat_count].append(entry)
+                preview_target = quarterfinal_projected if projected_bracket_stage == "quarterfinal" else semifinal_projected
+                for heat_number, group in enumerate(preview_groups, start=1):
+                    for entry in group:
+                        preview_target.append({**entry, "heatNumber": heat_number})
 
     final_heats = shape_heats(fetch_heat_rows(connection, tournament_id, "final")) if final_ready else []
     attach_seed_rounds(connection, final_heats)
@@ -746,6 +883,22 @@ def build_championship_state(connection, tournament_id: int, staging_ready: bool
             "fieldSize": preliminary_field_size,
             "skipped": preliminary_ready and not preliminary_heats,
             "projectedEntries": preliminary_projected,
+        },
+        "quarterfinal": {
+            "ready": quarterfinal_ready,
+            "complete": quarterfinal_complete,
+            "heats": quarterfinal_heats,
+            "fieldSize": quarterfinal_field_size,
+            "skipped": quarterfinal_ready and not quarterfinal_heats,
+            "projectedEntries": quarterfinal_projected,
+        },
+        "semifinal": {
+            "ready": semifinal_ready,
+            "complete": semifinal_complete,
+            "heats": semifinal_heats,
+            "fieldSize": semifinal_field_size,
+            "skipped": semifinal_ready and not semifinal_heats,
+            "projectedEntries": semifinal_projected,
         },
         "final": {
             "ready": final_ready,
@@ -804,7 +957,13 @@ def build_state(connection, tournament_id: int) -> dict[str, Any]:
             (tournament_id, pending_tie_break["round"]),
         ).fetchone()["max_global"]
 
-    all_heats = list(staging_heats) + championship["wildcard"]["heats"] + championship["preliminary"]["heats"]
+    all_heats = (
+        list(staging_heats)
+        + championship["wildcard"]["heats"]
+        + championship["preliminary"]["heats"]
+        + championship["quarterfinal"]["heats"]
+        + championship["semifinal"]["heats"]
+    )
     if championship["final"]["heat"] is not None:
         all_heats.append(championship["final"]["heat"])
     apply_heat_locks(all_heats, tie_locked_after_global=tie_lock_boundary)
@@ -1287,7 +1446,7 @@ def update_tournament(tournament_id: int):
         ).fetchone() is not None
         has_championship_results = any(
             stage_has_results(connection, tournament_id, stage)
-            for stage in ("wildcard", "preliminary", "final")
+            for stage in ("wildcard", "preliminary", "quarterfinal", "semifinal", "final")
         )
         if structure_changed and has_results and not data["confirmReset"]:
             raise ApiError(

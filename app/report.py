@@ -322,6 +322,10 @@ def origin_label(entry: dict[str, Any]) -> str:
         return "PRELIMINARY"
     if origin == "wildcard":
         return "WILDCARD"
+    if origin == "quarterfinal":
+        return "QUARTERFINAL"
+    if origin == "semifinal":
+        return "SEMIFINAL"
     if origin == "staging-round":
         return f'ROUND {entry.get("originRound")} #2'
     return "-"
@@ -381,6 +385,20 @@ def preliminary_page(c: canvas.Canvas, state: dict[str, Any], width: float, heig
         width,
         height,
         page,
+    )
+
+
+def quarterfinal_page(c: canvas.Canvas, state: dict[str, Any], width: float, height: float, page: int) -> int:
+    heats = state["championship"]["quarterfinal"]["heats"]
+    return stage_heats_page(
+        c, state, heats, "QUARTERFINAL", "Quarterfinal heats: the final field split for being too large for one heat", width, height, page
+    )
+
+
+def semifinal_page(c: canvas.Canvas, state: dict[str, Any], width: float, height: float, page: int) -> int:
+    heats = state["championship"]["semifinal"]["heats"]
+    return stage_heats_page(
+        c, state, heats, "SEMIFINAL", "Semifinal heats: top finishers from each quarterfinal heat (or a split final field)", width, height, page
     )
 
 
@@ -469,6 +487,8 @@ def build_report(state: dict[str, Any]) -> bytes:
     page = round_pages(pdf, state, width, height, page)
     page = wildcard_page(pdf, state, width, height, page)
     page = preliminary_page(pdf, state, width, height, page)
+    page = quarterfinal_page(pdf, state, width, height, page)
+    page = semifinal_page(pdf, state, width, height, page)
     final_page(pdf, state, width, height, page)
     pdf.save()
     return output.getvalue()

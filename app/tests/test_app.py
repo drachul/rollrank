@@ -16,6 +16,7 @@ from db import (  # noqa: E402
     balanced_schedule,
     championship_field,
     connect,
+    final_bracket_stage,
     heat_top_n,
     preliminary_field,
     standings,
@@ -2219,9 +2220,27 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertEqual(origins[racer_a], "bye")
         self.assertEqual(origins[racer_b], "stage-skip")
 
-    def test_final_field_trims_to_max_final_racers(self) -> None:
+    def test_final_bracket_stage_thresholds(self) -> None:
+        # Under or exactly at cap: no split needed.
+        self.assertEqual(final_bracket_stage(1, 3), "final")
+        self.assertEqual(final_bracket_stage(3, 3), "final")
+        # Over cap but too few racers to form two non-empty heats: run the
+        # single final heat over cap rather than force a 1-racer heat.
+        self.assertEqual(final_bracket_stage(3, 2), "final")
+        # Over cap, splits cleanly into two heats each at or under cap.
+        self.assertEqual(final_bracket_stage(6, 3), "semifinal")
+        # Over cap, a 2-way split would still leave each heat over cap, but
+        # there aren't enough racers (< 8) to form four non-empty heats
+        # either -- stays at semifinal rather than forcing a 1-racer quarter.
+        self.assertEqual(final_bracket_stage(6, 2), "semifinal")
+        # Over cap, a 2-way split still leaves heats over cap, and there are
+        # enough racers (>= 8) to escalate to quarterfinal.
+        self.assertEqual(final_bracket_stage(9, 2), "quarterfinal")
+        self.assertEqual(final_bracket_stage(8, 2), "quarterfinal")
+
+    def test_final_field_splits_into_semifinal_when_max_final_racers_exceeded(self) -> None:
         created = self.client.post(
-            "/api/tournaments", json={"name": "Trim Cup"}
+            "/api/tournaments", json={"name": "Semifinal Cup"}
         ).get_json()
         tournament_id = created["competition"]["id"]
         self.addCleanup(
@@ -2231,7 +2250,7 @@ class MarbleRaceApiTest(unittest.TestCase):
         state = self.client.put(
             f"/api/tournaments/{tournament_id}",
             json={
-                "name": "Trim Cup",
+                "name": "Semifinal Cup",
                 "rounds": 4,
                 "heatsPerRacerPerRound": 1,
                 "maxMarblesPerHeat": 8,
@@ -2250,7 +2269,8 @@ class MarbleRaceApiTest(unittest.TestCase):
         ).get_json()
 
         # Each round has its own distinct 1st/2nd place pair, so four rounds
-        # bank four distinct bye winners -- more than maxFinalRacers=3 allows.
+        # bank four distinct bye winners -- more than maxFinalRacers=3 allows,
+        # forcing a semifinal split instead of the old trim-down behavior.
         pairs = [(0, 1), (2, 3), (4, 5), (6, 7)]
         for round_index, round in enumerate(state["rounds"]):
             heat = round["heats"][0]
@@ -2279,13 +2299,109 @@ class MarbleRaceApiTest(unittest.TestCase):
         if state["championship"]["preliminary"]["heats"]:
             state = score_all_heats_sequentially(self.client, state["championship"]["preliminary"]["heats"])
 
+        self.assertTrue(state["championship"]["quarterfinal"]["skipped"])
+        semifinal_stage = state["championship"]["semifinal"]
+        self.assertTrue(semifinal_stage["ready"])
+        self.assertEqual(len(semifinal_stage["heats"]), 2)
+        for heat in semifinal_stage["heats"]:
+            self.assertLessEqual(len(heat["entries"]), 3)
+
+        state = score_all_heats_sequentially(self.client, semifinal_stage["heats"])
+
         final_stage = state["championship"]["final"]
         self.assertTrue(final_stage["ready"])
-        # Four rounds each bank a distinct bye winner, so the pre-trim field
-        # (at least 4 byes) exceeds maxFinalRacers=3 and must be trimmed down.
-        self.assertGreater(final_stage["trimmedCount"], 0)
-        self.assertEqual(len(final_stage["heat"]["entries"]), 3)
-        self.assertLessEqual(final_stage["byeCount"], 3)
+        # Splitting replaces trimming -- the final never has to drop anyone
+        # to fit, since semifinal advancement already caps it at
+        # maxFinalRacers.
+        self.assertEqual(final_stage["trimmedCount"], 0)
+        self.assertLessEqual(len(final_stage["heat"]["entries"]), 3)
+
+    def test_final_field_splits_into_quarterfinal_for_larger_fields(self) -> None:
+        contestants = [{"name": f"Racer {i}", "color": "#2F80ED"} for i in range(16)]
+        created = self.client.post(
+            "/api/tournaments", json={"name": "Quarterfinal Cup"}
+        ).get_json()
+        tournament_id = created["competition"]["id"]
+        self.addCleanup(
+            lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close()
+        )
+        state = self.client.put(
+            f"/api/tournaments/{tournament_id}",
+            json={
+                "name": "Quarterfinal Cup",
+                "rounds": 8,
+                "heatsPerRacerPerRound": 1,
+                "maxMarblesPerHeat": 16,
+                "marblesPerRacer": 1,
+                "wildcardMaxMarblesPerHeat": 12,
+                "preliminaryMaxMarblesPerHeat": 12,
+                "maxFinalByeMarblesPerRacer": 1,
+                "maxPrelimPromotionMarblesPerRacer": 1,
+                "maxFinalRacers": 2,
+                "points": [10, 7, 5, 3, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                "contestants": contestants,
+            },
+        ).get_json()
+        contestant_ids = [racer["id"] for racer in state["contestants"]]
+
+        # A different pair of racers wins each of the 8 rounds, so bye
+        # winners alone (one per round, all distinct) already exceed even
+        # 4x maxFinalRacers=2 -- exercising both the >4x safety-net trim and
+        # the escalation all the way to quarterfinal heats.
+        for round_index, round in enumerate(state["rounds"]):
+            heat = round["heats"][0]
+            winner_id = contestant_ids[(2 * round_index) % 16]
+            second_id = contestant_ids[(2 * round_index + 1) % 16]
+            remaining = [cid for cid in contestant_ids if cid not in (winner_id, second_id)]
+            finish_by_id = {winner_id: 1, second_id: 2}
+            for rank, contestant_id in enumerate(remaining, start=3):
+                finish_by_id[contestant_id] = rank
+            results = [
+                {
+                    "contestantId": entry["contestantId"],
+                    "marbleNumber": entry["marbles"][0]["number"],
+                    "finish": finish_by_id[entry["contestantId"]],
+                }
+                for entry in heat["entries"]
+            ]
+            start_heat(self.client, heat)
+            saved = self.client.put(f'/api/heats/{heat["id"]}/results', json={"results": results})
+            self.assertEqual(saved.status_code, 200)
+            state = saved.get_json()
+
+        if state["championship"]["wildcard"]["heats"]:
+            state = score_all_heats_sequentially(self.client, state["championship"]["wildcard"]["heats"])
+        self.assertTrue(state["championship"]["preliminary"]["ready"])
+        if state["championship"]["preliminary"]["heats"]:
+            state = score_all_heats_sequentially(self.client, state["championship"]["preliminary"]["heats"])
+
+        quarterfinal_stage = state["championship"]["quarterfinal"]
+        self.assertTrue(quarterfinal_stage["ready"])
+        self.assertEqual(len(quarterfinal_stage["heats"]), 4)
+        for heat in quarterfinal_stage["heats"]:
+            self.assertGreaterEqual(len(heat["entries"]), 2)
+
+        state = score_all_heats_sequentially(self.client, quarterfinal_stage["heats"])
+
+        semifinal_stage = state["championship"]["semifinal"]
+        self.assertTrue(semifinal_stage["ready"])
+        self.assertEqual(len(semifinal_stage["heats"]), 2)
+        for heat in semifinal_stage["heats"]:
+            self.assertLessEqual(len(heat["entries"]), 2)
+
+        state = score_all_heats_sequentially(self.client, semifinal_stage["heats"])
+
+        final_stage = state["championship"]["final"]
+        self.assertTrue(final_stage["ready"])
+        self.assertLessEqual(len(final_stage["heat"]["entries"]), 2)
+
+        # Every finalist reached the final via the full bracket chain
+        # (final <- semifinal <- quarterfinal <- preliminary/bye <- possibly
+        # wildcard <- staging round) -- a regression check that
+        # _resolve_seed_rounds' recursion depth cap covers this deeper chain
+        # instead of silently losing seed-round provenance partway through.
+        for entry in final_stage["heat"]["entries"]:
+            self.assertTrue(entry["seedRounds"], entry)
 
     def test_championship_config_validation(self) -> None:
         created = self.client.post(
