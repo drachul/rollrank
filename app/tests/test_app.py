@@ -87,19 +87,19 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertEqual(state["competition"]["name"], "The Great Marble Race")
         self.assertEqual(state["competition"]["id"], 1)
         self.assertEqual(len(state["tournaments"]), 1)
-        self.assertEqual(len(state["days"]), 3)
-        self.assertEqual(state["competition"]["heatsPerRacerPerDay"], 3)
+        self.assertEqual(len(state["rounds"]), 3)
+        self.assertEqual(state["competition"]["heatsPerRacerPerRound"], 3)
         self.assertEqual(state["competition"]["maxMarblesPerHeat"], 6)
         self.assertEqual(state["competition"]["wildcardRacersPromotedPerHeat"], 2)
         self.assertEqual(state["competition"]["preliminaryRacersPromotedPerHeat"], 2)
         self.assertEqual(state["competition"]["racersPerHeat"], 6)
         self.assertEqual(state["competition"]["marblesPerHeat"], 6)
         self.assertEqual(state["competition"]["marblesPerRacer"], 1)
-        self.assertEqual(len(state["days"][0]["heats"]), 4)
+        self.assertEqual(len(state["rounds"][0]["heats"]), 4)
         self.assertTrue(
             all(
                 len(entry["marbles"]) == 1
-                for entry in state["days"][0]["heats"][0]["entries"]
+                for entry in state["rounds"][0]["heats"][0]["entries"]
             )
         )
         self.assertEqual(len(state["standings"]), 8)
@@ -135,7 +135,7 @@ class MarbleRaceApiTest(unittest.TestCase):
             payload = json.loads(data_line)
             self.assertEqual(payload["competition"]["id"], tournament_id)
 
-            heat = payload["days"][0]["heats"][0]
+            heat = payload["rounds"][0]["heats"][0]
             started = self.client.put(f'/api/heats/{heat["id"]}/start')
             self.assertEqual(started.status_code, 200)
             updated_event = next(response.response).decode("utf-8")
@@ -145,7 +145,7 @@ class MarbleRaceApiTest(unittest.TestCase):
                 if line.startswith("data: ")
             )
             updated_payload = json.loads(updated_data_line)
-            updated_heat = updated_payload["days"][0]["heats"][0]
+            updated_heat = updated_payload["rounds"][0]["heats"][0]
             self.assertTrue(updated_heat["started"])
         finally:
             response.close()
@@ -174,11 +174,11 @@ class MarbleRaceApiTest(unittest.TestCase):
 
     def test_schedule_balances_appearances_and_opponents(self) -> None:
         state = self.client.get("/api/state").get_json()
-        target = state["competition"]["heatsPerRacerPerDay"]
+        target = state["competition"]["heatsPerRacerPerRound"]
         pair_counts = Counter()
-        for day in state["days"]:
+        for round in state["rounds"]:
             appearances = Counter()
-            for heat in day["heats"]:
+            for heat in round["heats"]:
                 racer_ids = [entry["contestantId"] for entry in heat["entries"]]
                 appearances.update(racer_ids)
                 pair_counts.update(tuple(sorted(pair)) for pair in combinations(racer_ids, 2))
@@ -189,10 +189,10 @@ class MarbleRaceApiTest(unittest.TestCase):
     def test_schedule_reaches_even_pairing_when_configuration_allows_it(self) -> None:
         schedule = balanced_schedule(list(range(1, 8)), 4, 4, 3, 42)
         pair_counts = Counter()
-        for day in schedule:
-            appearances = Counter(racer_id for heat in day for racer_id in heat)
+        for round in schedule:
+            appearances = Counter(racer_id for heat in round for racer_id in heat)
             self.assertEqual([appearances[racer_id] for racer_id in range(1, 8)], [4] * 7)
-            for heat in day:
+            for heat in round:
                 pair_counts.update(tuple(sorted(pair)) for pair in combinations(heat, 2))
         self.assertEqual(
             {pair_counts[pair] for pair in combinations(range(1, 8), 2)},
@@ -201,7 +201,7 @@ class MarbleRaceApiTest(unittest.TestCase):
 
     def test_complete_heat_updates_points(self) -> None:
         state = self.client.get("/api/state").get_json()
-        heat = state["days"][0]["heats"][0]
+        heat = state["rounds"][0]["heats"][0]
         results = []
         position = 0
         for entry in heat["entries"]:
@@ -219,7 +219,7 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         updated = response.get_json()
         self.assertEqual(updated["competition"]["completedHeats"], 1)
-        self.assertTrue(updated["days"][0]["heats"][0]["complete"])
+        self.assertTrue(updated["rounds"][0]["heats"][0]["complete"])
         summaries = self.client.get("/api/tournaments").get_json()["tournaments"]
         self.assertEqual(len(summaries), 1)
         self.assertIsNotNone(summaries[0]["leader"])
@@ -236,7 +236,7 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.addCleanup(
             lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close()
         )
-        heat = created["days"][0]["heats"][0]
+        heat = created["rounds"][0]["heats"][0]
         results = []
         next_finish = 1
         for index, entry in enumerate(heat["entries"]):
@@ -260,8 +260,8 @@ class MarbleRaceApiTest(unittest.TestCase):
         updated = response.get_json()
         updated_heat = next(
             item
-            for day in updated["days"]
-            for item in day["heats"]
+            for round in updated["rounds"]
+            for item in round["heats"]
             if item["id"] == heat["id"]
         )
         self.assertTrue(updated_heat["complete"])
@@ -368,7 +368,7 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertIn("data-marble-number", frontend)
         self.assertIn("DNF · 0 pts", frontend)
         self.assertIn('viewHeader("Results desk", "Rounds"', frontend)
-        self.assertIn('data-day="championship"', frontend)
+        self.assertIn('data-round="championship"', frontend)
         self.assertNotIn("Enter heat results", frontend)
         self.assertNotIn("Review completed heats", frontend)
         self.assertNotIn("Edit tournament", frontend)
@@ -382,8 +382,8 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertIn("function standingsTierViewControl", frontend)
         self.assertIn('let standingsTierView = "projected"', frontend)
         self.assertIn("Arrows show earlier seats that would be reassigned", frontend)
-        self.assertIn("dayChampionshipPreviousTiers", frontend)
-        self.assertIn("dayChampionshipTierProvisional", frontend)
+        self.assertIn("roundChampionshipPreviousTiers", frontend)
+        self.assertIn("roundChampionshipTierProvisional", frontend)
         self.assertIn("No seat*", frontend)
         self.assertIn("function standingRoundCell", frontend)
         self.assertIn(".provisional-tier-note", styles)
@@ -528,7 +528,7 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.addCleanup(
             lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close()
         )
-        staging_heats = [heat for day in created["days"] for heat in day["heats"]]
+        staging_heats = [heat for round in created["rounds"] for heat in round["heats"]]
         state = score_all_heats_sequentially(self.client, staging_heats)
         self.assertTrue(state["championship"]["wildcard"]["ready"])
 
@@ -599,8 +599,8 @@ class MarbleRaceApiTest(unittest.TestCase):
             f"/api/tournaments/{tournament_id}",
             json={
                 "name": "Double Marble Cup",
-                "days": 1,
-                "heatsPerRacerPerDay": 1,
+                "rounds": 1,
+                "heatsPerRacerPerRound": 1,
                 "maxMarblesPerHeat": 6,
                 "marblesPerRacer": 2,
                 "wildcardMaxMarblesPerHeat": 6,
@@ -620,7 +620,7 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertEqual(state["competition"]["marblesPerHeat"], 6)
         self.assertEqual(len(state["points"]), 6)
 
-        for heat_index, heat in enumerate(state["days"][0]["heats"]):
+        for heat_index, heat in enumerate(state["rounds"][0]["heats"]):
             self.assertTrue(all(len(entry["marbles"]) == 2 for entry in heat["entries"]))
             results = []
             finish = 0
@@ -640,7 +640,7 @@ class MarbleRaceApiTest(unittest.TestCase):
             )
             self.assertEqual(scored.status_code, 200)
             state = scored.get_json()
-            scored_heat = state["days"][0]["heats"][heat_index]
+            scored_heat = state["rounds"][0]["heats"][heat_index]
             self.assertEqual(
                 [entry["points"] for entry in scored_heat["entries"]],
                 [17, 8, 3],
@@ -655,9 +655,9 @@ class MarbleRaceApiTest(unittest.TestCase):
                 [heat["entries"][0]["contestantId"], heat["entries"][1]["contestantId"]],
             )
 
-        # Every heat that day used the same "1st entry wins" pattern, so the
+        # Every heat that round used the same "1st entry wins" pattern, so the
         # top racer of heat 0 and the top racer of heat 1 end up with
-        # identical points/wins/finish-sum for the day -- a genuine tie for
+        # identical points/wins/finish-sum for the round -- a genuine tie for
         # the bye seat that needs resolving before the wildcard stage opens.
         pending = state["pendingTieBreak"]
         self.assertIsNotNone(pending)
@@ -671,7 +671,7 @@ class MarbleRaceApiTest(unittest.TestCase):
 
         self.assertTrue(state["championship"]["wildcard"]["ready"])
         self.assertEqual(
-            [racer["dayPlacements"][0] for racer in state["standings"]],
+            [racer["roundPlacements"][0] for racer in state["standings"]],
             [1, 2, 3, 4, 5, 6],
         )
         self.assertEqual(state["standings"][0]["wins"], 1)
@@ -716,8 +716,8 @@ class MarbleRaceApiTest(unittest.TestCase):
             f"/api/tournaments/{tournament_id}",
             json={
                 "name": "Calculated Heat Cup",
-                "days": 1,
-                "heatsPerRacerPerDay": 3,
+                "rounds": 1,
+                "heatsPerRacerPerRound": 3,
                 "maxMarblesPerHeat": 10,
                 "marblesPerRacer": 2,
                 "wildcardMaxMarblesPerHeat": 6,
@@ -734,12 +734,12 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertEqual(state["competition"]["racersPerHeat"], 4)
         self.assertEqual(state["competition"]["marblesPerHeat"], 8)
         self.assertEqual(state["competition"]["maxMarblesPerHeat"], 10)
-        self.assertEqual(state["competition"]["heatsPerDay"], 6)
+        self.assertEqual(state["competition"]["heatsPerRound"], 6)
         self.assertTrue(
             all(
                 len(heat["entries"]) == 4
                 and sum(len(entry["marbles"]) for entry in heat["entries"]) == 8
-                for heat in state["days"][0]["heats"]
+                for heat in state["rounds"][0]["heats"]
             )
         )
         deleted = self.client.delete(f"/api/tournaments/{tournament_id}")
@@ -764,8 +764,8 @@ class MarbleRaceApiTest(unittest.TestCase):
             f"/api/tournaments/{second_id}",
             json={
                 "name": "Sprint Cup",
-                "days": 2,
-                "heatsPerRacerPerDay": 1,
+                "rounds": 2,
+                "heatsPerRacerPerRound": 1,
                 "maxMarblesPerHeat": 3,
                 "marblesPerRacer": 1,
                 "wildcardMaxMarblesPerHeat": 6,
@@ -779,9 +779,9 @@ class MarbleRaceApiTest(unittest.TestCase):
         )
         self.assertEqual(configured.status_code, 200)
         second = configured.get_json()
-        self.assertEqual(second["competition"]["days"], 2)
+        self.assertEqual(second["competition"]["rounds"], 2)
         self.assertEqual(second["competition"]["totalHeats"], 4)
-        heat = second["days"][0]["heats"][0]
+        heat = second["rounds"][0]["heats"][0]
         results = [
             {
                 "contestantId": entry["contestantId"],
@@ -799,7 +799,7 @@ class MarbleRaceApiTest(unittest.TestCase):
 
         unchanged = self.client.get(f"/api/state?tournamentId={original_id}").get_json()
         self.assertEqual(unchanged["competition"]["name"], original["competition"]["name"])
-        self.assertEqual(unchanged["competition"]["days"], original["competition"]["days"])
+        self.assertEqual(unchanged["competition"]["rounds"], original["competition"]["rounds"])
         self.assertEqual(unchanged["competition"]["completedHeats"], original_completed)
 
         deleted = self.client.delete(f"/api/tournaments/{second_id}")
@@ -822,8 +822,8 @@ class MarbleRaceApiTest(unittest.TestCase):
             f"/api/tournaments/{tournament_id}",
             json={
                 "name": "Round Standings Cup",
-                "days": 3,
-                "heatsPerRacerPerDay": 1,
+                "rounds": 3,
+                "heatsPerRacerPerRound": 1,
                 "maxMarblesPerHeat": 8,
                 "marblesPerRacer": 1,
                 "wildcardMaxMarblesPerHeat": 6,
@@ -839,17 +839,17 @@ class MarbleRaceApiTest(unittest.TestCase):
                 ],
             },
         ).get_json()
-        self.assertEqual(configured["competition"]["heatsPerDay"], 1)
+        self.assertEqual(configured["competition"]["heatsPerRound"], 1)
 
         # racer[0] wins every round; everyone else rotates through the
-        # remaining places so a different racer holds each other rank each day.
+        # remaining places so a different racer holds each other rank each round.
         state = configured
-        for day_index, day in enumerate(state["days"]):
-            heat = day["heats"][0]
+        for round_index, round in enumerate(state["rounds"]):
+            heat = round["heats"][0]
             results = []
             for entry in heat["entries"]:
                 index = contestant_ids.index(entry["contestantId"])
-                finish = 1 if index == 0 else 2 + ((index - 1 + day_index) % 7)
+                finish = 1 if index == 0 else 2 + ((index - 1 + round_index) % 7)
                 results.append(
                     {
                         "contestantId": entry["contestantId"],
@@ -875,7 +875,7 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertTrue(all(item["racerId"] != winner_id for item in field["preliminaryDirect"]))
         self.assertTrue(all(item["racerId"] != winner_id for item in field["wildcardPool"]))
 
-    def test_championship_field_ignores_unraced_days(self) -> None:
+    def test_championship_field_ignores_unraced_rounds(self) -> None:
         created = self.client.post(
             "/api/tournaments", json={"name": "Partial Rounds Cup"}
         ).get_json()
@@ -887,8 +887,8 @@ class MarbleRaceApiTest(unittest.TestCase):
             f"/api/tournaments/{tournament_id}",
             json={
                 "name": "Partial Rounds Cup",
-                "days": 3,
-                "heatsPerRacerPerDay": 1,
+                "rounds": 3,
+                "heatsPerRacerPerRound": 1,
                 "maxMarblesPerHeat": 8,
                 "marblesPerRacer": 1,
                 "wildcardMaxMarblesPerHeat": 6,
@@ -903,24 +903,24 @@ class MarbleRaceApiTest(unittest.TestCase):
                 ],
             },
         ).get_json()
-        self.assertEqual(configured["competition"]["heatsPerDay"], 1)
+        self.assertEqual(configured["competition"]["heatsPerRound"], 1)
 
-        # Only day 1 gets raced; days 2 and 3 are untouched, so round_standings()
+        # Only round 1 gets raced; rounds 2 and 3 are untouched, so round_standings()
         # would rank them purely by sort_order if championship_field() didn't
         # skip them -- that phantom ranking must not claim bye/preliminary/
-        # wildcard seats that belong to day 1's real result.
-        day1_heat = configured["days"][0]["heats"][0]
+        # wildcard seats that belong to round 1's real result.
+        round1_heat = configured["rounds"][0]["heats"][0]
         results = [
             {
                 "contestantId": entry["contestantId"],
                 "marbleNumber": entry["marbles"][0]["number"],
                 "finish": index + 1,
             }
-            for index, entry in enumerate(day1_heat["entries"])
+            for index, entry in enumerate(round1_heat["entries"])
         ]
-        start_heat(self.client, day1_heat)
+        start_heat(self.client, round1_heat)
         saved = self.client.put(
-            f'/api/heats/{day1_heat["id"]}/results', json={"results": results}
+            f'/api/heats/{round1_heat["id"]}/results', json={"results": results}
         )
         self.assertEqual(saved.status_code, 200)
 
@@ -934,8 +934,8 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertTrue(all(item["originRound"] == 1 for item in field["preliminaryDirect"]))
         self.assertTrue(all(item["originRound"] == 1 for item in field["wildcardPool"]))
 
-        third_place_id = day1_heat["entries"][2]["contestantId"]
-        fourth_place_id = day1_heat["entries"][3]["contestantId"]
+        third_place_id = round1_heat["entries"][2]["contestantId"]
+        fourth_place_id = round1_heat["entries"][3]["contestantId"]
         wildcard_ids = {item["racerId"] for item in field["wildcardPool"]}
         self.assertEqual(wildcard_ids, {third_place_id, fourth_place_id})
 
@@ -947,34 +947,34 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.addCleanup(
             lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close()
         )
-        day1_heats = created["days"][0]["heats"]
-        self.assertEqual(len(day1_heats), 4)
-        self.assertIsNone(created["competition"]["liveRoundDay"])
+        round1_heats = created["rounds"][0]["heats"]
+        self.assertEqual(len(round1_heats), 4)
+        self.assertIsNone(created["competition"]["liveRound"])
 
-        # Scoring just the first of day 1's four heats gives everyone a
+        # Scoring just the first of round 1's four heats gives everyone a
         # provisional (not yet official) round placement, since the round
         # itself is still in progress -- but nobody's win/promotion tallies
         # move until the round actually finishes.
-        partial = score_heat_sequentially(self.client, day1_heats[0]).get_json()
-        self.assertEqual(partial["competition"]["liveRoundDay"], 1)
-        self.assertTrue(all(racer["dayPlacements"][0] is not None for racer in partial["standings"]))
+        partial = score_heat_sequentially(self.client, round1_heats[0]).get_json()
+        self.assertEqual(partial["competition"]["liveRound"], 1)
+        self.assertTrue(all(racer["roundPlacements"][0] is not None for racer in partial["standings"]))
         self.assertTrue(all(racer["wins"] == 0 for racer in partial["standings"]))
         self.assertTrue(all(racer["preliminaryPromotions"] == 0 for racer in partial["standings"]))
         self.assertTrue(all(racer["wildcardAdvancements"] == 0 for racer in partial["standings"]))
-        leader = next(racer for racer in partial["standings"] if racer["dayPlacements"][0] == 1)
-        self.assertEqual(leader["dayChampionshipTiers"][0], "bye")
-        self.assertIsNone(leader["dayChampionshipPreviousTiers"][0])
-        self.assertTrue(leader["dayChampionshipTierProvisional"][0])
+        leader = next(racer for racer in partial["standings"] if racer["roundPlacements"][0] == 1)
+        self.assertEqual(leader["roundChampionshipTiers"][0], "bye")
+        self.assertIsNone(leader["roundChampionshipPreviousTiers"][0])
+        self.assertTrue(leader["roundChampionshipTierProvisional"][0])
         self.assertTrue(leader["liveRoundLeader"])
 
-        state = score_all_heats_sequentially(self.client, day1_heats[1:])
-        self.assertIsNone(state["competition"]["liveRoundDay"])
-        day1_placements = sorted(racer["dayPlacements"][0] for racer in state["standings"])
-        self.assertEqual(day1_placements, list(range(1, 9)))
-        self.assertTrue(any(racer["dayChampionshipTiers"][0] == "bye" for racer in state["standings"]))
+        state = score_all_heats_sequentially(self.client, round1_heats[1:])
+        self.assertIsNone(state["competition"]["liveRound"])
+        round1_placements = sorted(racer["roundPlacements"][0] for racer in state["standings"])
+        self.assertEqual(round1_placements, list(range(1, 9)))
+        self.assertTrue(any(racer["roundChampionshipTiers"][0] == "bye" for racer in state["standings"]))
         self.assertTrue(
             all(
-                not racer["dayChampionshipTierProvisional"][0]
+                not racer["roundChampionshipTierProvisional"][0]
                 for racer in state["standings"]
             )
         )
@@ -988,17 +988,17 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.addCleanup(
             lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close()
         )
-        day1_heat = created["days"][0]["heats"][0]
+        round1_heat = created["rounds"][0]["heats"][0]
 
         # Nobody has raced yet -- no round is in progress, so nothing is
         # flagged as a provisional leader or tier.
         self.assertTrue(all(not racer["liveRoundLeader"] for racer in created["standings"]))
         self.assertTrue(all(racer["liveTier"] is None for racer in created["standings"]))
 
-        partial = score_heat_sequentially(self.client, day1_heat).get_json()
+        partial = score_heat_sequentially(self.client, round1_heat).get_json()
         by_place = {
             entry["contestantId"]: index + 1
-            for index, entry in enumerate(day1_heat["entries"])
+            for index, entry in enumerate(round1_heat["entries"])
         }
         standings_by_id = {racer["id"]: racer for racer in partial["standings"]}
         first_place_id = next(cid for cid, place in by_place.items() if place == 1)
@@ -1017,8 +1017,8 @@ class MarbleRaceApiTest(unittest.TestCase):
 
         # Once the round fully completes, there's no round in progress
         # anymore, so nobody is flagged as a live leader or tier.
-        day1_heats = created["days"][0]["heats"]
-        finished = score_all_heats_sequentially(self.client, day1_heats[1:])
+        round1_heats = created["rounds"][0]["heats"]
+        finished = score_all_heats_sequentially(self.client, round1_heats[1:])
         self.assertTrue(all(not racer["liveRoundLeader"] for racer in finished["standings"]))
         self.assertTrue(all(racer["liveTier"] is None for racer in finished["standings"]))
 
@@ -1035,8 +1035,8 @@ class MarbleRaceApiTest(unittest.TestCase):
             f"/api/tournaments/{tournament_id}",
             json={
                 "name": "Provisional Reassignment Cup",
-                "days": 2,
-                "heatsPerRacerPerDay": 2,
+                "rounds": 2,
+                "heatsPerRacerPerRound": 2,
                 "maxMarblesPerHeat": 8,
                 "marblesPerRacer": 1,
                 "wildcardMaxMarblesPerHeat": 8,
@@ -1079,35 +1079,35 @@ class MarbleRaceApiTest(unittest.TestCase):
             ).get_json()
 
         state = configured
-        for heat in state["days"][0]["heats"]:
+        for heat in state["rounds"][0]["heats"]:
             state = score_in_order(heat, contestant_ids)
 
         finalized = {racer["id"]: racer for racer in state["standings"]}
         first, second, third, fourth, fifth = contestant_ids[:5]
-        self.assertEqual(finalized[first]["dayChampionshipTiers"][0], "bye")
-        self.assertEqual(finalized[second]["dayChampionshipTiers"][0], "preliminary")
-        self.assertEqual(finalized[third]["dayChampionshipTiers"][0], "wildcard")
-        self.assertEqual(finalized[fourth]["dayChampionshipTiers"][0], "wildcard")
+        self.assertEqual(finalized[first]["roundChampionshipTiers"][0], "bye")
+        self.assertEqual(finalized[second]["roundChampionshipTiers"][0], "preliminary")
+        self.assertEqual(finalized[third]["roundChampionshipTiers"][0], "wildcard")
+        self.assertEqual(finalized[fourth]["roundChampionshipTiers"][0], "wildcard")
 
         # A partial second round makes the old runner-up a projected bye.
         # That cascades the earlier preliminary and wildcard seats down the
         # completed first-round standings, all of which the API now exposes.
         partial = score_in_order(
-            state["days"][1]["heats"][0],
+            state["rounds"][1]["heats"][0],
             contestant_ids[1:] + contestant_ids[:1],
         )
         by_id = {racer["id"]: racer for racer in partial["standings"]}
-        self.assertEqual(by_id[second]["dayChampionshipPreviousTiers"][0], "preliminary")
-        self.assertIsNone(by_id[second]["dayChampionshipTiers"][0])
-        self.assertTrue(by_id[second]["dayChampionshipTierProvisional"][0])
-        self.assertEqual(by_id[third]["dayChampionshipPreviousTiers"][0], "wildcard")
-        self.assertEqual(by_id[third]["dayChampionshipTiers"][0], "preliminary")
-        self.assertTrue(by_id[third]["dayChampionshipTierProvisional"][0])
-        self.assertIsNone(by_id[fifth]["dayChampionshipPreviousTiers"][0])
-        self.assertEqual(by_id[fifth]["dayChampionshipTiers"][0], "wildcard")
-        self.assertTrue(by_id[fifth]["dayChampionshipTierProvisional"][0])
-        self.assertEqual(by_id[second]["dayChampionshipTiers"][1], "bye")
-        self.assertTrue(by_id[second]["dayChampionshipTierProvisional"][1])
+        self.assertEqual(by_id[second]["roundChampionshipPreviousTiers"][0], "preliminary")
+        self.assertIsNone(by_id[second]["roundChampionshipTiers"][0])
+        self.assertTrue(by_id[second]["roundChampionshipTierProvisional"][0])
+        self.assertEqual(by_id[third]["roundChampionshipPreviousTiers"][0], "wildcard")
+        self.assertEqual(by_id[third]["roundChampionshipTiers"][0], "preliminary")
+        self.assertTrue(by_id[third]["roundChampionshipTierProvisional"][0])
+        self.assertIsNone(by_id[fifth]["roundChampionshipPreviousTiers"][0])
+        self.assertEqual(by_id[fifth]["roundChampionshipTiers"][0], "wildcard")
+        self.assertTrue(by_id[fifth]["roundChampionshipTierProvisional"][0])
+        self.assertEqual(by_id[second]["roundChampionshipTiers"][1], "bye")
+        self.assertTrue(by_id[second]["roundChampionshipTierProvisional"][1])
         # Finalized standings tallies remain official until the round ends.
         self.assertEqual(by_id[second]["preliminaryPromotions"], 1)
 
@@ -1124,8 +1124,8 @@ class MarbleRaceApiTest(unittest.TestCase):
             f"/api/tournaments/{tournament_id}",
             json={
                 "name": "Backfill Cup",
-                "days": 3,
-                "heatsPerRacerPerDay": 1,
+                "rounds": 3,
+                "heatsPerRacerPerRound": 1,
                 "maxMarblesPerHeat": 8,
                 "marblesPerRacer": 1,
                 "wildcardMaxMarblesPerHeat": 6,
@@ -1145,9 +1145,9 @@ class MarbleRaceApiTest(unittest.TestCase):
 
         # Contestants are seeded as Ruby Rocket(0), Blue Bolt(1), Golden
         # Globe(2), Emerald Flash(3), Purple Comet(4), Orange Orbit(5),
-        # Silver Streak(6), Pink Lightning(7). Day 1's 3rd/4th (Orange
+        # Silver Streak(6), Pink Lightning(7). Round 1's 3rd/4th (Orange
         # Orbit, Pink Lightning) both go on to place 2nd/1st in a later
-        # round, and day 3's 3rd/4th (Blue Bolt, Golden Globe) are likewise
+        # round, and round 3's 3rd/4th (Blue Bolt, Golden Globe) are likewise
         # already claimed elsewhere -- those rounds' wildcard seats reach
         # past them to the next eligible finisher rather than sitting empty.
         finish_orders = [
@@ -1156,8 +1156,8 @@ class MarbleRaceApiTest(unittest.TestCase):
             [6, 5, 1, 2, 3, 0, 4, 7],
         ]
         state = configured
-        for day, order in zip(state["days"], finish_orders):
-            heat = day["heats"][0]
+        for round, order in zip(state["rounds"], finish_orders):
+            heat = round["heats"][0]
             finishes = {
                 contestant_ids[racer_index]: place
                 for place, racer_index in enumerate(order, start=1)
@@ -1181,29 +1181,29 @@ class MarbleRaceApiTest(unittest.TestCase):
         finally:
             connection.close()
 
-        wildcard_days_by_racer: dict[int, list[int]] = {}
+        wildcard_rounds_by_racer: dict[int, list[int]] = {}
         for item in field["wildcardPool"]:
-            wildcard_days_by_racer.setdefault(item["racerId"], []).append(item["originRound"])
+            wildcard_rounds_by_racer.setdefault(item["racerId"], []).append(item["originRound"])
         ruby_rocket, golden_globe, purple_comet = (contestant_ids[i] for i in (0, 2, 4))
         orange_orbit, pink_lightning, blue_bolt = (contestant_ids[i] for i in (5, 7, 1))
 
         # Naturally-qualifying 3rd/4th finishers who already claimed a
         # better tier elsewhere never show up in the wildcard pool.
-        self.assertNotIn(orange_orbit, wildcard_days_by_racer)
-        self.assertNotIn(pink_lightning, wildcard_days_by_racer)
-        self.assertNotIn(blue_bolt, wildcard_days_by_racer)
+        self.assertNotIn(orange_orbit, wildcard_rounds_by_racer)
+        self.assertNotIn(pink_lightning, wildcard_rounds_by_racer)
+        self.assertNotIn(blue_bolt, wildcard_rounds_by_racer)
 
-        # Day 1's two seats (3rd/4th both claimed elsewhere) reach past them
+        # Round 1's two seats (3rd/4th both claimed elsewhere) reach past them
         # to the next eligible finishers: Purple Comet (5th) and Golden
         # Globe (6th).
-        self.assertEqual(sorted(wildcard_days_by_racer[purple_comet]), [1])
+        self.assertEqual(sorted(wildcard_rounds_by_racer[purple_comet]), [1])
         # Golden Globe is eligible (never bye- or preliminary-tier) every
         # single round -- and unlike bye/preliminary, wildcard marbles are
         # uncapped, so they earn a marble in all three rounds, not just one.
-        self.assertEqual(sorted(wildcard_days_by_racer[golden_globe]), [1, 2, 3])
-        # Ruby Rocket is likewise eligible on both day 2 and day 3.
-        self.assertEqual(sorted(wildcard_days_by_racer[ruby_rocket]), [2, 3])
-        self.assertEqual(set(wildcard_days_by_racer), {purple_comet, golden_globe, ruby_rocket})
+        self.assertEqual(sorted(wildcard_rounds_by_racer[golden_globe]), [1, 2, 3])
+        # Ruby Rocket is likewise eligible on both round 2 and round 3.
+        self.assertEqual(sorted(wildcard_rounds_by_racer[ruby_rocket]), [2, 3])
+        self.assertEqual(set(wildcard_rounds_by_racer), {purple_comet, golden_globe, ruby_rocket})
 
         connection = connect()
         try:
@@ -1212,12 +1212,12 @@ class MarbleRaceApiTest(unittest.TestCase):
             connection.close()
 
         by_id = {row["id"]: row for row in table}
-        self.assertEqual(by_id[purple_comet]["dayChampionshipTiers"][0], "wildcard")
-        self.assertEqual(by_id[golden_globe]["dayChampionshipTiers"], ["wildcard", "wildcard", "wildcard"])
-        self.assertEqual(by_id[ruby_rocket]["dayChampionshipTiers"][1], "wildcard")
-        self.assertEqual(by_id[ruby_rocket]["dayChampionshipTiers"][2], "wildcard")
-        self.assertEqual(by_id[orange_orbit]["dayChampionshipTiers"][0], None)
-        self.assertIsNotNone(by_id[orange_orbit]["dayChampionshipTiers"][2])
+        self.assertEqual(by_id[purple_comet]["roundChampionshipTiers"][0], "wildcard")
+        self.assertEqual(by_id[golden_globe]["roundChampionshipTiers"], ["wildcard", "wildcard", "wildcard"])
+        self.assertEqual(by_id[ruby_rocket]["roundChampionshipTiers"][1], "wildcard")
+        self.assertEqual(by_id[ruby_rocket]["roundChampionshipTiers"][2], "wildcard")
+        self.assertEqual(by_id[orange_orbit]["roundChampionshipTiers"][0], None)
+        self.assertIsNotNone(by_id[orange_orbit]["roundChampionshipTiers"][2])
 
     def test_bye_ineligibility_cascades_preliminary_and_stacks_multiple_marbles(self) -> None:
         created = self.client.post(
@@ -1232,8 +1232,8 @@ class MarbleRaceApiTest(unittest.TestCase):
             f"/api/tournaments/{tournament_id}",
             json={
                 "name": "Multi-Marble Cup",
-                "days": 3,
-                "heatsPerRacerPerDay": 1,
+                "rounds": 3,
+                "heatsPerRacerPerRound": 1,
                 "maxMarblesPerHeat": 8,
                 "marblesPerRacer": 1,
                 "wildcardMaxMarblesPerHeat": 24,
@@ -1253,21 +1253,21 @@ class MarbleRaceApiTest(unittest.TestCase):
         # Globe(2)=C, Emerald Flash(3)=D, Purple Comet(4)=E, Orange
         # Orbit(5)=F, Silver Streak(6)=G, Pink Lightning(7)=H.
         #
-        # A wins day 1 and day 2 (bye-eligible each time, cap 2 keeps both);
-        # D wins day 3. B places 2nd on day 1 and day 2 -- two separate
-        # preliminary marbles. Day 3's 2nd place is A, who is bye-ineligible
+        # A wins round 1 and round 2 (bye-eligible each time, cap 2 keeps both);
+        # D wins round 3. B places 2nd on round 1 and round 2 -- two separate
+        # preliminary marbles. Round 3's 2nd place is A, who is bye-ineligible
         # for preliminary, so the cascade moves to 3rd place (C) instead.
-        # E and F are the natural wildcard pair on both day 1 and day 3,
+        # E and F are the natural wildcard pair on both round 1 and round 3,
         # stacking two wildcard marbles each -- wildcard is uncapped, so
         # this is their full natural count, not a truncation; G and H are
-        # the natural pair on day 2 only, one marble each.
+        # the natural pair on round 2 only, one marble each.
         finish_orders = [
             [0, 1, 4, 5, 6, 7, 2, 3],
             [0, 1, 6, 7, 4, 5, 3, 2],
             [3, 0, 2, 4, 5, 6, 7, 1],
         ]
-        for day, order in zip(state["days"], finish_orders):
-            heat = day["heats"][0]
+        for round, order in zip(state["rounds"], finish_orders):
+            heat = round["heats"][0]
             finishes = {
                 contestant_ids[racer_index]: place
                 for place, racer_index in enumerate(order, start=1)
@@ -1300,7 +1300,7 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertTrue(all(item["racerId"] != a for item in field["preliminaryDirect"]))
         self.assertTrue(all(item["racerId"] != a for item in field["wildcardPool"]))
 
-        # Rule 2: day 3's bye-ineligible 2nd place (A) cascades to 3rd (C).
+        # Rule 2: round 3's bye-ineligible 2nd place (A) cascades to 3rd (C).
         prelim_by_racer = {item["racerId"]: item["originRound"] for item in field["preliminaryDirect"]}
         self.assertEqual(prelim_by_racer.get(c), 3)
         self.assertNotIn(a, prelim_by_racer)
@@ -1345,8 +1345,8 @@ class MarbleRaceApiTest(unittest.TestCase):
             f"/api/tournaments/{tournament_id}",
             json={
                 "name": "Bye Cascade Cup",
-                "days": 2,
-                "heatsPerRacerPerDay": 1,
+                "rounds": 2,
+                "heatsPerRacerPerRound": 1,
                 "maxMarblesPerHeat": 4,
                 "marblesPerRacer": 1,
                 "wildcardMaxMarblesPerHeat": 6,
@@ -1367,8 +1367,8 @@ class MarbleRaceApiTest(unittest.TestCase):
 
         # A wins both rounds but is capped at one bye marble.
         finish_orders = [[a, b, c, d], [a, b, c, d]]
-        for day, order in zip(state["days"], finish_orders):
-            heat = day["heats"][0]
+        for round, order in zip(state["rounds"], finish_orders):
+            heat = round["heats"][0]
             finishes = {racer_id: place for place, racer_id in enumerate(order, start=1)}
             results = [
                 {
@@ -1389,7 +1389,7 @@ class MarbleRaceApiTest(unittest.TestCase):
         finally:
             connection.close()
 
-        # With cascading on, day 2's bye seat doesn't sit empty once A is
+        # With cascading on, round 2's bye seat doesn't sit empty once A is
         # capped out -- it cascades to B, that round's 2nd place finisher.
         byes_by_round = {item["originRound"]: item["racerId"] for item in field["byes"]}
         self.assertEqual(byes_by_round, {1: a, 2: b})
@@ -1406,8 +1406,8 @@ class MarbleRaceApiTest(unittest.TestCase):
             f"/api/tournaments/{tournament_id}",
             json={
                 "name": "Bye No-Cascade Cup",
-                "days": 2,
-                "heatsPerRacerPerDay": 1,
+                "rounds": 2,
+                "heatsPerRacerPerRound": 1,
                 "maxMarblesPerHeat": 4,
                 "marblesPerRacer": 1,
                 "wildcardMaxMarblesPerHeat": 6,
@@ -1427,8 +1427,8 @@ class MarbleRaceApiTest(unittest.TestCase):
         a, b, c, d = contestant_ids
 
         finish_orders = [[a, b, c, d], [a, b, c, d]]
-        for day, order in zip(state["days"], finish_orders):
-            heat = day["heats"][0]
+        for round, order in zip(state["rounds"], finish_orders):
+            heat = round["heats"][0]
             finishes = {racer_id: place for place, racer_id in enumerate(order, start=1)}
             results = [
                 {
@@ -1449,7 +1449,7 @@ class MarbleRaceApiTest(unittest.TestCase):
         finally:
             connection.close()
 
-        # With cascading off, day 2's bye seat is simply forfeited once A is
+        # With cascading off, round 2's bye seat is simply forfeited once A is
         # capped out -- it does not fall through to B.
         self.assertEqual(field["byes"], [{"racerId": a, "originRound": 1}])
         self.assertTrue(all(item["racerId"] != b for item in field["byes"]))
@@ -1466,8 +1466,8 @@ class MarbleRaceApiTest(unittest.TestCase):
             f"/api/tournaments/{tournament_id}",
             json={
                 "name": "Bye Bonus Cup",
-                "days": 2,
-                "heatsPerRacerPerDay": 1,
+                "rounds": 2,
+                "heatsPerRacerPerRound": 1,
                 "maxMarblesPerHeat": 4,
                 "marblesPerRacer": 1,
                 "wildcardMaxMarblesPerHeat": 6,
@@ -1486,10 +1486,10 @@ class MarbleRaceApiTest(unittest.TestCase):
         contestant_ids = [racer["id"] for racer in state["contestants"]]
         a, b, c, d = contestant_ids
 
-        # A wins day 1 (banking a final bye) then places 2nd on day 2, behind D.
+        # A wins round 1 (banking a final bye) then places 2nd on round 2, behind D.
         finish_orders = [[a, b, c, d], [d, a, b, c]]
-        for day, order in zip(state["days"], finish_orders):
-            heat = day["heats"][0]
+        for round, order in zip(state["rounds"], finish_orders):
+            heat = round["heats"][0]
             finishes = {racer_id: place for place, racer_id in enumerate(order, start=1)}
             results = [
                 {
@@ -1510,8 +1510,8 @@ class MarbleRaceApiTest(unittest.TestCase):
         finally:
             connection.close()
 
-        # A already has a final bye (day 1), but the bye-tier prelim bonus
-        # lets them also bank a preliminary marble from day 2's 2nd place.
+        # A already has a final bye (round 1), but the bye-tier prelim bonus
+        # lets them also bank a preliminary marble from round 2's 2nd place.
         prelim_by_racer = {
             item["racerId"]: item["originRound"] for item in field["preliminaryDirect"]
         }
@@ -1529,8 +1529,8 @@ class MarbleRaceApiTest(unittest.TestCase):
             f"/api/tournaments/{tournament_id}",
             json={
                 "name": "Independent Caps Cup",
-                "days": 3,
-                "heatsPerRacerPerDay": 1,
+                "rounds": 3,
+                "heatsPerRacerPerRound": 1,
                 "maxMarblesPerHeat": 4,
                 "marblesPerRacer": 1,
                 "wildcardMaxMarblesPerHeat": 6,
@@ -1552,8 +1552,8 @@ class MarbleRaceApiTest(unittest.TestCase):
         # and a different racer wins each round so the bye tier never caps
         # out -- the much higher bye cap (5) must not be what limits W.
         finish_orders = [[v, w, x, y], [x, w, v, y], [y, w, v, x]]
-        for day, order in zip(state["days"], finish_orders):
-            heat = day["heats"][0]
+        for round, order in zip(state["rounds"], finish_orders):
+            heat = round["heats"][0]
             finishes = {racer_id: place for place, racer_id in enumerate(order, start=1)}
             results = [
                 {
@@ -1593,8 +1593,8 @@ class MarbleRaceApiTest(unittest.TestCase):
             f"/api/tournaments/{tournament_id}",
             json={
                 "name": "Wildcard Cascade Cup",
-                "days": 2,
-                "heatsPerRacerPerDay": 1,
+                "rounds": 2,
+                "heatsPerRacerPerRound": 1,
                 "maxMarblesPerHeat": 5,
                 "marblesPerRacer": 1,
                 "wildcardMaxMarblesPerHeat": 12,
@@ -1617,8 +1617,8 @@ class MarbleRaceApiTest(unittest.TestCase):
         # Same placements both rounds: V wins, W is 2nd (preliminary), X and
         # Y are the natural wildcard pair, Z never places in the zone.
         finish_orders = [[v, w, x, y, z], [v, w, x, y, z]]
-        for day, order in zip(state["days"], finish_orders):
-            heat = day["heats"][0]
+        for round, order in zip(state["rounds"], finish_orders):
+            heat = round["heats"][0]
             finishes = {racer_id: place for place, racer_id in enumerate(order, start=1)}
             results = [
                 {
@@ -1639,8 +1639,8 @@ class MarbleRaceApiTest(unittest.TestCase):
         finally:
             connection.close()
 
-        # X and Y each cap out at one wildcard marble (their day 1
-        # occurrence). With cascading on, day 2's now-ineligible seats
+        # X and Y each cap out at one wildcard marble (their round 1
+        # occurrence). With cascading on, round 2's now-ineligible seats
         # don't sit empty -- the seat cascades to Z, the next finisher.
         by_racer: dict[int, list[int]] = {}
         for item in field["wildcardPool"]:
@@ -1661,8 +1661,8 @@ class MarbleRaceApiTest(unittest.TestCase):
             f"/api/tournaments/{tournament_id}",
             json={
                 "name": "Wildcard No-Cascade Cup",
-                "days": 2,
-                "heatsPerRacerPerDay": 1,
+                "rounds": 2,
+                "heatsPerRacerPerRound": 1,
                 "maxMarblesPerHeat": 5,
                 "marblesPerRacer": 1,
                 "wildcardMaxMarblesPerHeat": 12,
@@ -1686,8 +1686,8 @@ class MarbleRaceApiTest(unittest.TestCase):
         # fixed seats (with cascading off) land on W and X, the round's
         # 2nd/3rd place finishers.
         finish_orders = [[v, w, x, y, z], [v, w, x, y, z]]
-        for day, order in zip(state["days"], finish_orders):
-            heat = day["heats"][0]
+        for round, order in zip(state["rounds"], finish_orders):
+            heat = round["heats"][0]
             finishes = {racer_id: place for place, racer_id in enumerate(order, start=1)}
             results = [
                 {
@@ -1709,7 +1709,7 @@ class MarbleRaceApiTest(unittest.TestCase):
             connection.close()
 
         # With cascading off, only the two fixed seats (W, X) are ever
-        # tried -- once they're capped out on day 2, that round contributes
+        # tried -- once they're capped out on round 2, that round contributes
         # no wildcard marbles at all rather than falling through to Y or Z.
         by_racer: dict[int, list[int]] = {}
         for item in field["wildcardPool"]:
@@ -1732,8 +1732,8 @@ class MarbleRaceApiTest(unittest.TestCase):
             f"/api/tournaments/{tournament_id}",
             json={
                 "name": "Tier Ranking Cup",
-                "days": 3,
-                "heatsPerRacerPerDay": 1,
+                "rounds": 3,
+                "heatsPerRacerPerRound": 1,
                 "maxMarblesPerHeat": 8,
                 "marblesPerRacer": 1,
                 "wildcardMaxMarblesPerHeat": 24,
@@ -1749,9 +1749,9 @@ class MarbleRaceApiTest(unittest.TestCase):
             },
         ).get_json()
 
-        # Same shape as the bye-ineligibility cascade scenario: A wins days
-        # 1-2, so day 3's raw 2nd place (also A) is bye-ineligible and its
-        # preliminary slot cascades to C (raw 3rd on day 3). That gives C
+        # Same shape as the bye-ineligibility cascade scenario: A wins rounds
+        # 1-2, so round 3's raw 2nd place (also A) is bye-ineligible and its
+        # preliminary slot cascades to C (raw 3rd on round 3). That gives C
         # one real preliminary promotion despite never placing 2nd, while E
         # racks up two raw 3rd/4th finishes that both land as wildcard (E is
         # never promoted to preliminary). Ranking by tier should put C
@@ -1762,8 +1762,8 @@ class MarbleRaceApiTest(unittest.TestCase):
             [0, 1, 6, 7, 4, 5, 3, 2],
             [3, 0, 2, 4, 5, 6, 7, 1],
         ]
-        for day, order in zip(state["days"], finish_orders):
-            heat = day["heats"][0]
+        for round, order in zip(state["rounds"], finish_orders):
+            heat = round["heats"][0]
             finishes = {
                 contestant_ids[racer_index]: place
                 for place, racer_index in enumerate(order, start=1)
@@ -1810,8 +1810,8 @@ class MarbleRaceApiTest(unittest.TestCase):
             f"/api/tournaments/{tournament_id}",
             json={
                 "name": "Wildcard Split Cup",
-                "days": 5,
-                "heatsPerRacerPerDay": 1,
+                "rounds": 5,
+                "heatsPerRacerPerRound": 1,
                 "maxMarblesPerHeat": 8,
                 "marblesPerRacer": 1,
                 "wildcardMaxMarblesPerHeat": 3,
@@ -1841,8 +1841,8 @@ class MarbleRaceApiTest(unittest.TestCase):
             [0, 3, 5, 1, 2, 4, 6, 7],
             [1, 3, 5, 2, 0, 4, 6, 7],
         ]
-        for day, order in zip(state["days"], finish_orders):
-            heat = day["heats"][0]
+        for round, order in zip(state["rounds"], finish_orders):
+            heat = round["heats"][0]
             finishes = {
                 contestant_ids[racer_index]: place
                 for place, racer_index in enumerate(order, start=1)
@@ -1919,8 +1919,8 @@ class MarbleRaceApiTest(unittest.TestCase):
             f"/api/tournaments/{tournament_id}",
             json={
                 "name": "Interleave Cup",
-                "days": 3,
-                "heatsPerRacerPerDay": 1,
+                "rounds": 3,
+                "heatsPerRacerPerRound": 1,
                 "maxMarblesPerHeat": 8,
                 "marblesPerRacer": 1,
                 "wildcardMaxMarblesPerHeat": 3,
@@ -1945,8 +1945,8 @@ class MarbleRaceApiTest(unittest.TestCase):
             [6, 7, 2, 3, 0, 1, 4, 5],
             [6, 7, 4, 5, 0, 1, 2, 3],
         ]
-        for day, order in zip(state["days"], finish_orders):
-            heat = day["heats"][0]
+        for round, order in zip(state["rounds"], finish_orders):
+            heat = round["heats"][0]
             finishes = {
                 contestant_ids[racer_index]: place
                 for place, racer_index in enumerate(order, start=1)
@@ -1984,8 +1984,8 @@ class MarbleRaceApiTest(unittest.TestCase):
             f"/api/tournaments/{tournament_id}",
             json={
                 "name": "Projection Cup",
-                "days": 3,
-                "heatsPerRacerPerDay": 1,
+                "rounds": 3,
+                "heatsPerRacerPerRound": 1,
                 "maxMarblesPerHeat": 8,
                 "marblesPerRacer": 1,
                 "wildcardMaxMarblesPerHeat": 5,
@@ -2006,16 +2006,16 @@ class MarbleRaceApiTest(unittest.TestCase):
         ).get_json()
 
         # racers[6]/[7] always take 1st/2nd, so racer[6] banks the only bye
-        # (day 1, capped at 1) and racer[7] is the sole direct preliminary
-        # qualifier (day 1). The remaining six racers fill two 3-racer
+        # (round 1, capped at 1) and racer[7] is the sole direct preliminary
+        # qualifier (round 1). The remaining six racers fill two 3-racer
         # wildcard heats.
         finish_orders = [
             [6, 7, 0, 1, 2, 3, 4, 5],
             [6, 7, 2, 3, 0, 1, 4, 5],
             [6, 7, 4, 5, 0, 1, 2, 3],
         ]
-        for day, order in zip(state["days"], finish_orders):
-            heat = day["heats"][0]
+        for round, order in zip(state["rounds"], finish_orders):
+            heat = round["heats"][0]
             finishes = {
                 contestant_ids[racer_index]: place
                 for place, racer_index in enumerate(order, start=1)
@@ -2119,8 +2119,8 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.addCleanup(
             lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close()
         )
-        first_heat_id = created["days"][0]["heats"][0]["id"]
-        staging_heats = [heat for day in created["days"] for heat in day["heats"]]
+        first_heat_id = created["rounds"][0]["heats"][0]["id"]
+        staging_heats = [heat for round in created["rounds"] for heat in round["heats"]]
         state = score_all_heats_sequentially(self.client, staging_heats)
         self.assertTrue(state["championship"]["wildcard"]["ready"])
         self.assertTrue(state["championship"]["wildcard"]["heats"])
@@ -2130,7 +2130,7 @@ class MarbleRaceApiTest(unittest.TestCase):
         # Every staging heat after the first one has since started, so the
         # first heat is permanently locked -- reversing its results is
         # rejected outright rather than offered as a confirmable cascade reset.
-        heat = next(h for day in state["days"] for h in day["heats"] if h["id"] == first_heat_id)
+        heat = next(h for round in state["rounds"] for h in round["heats"] if h["id"] == first_heat_id)
         self.assertTrue(heat["editLocked"])
         entry_count = sum(len(entry["marbles"]) for entry in heat["entries"])
         position = entry_count
@@ -2174,8 +2174,8 @@ class MarbleRaceApiTest(unittest.TestCase):
             f"/api/tournaments/{tournament_id}",
             json={
                 "name": "Tiny Cup",
-                "days": 2,
-                "heatsPerRacerPerDay": 1,
+                "rounds": 2,
+                "heatsPerRacerPerRound": 1,
                 "maxMarblesPerHeat": 2,
                 "marblesPerRacer": 1,
                 "wildcardMaxMarblesPerHeat": 6,
@@ -2191,8 +2191,8 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertEqual(configured["competition"]["racersPerHeat"], 2)
         racer_a, racer_b = (row["id"] for row in configured["contestants"])
         state = configured
-        for day in state["days"]:
-            heat = day["heats"][0]
+        for round in state["rounds"]:
+            heat = round["heats"][0]
             results = [
                 {
                     "contestantId": entry["contestantId"],
@@ -2232,8 +2232,8 @@ class MarbleRaceApiTest(unittest.TestCase):
             f"/api/tournaments/{tournament_id}",
             json={
                 "name": "Trim Cup",
-                "days": 4,
-                "heatsPerRacerPerDay": 1,
+                "rounds": 4,
+                "heatsPerRacerPerRound": 1,
                 "maxMarblesPerHeat": 8,
                 "marblesPerRacer": 1,
                 "wildcardMaxMarblesPerHeat": 6,
@@ -2252,9 +2252,9 @@ class MarbleRaceApiTest(unittest.TestCase):
         # Each round has its own distinct 1st/2nd place pair, so four rounds
         # bank four distinct bye winners -- more than maxFinalRacers=3 allows.
         pairs = [(0, 1), (2, 3), (4, 5), (6, 7)]
-        for day_index, day in enumerate(state["days"]):
-            heat = day["heats"][0]
-            winner_index, second_index = pairs[day_index]
+        for round_index, round in enumerate(state["rounds"]):
+            heat = round["heats"][0]
+            winner_index, second_index = pairs[round_index]
             remaining = [index for index in range(8) if index not in (winner_index, second_index)]
             finish_by_index = {winner_index: 1, second_index: 2}
             for rank, racer_index in enumerate(remaining, start=3):
@@ -2301,8 +2301,8 @@ class MarbleRaceApiTest(unittest.TestCase):
         ]
         base_payload = {
             "name": "Config Validation Cup",
-            "days": 3,
-            "heatsPerRacerPerDay": 3,
+            "rounds": 3,
+            "heatsPerRacerPerRound": 3,
             "maxMarblesPerHeat": 6,
             "marblesPerRacer": 1,
             "points": [10, 7, 5, 3, 2, 1],
@@ -2388,7 +2388,7 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.addCleanup(
             lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close()
         )
-        heat = created["days"][0]["heats"][0]
+        heat = created["rounds"][0]["heats"][0]
         results = [
             {
                 "contestantId": entry["contestantId"],
@@ -2418,7 +2418,7 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.addCleanup(
             lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close()
         )
-        heats = [heat for day in created["days"] for heat in day["heats"]]
+        heats = [heat for round in created["rounds"] for heat in round["heats"]]
         heat1, heat2 = heats[0], heats[1]
         self.assertFalse(heat1["locked"])
         self.assertFalse(heat1["started"])
@@ -2430,8 +2430,8 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertIn("Complete the earlier rounds", blocked.get_json()["error"])
 
         state = score_heat_sequentially(self.client, heat1).get_json()
-        heat1_after = state["days"][0]["heats"][0]
-        heat2_after = state["days"][0]["heats"][1]
+        heat1_after = state["rounds"][0]["heats"][0]
+        heat2_after = state["rounds"][0]["heats"][1]
         self.assertTrue(heat1_after["complete"])
         self.assertFalse(heat1_after["locked"])
         self.assertFalse(heat2_after["locked"])
@@ -2448,11 +2448,11 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.addCleanup(
             lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close()
         )
-        heats = [heat for day in created["days"] for heat in day["heats"]]
+        heats = [heat for round in created["rounds"] for heat in round["heats"]]
         heat1, heat2 = heats[0], heats[1]
 
         state = score_heat_sequentially(self.client, heat1).get_json()
-        heat1_after = state["days"][0]["heats"][0]
+        heat1_after = state["rounds"][0]["heats"][0]
         self.assertFalse(heat1_after["editLocked"])
 
         rescored_before_next_start = self.client.put(
@@ -2464,7 +2464,7 @@ class MarbleRaceApiTest(unittest.TestCase):
         started = self.client.put(f'/api/heats/{heat2["id"]}/start')
         self.assertEqual(started.status_code, 200)
         state_after_start = started.get_json()
-        heat1_locked = state_after_start["days"][0]["heats"][0]
+        heat1_locked = state_after_start["rounds"][0]["heats"][0]
         self.assertTrue(heat1_locked["editLocked"])
 
         blocked = self.client.put(
@@ -2482,7 +2482,7 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.addCleanup(
             lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close()
         )
-        staging_heats = [heat for day in created["days"] for heat in day["heats"]]
+        staging_heats = [heat for round in created["rounds"] for heat in round["heats"]]
         state = score_all_heats_sequentially(self.client, staging_heats)
         self.assertTrue(state["championship"]["wildcard"]["ready"])
         wildcard_heats = state["championship"]["wildcard"]["heats"]
@@ -2514,7 +2514,7 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.addCleanup(
             lambda: self.client.delete(f"/api/tournaments/{tournament_id}").close()
         )
-        staging_heats = [heat for day in created["days"] for heat in day["heats"]]
+        staging_heats = [heat for round in created["rounds"] for heat in round["heats"]]
         state = score_all_heats_sequentially(self.client, staging_heats)
         self.assertTrue(state["championship"]["wildcard"]["ready"])
         wildcard_heats = state["championship"]["wildcard"]["heats"]
@@ -2542,12 +2542,12 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertIn("later heat has already started", blocked.get_json()["error"])
 
     def _configure_tiebreak_cup(self, name: str) -> tuple[dict, list[int]]:
-        """Two-day tournament where every heat that day contains the whole
-        8-racer field (heatsPerRacerPerDay=3, racersPerHeat=8), so a test can
+        """Two-round tournament where every heat that round contains the whole
+        8-racer field (heatsPerRacerPerRound=3, racersPerHeat=8), so a test can
         give two or more racers an identical *placement vector* -- the same
         count of 1st-place finishes, same count of 2nd-place finishes, and
         so on -- by rotating them through the same set of literal placements
-        across the day's three heats. No two racers can share a literal
+        across the round's three heats. No two racers can share a literal
         placement within any single heat, so that rotation is the only way
         to construct a genuine tie under the placement-vector tiebreak."""
         created = self.client.post("/api/tournaments", json={"name": name}).get_json()
@@ -2558,8 +2558,8 @@ class MarbleRaceApiTest(unittest.TestCase):
             f"/api/tournaments/{tournament_id}",
             json={
                 "name": name,
-                "days": 2,
-                "heatsPerRacerPerDay": 3,
+                "rounds": 2,
+                "heatsPerRacerPerRound": 3,
                 "maxMarblesPerHeat": 8,
                 "marblesPerRacer": 1,
                 "wildcardMaxMarblesPerHeat": 6,
@@ -2577,10 +2577,10 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertEqual(configured["competition"]["racersPerHeat"], 8)
         return configured, contestant_ids
 
-    def _score_day_one(self, state: dict, contestant_ids: list[int], heat_finishes: list[dict[int, int]]) -> dict:
-        """Scores every heat in day 1, each with its own explicit
+    def _score_round_one(self, state: dict, contestant_ids: list[int], heat_finishes: list[dict[int, int]]) -> dict:
+        """Scores every heat in round 1, each with its own explicit
         contestantId -> finish map."""
-        for heat, finishes in zip(state["days"][0]["heats"], heat_finishes):
+        for heat, finishes in zip(state["rounds"][0]["heats"], heat_finishes):
             results = [
                 {
                     "contestantId": entry["contestantId"],
@@ -2604,7 +2604,7 @@ class MarbleRaceApiTest(unittest.TestCase):
         # wildcard seats. Racers 5/6/7 rotate the same way through 6th/7th/
         # 8th, tied among themselves but irrelevant to any seat.
         ruby, blue, golden, emerald, purple, orange, silver, pink = contestant_ids
-        state = self._score_day_one(
+        state = self._score_round_one(
             state,
             contestant_ids,
             [
@@ -2617,7 +2617,7 @@ class MarbleRaceApiTest(unittest.TestCase):
 
         pending = state["pendingTieBreak"]
         self.assertIsNotNone(pending)
-        self.assertEqual(pending["day"], 1)
+        self.assertEqual(pending["round"], 1)
         self.assertEqual({racer["id"] for racer in pending["racers"]}, tied_ids)
         self.assertEqual(
             {racer["id"] for racer in pending["racers"] if racer["currentTier"] == "wildcard"},
@@ -2627,8 +2627,8 @@ class MarbleRaceApiTest(unittest.TestCase):
             next(racer for racer in pending["racers"] if racer["id"] == contestant_ids[4])["currentTier"]
         )
 
-        day_two_heat = state["days"][1]["heats"][0]
-        blocked = self.client.put(f'/api/heats/{day_two_heat["id"]}/start')
+        round_two_heat = state["rounds"][1]["heats"][0]
+        blocked = self.client.put(f'/api/heats/{round_two_heat["id"]}/start')
         self.assertEqual(blocked.status_code, 409)
 
         tournament_id = state["competition"]["id"]
@@ -2657,7 +2657,7 @@ class MarbleRaceApiTest(unittest.TestCase):
         wildcard_ids = {item["racerId"] for item in field["wildcardPool"]}
         self.assertEqual(wildcard_ids, {contestant_ids[2], contestant_ids[4]})
 
-        unblocked = self.client.put(f'/api/heats/{day_two_heat["id"]}/start')
+        unblocked = self.client.put(f'/api/heats/{round_two_heat["id"]}/start')
         self.assertEqual(unblocked.status_code, 200)
 
     def test_tie_with_no_seat_at_stake_does_not_block_progress(self) -> None:
@@ -2669,7 +2669,7 @@ class MarbleRaceApiTest(unittest.TestCase):
         # 3-way tie, but one that's well below the wildcard cutoff and so
         # can't change anything.
         ruby, blue, golden, emerald, purple, orange, silver, pink = contestant_ids
-        state = self._score_day_one(
+        state = self._score_round_one(
             state,
             contestant_ids,
             [
@@ -2680,20 +2680,20 @@ class MarbleRaceApiTest(unittest.TestCase):
         )
         self.assertIsNone(state["pendingTieBreak"])
 
-        day_two_heat = state["days"][1]["heats"][0]
-        unblocked = self.client.put(f'/api/heats/{day_two_heat["id"]}/start')
+        round_two_heat = state["rounds"][1]["heats"][0]
+        unblocked = self.client.put(f'/api/heats/{round_two_heat["id"]}/start')
         self.assertEqual(unblocked.status_code, 200)
 
     def test_tiebreak_that_changes_an_earlier_round_requires_confirmation(self) -> None:
         # bye_racer_ids in championship_field() is a whole-tournament set
         # resolved before the preliminary pass ever starts, so which racer
-        # wins *day 2's* bye can retroactively change the bonus-capacity
-        # lookup *day 1's* preliminary promotion depended on. Blue Bolt is
-        # day 1's clear preliminary candidate (rank 2) and also one of two
-        # racers tied for day 2's bye -- maxPrelimMarblesForRacerWithFinalBye
-        # defaults to 0, so if Blue ends up holding any bye, Blue's day 1
+        # wins *round 2's* bye can retroactively change the bonus-capacity
+        # lookup *round 1's* preliminary promotion depended on. Blue Bolt is
+        # round 1's clear preliminary candidate (rank 2) and also one of two
+        # racers tied for round 2's bye -- maxPrelimMarblesForRacerWithFinalBye
+        # defaults to 0, so if Blue ends up holding any bye, Blue's round 1
         # preliminary capacity drops to zero and cascades away to Golden
-        # Globe (day 1's rank 3).
+        # Globe (round 1's rank 3).
         created = self.client.post(
             "/api/tournaments", json={"name": "Cross Round Impact Cup"}
         ).get_json()
@@ -2704,8 +2704,8 @@ class MarbleRaceApiTest(unittest.TestCase):
             f"/api/tournaments/{tournament_id}",
             json={
                 "name": "Cross Round Impact Cup",
-                "days": 2,
-                "heatsPerRacerPerDay": 2,
+                "rounds": 2,
+                "heatsPerRacerPerRound": 2,
                 "maxMarblesPerHeat": 8,
                 "marblesPerRacer": 1,
                 "wildcardMaxMarblesPerHeat": 6,
@@ -2724,9 +2724,9 @@ class MarbleRaceApiTest(unittest.TestCase):
             },
         ).get_json()
         ruby, blue, golden, emerald, purple, orange, silver, pink = contestant_ids
-        # Day 1: Ruby wins outright (bye); Blue clearly 2nd (preliminary);
+        # Round 1: Ruby wins outright (bye); Blue clearly 2nd (preliminary);
         # Golden clearly 3rd (the cascade target if Blue is excluded).
-        # Day 2: Blue and Golden tied for 1st (the bye seat).
+        # Round 2: Blue and Golden tied for 1st (the bye seat).
         heat_finishes = [
             {ruby: 1, blue: 2, golden: 3, emerald: 4, purple: 5, orange: 6, silver: 7, pink: 8},
             {ruby: 1, blue: 2, golden: 3, emerald: 4, purple: 6, orange: 5, silver: 8, pink: 7},
@@ -2735,11 +2735,11 @@ class MarbleRaceApiTest(unittest.TestCase):
         ]
         state = configured
         for heat_index, finishes in enumerate(heat_finishes):
-            # Day 2's heats only appear once day 1 is fully scored, so
+            # Round 2's heats only appear once round 1 is fully scored, so
             # refetch the schedule before each heat rather than relying on
             # the stale list captured before the tournament had raced.
             fresh = self.client.get(f"/api/state?tournamentId={tournament_id}").get_json()
-            heat = [h for day in fresh["days"] for h in day["heats"]][heat_index]
+            heat = [h for round in fresh["rounds"] for h in round["heats"]][heat_index]
             results = [
                 {
                     "contestantId": entry["contestantId"],
@@ -2755,24 +2755,24 @@ class MarbleRaceApiTest(unittest.TestCase):
 
         pending = state["pendingTieBreak"]
         self.assertIsNotNone(pending)
-        self.assertEqual(pending["day"], 2)
+        self.assertEqual(pending["round"], 2)
         self.assertEqual({racer["id"] for racer in pending["racers"]}, {blue, golden})
 
-        # Currently (seed-order fallback), Blue wins day 2's bye, which
-        # excludes Blue from day 1's preliminary cap -- so Golden (day 1's
+        # Currently (seed-order fallback), Blue wins round 2's bye, which
+        # excludes Blue from round 1's preliminary cap -- so Golden (round 1's
         # cascade target) holds it instead of Blue.
         connection = connect()
         try:
             field_before = championship_field(connection, tournament_id)
         finally:
             connection.close()
-        day1_prelim_before = {
+        round1_prelim_before = {
             item["racerId"] for item in field_before["preliminaryDirect"] if item["originRound"] == 1
         }
-        self.assertEqual(day1_prelim_before, {golden})
+        self.assertEqual(round1_prelim_before, {golden})
 
-        # Ranking Golden ahead of Blue for day 2's bye flips that: Blue is
-        # no longer excluded and reclaims day 1's preliminary directly, so
+        # Ranking Golden ahead of Blue for round 2's bye flips that: Blue is
+        # no longer excluded and reclaims round 1's preliminary directly, so
         # this should be flagged rather than applied outright.
         flagged = self.client.put(
             f"/api/tournaments/{tournament_id}/staging/2/tiebreak",
@@ -2781,7 +2781,7 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertEqual(flagged.status_code, 200)
         flagged_body = flagged.get_json()
         self.assertTrue(flagged_body.get("needsConfirmation"))
-        self.assertEqual(flagged_body.get("affectedDays"), [1])
+        self.assertEqual(flagged_body.get("affectedRounds"), [1])
 
         # Nothing was persisted by the unconfirmed attempt.
         still_pending = self.client.get(f"/api/state?tournamentId={tournament_id}").get_json()
@@ -2800,10 +2800,10 @@ class MarbleRaceApiTest(unittest.TestCase):
             field_after = championship_field(connection, tournament_id)
         finally:
             connection.close()
-        day1_prelim_after = {
+        round1_prelim_after = {
             item["racerId"] for item in field_after["preliminaryDirect"] if item["originRound"] == 1
         }
-        self.assertEqual(day1_prelim_after, {blue})
+        self.assertEqual(round1_prelim_after, {blue})
 
 
 if __name__ == "__main__":

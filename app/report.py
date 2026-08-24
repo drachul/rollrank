@@ -147,11 +147,11 @@ def points_legend(c: canvas.Canvas, x: float, top: float, width: float, values: 
 def overview_pages(c: canvas.Canvas, state: dict[str, Any], width: float, height: float, page: int) -> int:
     competition = state["competition"]
     standings = state["standings"]
-    day_chunks = [list(range(start, min(start + 10, competition["days"] + 1))) for start in range(1, competition["days"] + 1, 10)]
+    round_chunks = [list(range(start, min(start + 10, competition["rounds"] + 1))) for start in range(1, competition["rounds"] + 1, 10)]
     racer_chunks = [standings[start : start + 16] for start in range(0, len(standings), 16)]
-    page_count = len(day_chunks) * len(racer_chunks)
+    page_count = len(round_chunks) * len(racer_chunks)
     page_index = 0
-    for day_chunk in day_chunks:
+    for round_chunk in round_chunks:
         for racer_chunk in racer_chunks:
             page_index += 1
             badge = "STANDINGS" if page_count == 1 else f"STANDINGS {page_index}/{page_count}"
@@ -159,8 +159,8 @@ def overview_pages(c: canvas.Canvas, state: dict[str, Any], width: float, height
             x = 32
             usable = width - 64
             metrics = [
-                ("RACE ROUNDS", competition["days"]),
-                ("HEATS / RACER / ROUND", competition["heatsPerRacerPerDay"]),
+                ("RACE ROUNDS", competition["rounds"]),
+                ("HEATS / RACER / ROUND", competition["heatsPerRacerPerRound"]),
                 (
                     "MARBLES / HEAT",
                     f'{competition["marblesPerHeat"]}/{competition["maxMarblesPerHeat"]} max',
@@ -186,16 +186,16 @@ def overview_pages(c: canvas.Canvas, state: dict[str, Any], width: float, height
             row_height = min(20, (table_top - 34 - header_height) / len(racer_chunk))
             name_width = 178
             total_width = 57
-            day_width = (usable - name_width - total_width) / len(day_chunk)
+            round_width = (usable - name_width - total_width) / len(round_chunk)
             c.setFillColor(NAVY)
             c.roundRect(x, table_top - header_height, usable, header_height, 6, fill=1, stroke=0)
             c.setFillColor(white)
             c.setFont("Helvetica-Bold", 7)
             c.drawString(x + 10, table_top - 16, "RACER")
             cursor = x + name_width
-            for day in day_chunk:
-                c.drawCentredString(cursor + day_width / 2, table_top - 16, f"ROUND {day}")
-                cursor += day_width
+            for round in round_chunk:
+                c.drawCentredString(cursor + round_width / 2, table_top - 16, f"ROUND {round}")
+                cursor += round_width
             c.setFillColor(YELLOW)
             c.drawCentredString(cursor + total_width / 2, table_top - 16, "WINS")
             y = table_top - header_height
@@ -209,19 +209,19 @@ def overview_pages(c: canvas.Canvas, state: dict[str, Any], width: float, height
                 c.setFont("Helvetica-Bold", 7.5)
                 c.drawString(x + 24, y + row_height / 2 - 2.5, fit_text(f'{racer["rank"]:02d}  {racer["name"]}', "Helvetica-Bold", 7.5, name_width - 30))
                 cursor = x + name_width
-                for day in day_chunk:
-                    place = racer["dayPlacements"][day - 1]
+                for round in round_chunk:
+                    place = racer["roundPlacements"][round - 1]
                     tint = placement_tint(place)
                     if tint is not None:
                         c.setFillColor(tint)
-                        c.rect(cursor, y, day_width, row_height, fill=1, stroke=0)
+                        c.rect(cursor, y, round_width, row_height, fill=1, stroke=0)
                     c.setStrokeColor(LINE)
                     c.line(cursor, y, cursor, y + row_height)
                     label = ordinal(place) if place is not None else "–"
                     c.setFillColor(INK)
                     c.setFont("Helvetica-Bold", 7.5)
-                    c.drawCentredString(cursor + day_width / 2, y + row_height / 2 - 2.5, label)
-                    cursor += day_width
+                    c.drawCentredString(cursor + round_width / 2, y + row_height / 2 - 2.5, label)
+                    cursor += round_width
                 c.setFillColor(SKY)
                 c.rect(cursor, y, total_width, row_height, fill=1, stroke=1)
                 c.setFillColor(INK)
@@ -288,17 +288,17 @@ def heat_item(c: canvas.Canvas, heat: dict[str, Any], x: float, top: float, widt
         )
 
 
-def day_pages(c: canvas.Canvas, state: dict[str, Any], width: float, height: float, page: int) -> int:
+def round_pages(c: canvas.Canvas, state: dict[str, Any], width: float, height: float, page: int) -> int:
     competition = state["competition"]
-    for day in state["days"]:
+    for round in state["rounds"]:
         columns = min(4, competition["racersPerHeat"])
         rows = math.ceil(competition["racersPerHeat"] / columns)
         item_height = max(58, 18 + rows * 25)
         available = height - 80 - 52 - 48
         per_page = max(1, int((available + 7) // (item_height + 7)))
-        chunks = [day["heats"][start : start + per_page] for start in range(0, len(day["heats"]), per_page)]
+        chunks = [round["heats"][start : start + per_page] for start in range(0, len(round["heats"]), per_page)]
         for sheet_index, chunk in enumerate(chunks, start=1):
-            badge = f'ROUND {day["day"]}/{competition["days"]}'
+            badge = f'ROUND {round["round"]}/{competition["rounds"]}'
             if len(chunks) > 1:
                 badge += f' - SHEET {sheet_index}/{len(chunks)}'
             header(c, width, height, competition["name"], "Recorded marble finishes and awarded heat points", badge)
@@ -466,7 +466,7 @@ def build_report(state: dict[str, Any]) -> bytes:
     pdf.setTitle(f'{state["competition"]["name"]} - Tournament Report')
     pdf.setAuthor("RollRank")
     page = overview_pages(pdf, state, width, height, 1)
-    page = day_pages(pdf, state, width, height, page)
+    page = round_pages(pdf, state, width, height, page)
     page = wildcard_page(pdf, state, width, height, page)
     page = preliminary_page(pdf, state, width, height, page)
     final_page(pdf, state, width, height, page)
