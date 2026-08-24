@@ -474,7 +474,17 @@ def _prospective_preliminary_entries(
                             "decided": True,
                             "name": qualifier_entry["name"],
                             "color": qualifier_entry["color"],
-                            "seedRounds": qualifier_entry.get("seedRounds", []),
+                            # qualifier_entry's own seedRounds spans every
+                            # staging round behind *any* of their marbles in
+                            # this wildcard heat -- but only one new marble
+                            # is advancing here, and heat_top_n ranked them
+                            # by aggregate points, not any single marble, so
+                            # there's no one true seeding round to point to.
+                            # Take the earliest, matching consolidate_by_racer's
+                            # own "earliest occurrence is primary" convention,
+                            # rather than showing every round that ever fed
+                            # this racer's wildcard result.
+                            "seedRounds": qualifier_entry.get("seedRounds", [])[:1],
                             "bucketKey": ("heat", heat["id"]),
                         }
                     )
