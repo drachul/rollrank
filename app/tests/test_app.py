@@ -453,7 +453,12 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertNotIn("window.setInterval(refreshLiveState", frontend)
         self.assertIn('activeView === "dashboard" || activeView === "standings"', frontend)
         self.assertIn('url.searchParams.set("display", "kiosk")', frontend)
+        self.assertIn('const kioskPerformanceLite = initialParams.get("performance") === "lite"', frontend)
+        self.assertIn('document.body.classList.toggle("kiosk-performance-lite", enabled && kioskPerformanceLite)', frontend)
         self.assertIn(".workspace-mode.kiosk-mode", styles)
+        self.assertIn(".kiosk-performance-lite .kiosk-race-intro", styles)
+        self.assertIn("@keyframes kiosk-firework-burst-lite", styles)
+        self.assertIn("@keyframes kiosk-cup-announcement-name-lite", styles)
         self.assertIn(".kiosk-standing-list", styles)
         self.assertIn("function currentTournamentStatus()", frontend)
         self.assertIn('class="status-chip ${status.className}"', frontend)
@@ -2046,16 +2051,22 @@ class MarbleRaceApiTest(unittest.TestCase):
 
         self.assertFalse(champ["final"]["ready"])
         final_projected = champ["final"]["projectedEntries"]
-        self.assertEqual(len(final_projected), 1)
-        self.assertTrue(final_projected[0]["decided"])
-        self.assertEqual(final_projected[0]["contestantId"], contestant_ids[6])
-        self.assertEqual(final_projected[0]["originStage"], "bye")
+        decided_finalists = [entry for entry in final_projected if entry["decided"]]
+        pending_finalists = [entry for entry in final_projected if not entry["decided"]]
+        self.assertEqual(len(decided_finalists), 1)
+        self.assertEqual(decided_finalists[0]["contestantId"], contestant_ids[6])
+        self.assertEqual(decided_finalists[0]["originStage"], "bye")
+        self.assertEqual(len(pending_finalists), 1)
+        self.assertEqual(pending_finalists[0]["originStage"], "preliminary")
+        self.assertEqual(pending_finalists[0]["sourceHeatNumber"], 1)
+        self.assertEqual(pending_finalists[0]["qualifyingPlace"], 1)
 
         # Score just the first wildcard heat; its top two racers should now
         # appear in the preliminary projection while the other heat's two
         # slots are still pending.
         first_heat = champ["wildcard"]["heats"][0]
-        second_heat_id = champ["wildcard"]["heats"][1]["id"]
+        second_heat_preview = champ["wildcard"]["heats"][1]
+        second_heat_id = second_heat_preview["id"]
         results = [
             {
                 "contestantId": entry["contestantId"],
@@ -2076,7 +2087,9 @@ class MarbleRaceApiTest(unittest.TestCase):
         self.assertIn(first_heat["entries"][1]["contestantId"], decided_ids)
         still_pending = [entry for entry in projected if not entry["decided"]]
         self.assertEqual(len(still_pending), 2)
-        self.assertTrue(all(entry["originHeatId"] == second_heat_id for entry in still_pending))
+        self.assertTrue(
+            all(entry["sourceHeatNumber"] == second_heat_preview["heatNumber"] for entry in still_pending)
+        )
 
         second_heat = next(
             heat
