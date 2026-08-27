@@ -5,6 +5,7 @@ let activeView = supportedViews.includes(initialParams.get("view")) ? initialPar
 let activeRound = 1;
 let activeTournamentId = Number(initialParams.get("tournament")) || null;
 let kioskMode = initialParams.get("display") === "kiosk";
+const kioskPerformanceLite = initialParams.get("performance") === "lite";
 let liveEventSource = null;
 let liveEventTournamentId = null;
 let kioskIntroTimer = null;
@@ -550,6 +551,7 @@ async function setKioskMode(enabled, requestBrowserFullscreen = false) {
   kioskMode = enabled;
   activeView = "dashboard";
   document.body.classList.toggle("kiosk-mode", enabled);
+  document.body.classList.toggle("kiosk-performance-lite", enabled && kioskPerformanceLite);
   const url = new URL(window.location.href);
   url.searchParams.set("view", "dashboard");
   if (enabled) url.searchParams.set("display", "kiosk");
@@ -1926,7 +1928,9 @@ document.addEventListener("visibilitychange", () => {
 if (window.location.pathname === "/workspace") {
   landingPage.hidden = true;
   workspaceShell.hidden = false;
-  document.body.className = kioskMode ? "workspace-mode kiosk-mode" : "workspace-mode";
+  document.body.className = kioskMode
+    ? `workspace-mode kiosk-mode${kioskPerformanceLite ? " kiosk-performance-lite" : ""}`
+    : "workspace-mode";
   loadState();
 } else {
   landingPage.hidden = false;

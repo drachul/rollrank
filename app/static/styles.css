@@ -918,6 +918,25 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible { 
 .kiosk-fireworks i::after { position:absolute; inset:0; border-radius:50%; background:currentColor; box-shadow:0 -48px currentColor,34px -34px currentColor,48px 0 currentColor,34px 34px currentColor,0 48px currentColor,-34px 34px currentColor,-48px 0 currentColor,-34px -34px currentColor; content:""; transform:rotate(22.5deg); }
 @keyframes kiosk-firework-burst { 0% { opacity:0; transform:scale(.05); } 12% { opacity:1; } 58% { opacity:.9; transform:scale(1); } 100% { opacity:0; transform:scale(1.32); } }
 
+/* Opt-in kiosk mode for lower-power displays such as Raspberry Pi. Keep the
+   choreography, but avoid effects that require large or repeated paint work. */
+.kiosk-performance-lite .kiosk-race-intro,.kiosk-performance-lite .kiosk-race-results,.kiosk-performance-lite .kiosk-cup-presentation { contain:layout paint; }
+.kiosk-performance-lite .kiosk-race-intro::before,.kiosk-performance-lite .kiosk-race-intro::after,.kiosk-performance-lite .kiosk-cup-presentation::before { display:none; }
+.kiosk-performance-lite .kiosk-intro-marble-drop,.kiosk-performance-lite .kiosk-result-racer,.kiosk-performance-lite .kiosk-cup-racer,.kiosk-performance-lite .kiosk-cup-presenter { will-change:transform,opacity; }
+.kiosk-performance-lite .kiosk-intro-racers article::after { filter:none; }
+.kiosk-performance-lite .kiosk-intro-racers .marble,.kiosk-performance-lite .kiosk-result-racer .marble,.kiosk-performance-lite .kiosk-cup-racer>.marble,.kiosk-performance-lite .kiosk-cup-host>.marble { box-shadow:inset 5px 5px 0 rgba(255,255,255,.32); }
+.kiosk-performance-lite .kiosk-intro-flag,.kiosk-performance-lite .kiosk-result-racer,.kiosk-performance-lite .kiosk-cup-winner-trophy,.kiosk-performance-lite .kiosk-cup-presenter-trophy { filter:none; }
+.kiosk-performance-lite .kiosk-result-dnf-effect { display:none; }
+.kiosk-performance-lite .dnf-explode .marble { animation:kiosk-result-marble-spin .55s linear infinite; }
+.kiosk-performance-lite .kiosk-cup-announcement p { animation-name:kiosk-cup-announcement-line-lite; }
+.kiosk-performance-lite .kiosk-cup-announcement h2 { animation-name:kiosk-cup-announcement-name-lite; }
+.kiosk-performance-lite .kiosk-fireworks { contain:layout paint; mix-blend-mode:normal; }
+.kiosk-performance-lite .kiosk-fireworks i { width:68px; height:68px; border:4px dotted currentColor; background:transparent; box-shadow:none; animation-name:kiosk-firework-burst-lite; animation-iteration-count:2; will-change:transform,opacity; }
+.kiosk-performance-lite .kiosk-fireworks i::after,.kiosk-performance-lite .kiosk-fireworks i:nth-child(n+4) { display:none; }
+@keyframes kiosk-cup-announcement-line-lite { 0% { opacity:0; transform:translate3d(-12vw,0,0) skewX(-8deg); } 20%,58% { opacity:1; transform:translate3d(0,0,0) skewX(-3deg); } 100% { opacity:0; transform:translate3d(13vw,0,0) skewX(-8deg); } }
+@keyframes kiosk-cup-announcement-name-lite { 0% { opacity:0; transform:translate3d(-15vw,0,0) skewX(-9deg) scale(.88); } 22%,72% { opacity:1; transform:translate3d(0,0,0) skewX(-3deg) scale(1); } 100% { opacity:0; transform:translate3d(16vw,0,0) skewX(-8deg) scale(1.06); } }
+@keyframes kiosk-firework-burst-lite { 0% { opacity:0; transform:translate3d(-50%,-50%,0) scale(.08); } 15% { opacity:.9; } 65% { opacity:.72; transform:translate3d(-50%,-50%,0) scale(1); } 100% { opacity:0; transform:translate3d(-50%,-50%,0) scale(1.22); } }
+
 @media (max-width:1050px) {
   .landing-hero { min-height:610px; grid-template-columns:minmax(330px,.85fr) minmax(0,1.15fr); gap:30px; }
   .landing-visual { min-height:440px; }
